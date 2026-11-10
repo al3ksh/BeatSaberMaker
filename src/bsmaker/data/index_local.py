@@ -1,0 +1,96 @@
+"""Index a folder of Beat Saber maps into the manifest."""
+from __future__ import annotations
+
+import json
+import math
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from bsmaker.data.filters import nps, reject_reasons
+from bsmaker.data.manifest import upsert_difficulty, upsert_map
+from bsmaker.data.split import assign_split
+from bsmaker.formats.events import to_events
+from bsmaker.formats.reader import map_key, read_map
+from bsmaker.playability.checker import check
+from bsmaker.playability.config import PlayabilityConfig
+
+_PROBE_TIMEOUT_S = 30
+
+
+@dataclass
+class IndexSummary:
+    n_maps: int = 0
+    n_difficulties: int = 0
+    n_accepted: int = 0
+    reasons: dict[str, int] = field(default_factory=dict)
+    n_duplicate_keys: int = 0
+
+
+def probe_duration(path: Path | None) -> float | None:
+    """Audio duration in seconds via ffprobe; None on any failure (input is untrusted)."""
+    if path is None:
+        return None
+    cmd = ["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-show_entries",
+           "format=duration", "-of", "json", "-i", str(path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=_PROBE_TIMEOUT_S, shell=False,
+                              stdin=subprocess.DEVNULL)
+        if proc.returncode != 0:
+            return None
+        value = float(json.loads(proc.stdout.decode("utf-8", "replace"))["format"]["duration"])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local",
+                 progress_every: int = 0) -> IndexSummary:
+    summary = IndexSummary()
+    seen: set[str] = set()
+    folders = sorted(p for p in Path(root).iterdir() if p.is_dir())
+    for i, folder in enumerate(folders, 1):
+        if progress_every and i % progress_every == 0:
+            print(f"  indexed {i}/{len(folders)} folders", flush=True)
+        key = map_key(folder.name)
+        if key in seen:
+            summary.n_duplicate_keys += 1
+            continue
+        seen.add(key)
+        summary.n_maps += 1
+        try:
+            bm = read_map(folder)
+        except Exception:  # noqa: BLE001 - one malformed map must never stop the run
+            summary.reasons["unreadable"] = summary.reasons.get("unreadable", 0) + 1
+            continue
+        duration = probe_duration(bm.audio_path)
+        row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
+        automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
+        upsert_map(conn, {
+            "key": key, "source": source, "folder": str(folder), "title": bm.title,
+            "artist": bm.artist, "mapper": bm.mapper, "bpm": bm.bpm, "duration_s": duration,
+            "requirements": json.dumps(list(bm.requirements)),
+            "suggestions": json.dumps(list(bm.suggestions)),
+            "audio_ok": 0 if duration is None else 1,
+        })
+        split = assign_split(key)
+        for d in bm.difficulties:
+            events, merged = to_events(d.notes)
+            hard_rate = check(events, cfg).hard_rate
+            reasons = reject_reasons(bm, d, duration_s=duration, hard_rate=hard_rate,
+                                     automapper=automapper)
+            upsert_difficulty(conn, {
+                "map_key": key, "characteristic": d.characteristic, "rank": d.rank,
+                "schema": d.schema, "n_notes": len(d.notes), "n_events": len(events),
+                "merged_notes": merged, "nps": nps(d.notes), "njs": d.njs,
+                "njs_offset": d.njs_offset, "hard_rate": hard_rate,
+                "accepted": 0 if reasons else 1, "reject_reasons": json.dumps(reasons),
+                "split": split,
+            })
+            summary.n_difficulties += 1
+            if reasons:
+                for r in reasons:
+                    summary.reasons[r] = summary.reasons.get(r, 0) + 1
+            else:
+                summary.n_accepted += 1
+    return summary
