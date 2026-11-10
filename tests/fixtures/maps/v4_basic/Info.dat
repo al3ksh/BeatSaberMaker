@@ -1,0 +1,28 @@
+{
+ "version": "4.0.0",
+ "song": {
+  "title": "Fixture Song",
+  "author": "Fixture Artist"
+ },
+ "audio": {
+  "songFilename": "song.egg",
+  "bpm": 120,
+  "songDuration": 1
+ },
+ "difficultyBeatmaps": [
+  {
+   "characteristic": "Standard",
+   "difficulty": "Expert",
+   "beatmapAuthors": {
+    "mappers": [
+     "Fixture Mapper"
+    ],
+    "lighters": []
+   },
+   "noteJumpMovementSpeed": 16,
+   "noteJumpStartBeatOffset": 0,
+   "beatmapDataFilename": "ExpertStandard.beatmap.dat",
+   "lightshowDataFilename": "Standard.lightshow.dat"
+  }
+ ]
+}
