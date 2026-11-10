@@ -44,7 +44,7 @@ def test_parse_search_fixture_flags():
 
 
 def test_automapper_or_ai_flag_sets_automapper():
-    base = {"id": "a", "versions": [{"hash": "h", "downloadURL": "u"}]}
+    base = {"id": "a", "versions": [{"hash": "h", "downloadURL": "u", "state": "Published"}]}
     assert parse_map_info({**base, "automapper": True}).automapper
     assert parse_map_info({**base, "declaredAi": "Uploader"}).automapper
     assert not parse_map_info({**base, "declaredAi": "None"}).automapper
@@ -182,3 +182,48 @@ def test_download_http_error_and_redirect_leave_no_file(tmp_path):
         with pytest.raises(BeatSaverError):
             c.download(f"https://{HOST}/a.zip", tmp_path / "a.zip")
         assert list(tmp_path.iterdir()) == []
+
+
+def _doc(key, versions):
+    return {"id": key, "name": key, "versions": versions}
+
+
+def _ver(h, state, created):
+    return {"hash": h, "downloadURL": f"https://{HOST}/{h}.zip", "state": state, "createdAt": created}
+
+
+def test_parse_picks_newest_published_by_created_at():
+    doc = _doc("a", [_ver("new", "Published", "2024-01-01T00:00:00Z"),
+                     _ver("old", "Published", "2020-01-01T00:00:00Z"),
+                     _ver("test", "Testplay", "2025-01-01T00:00:00Z")])
+    assert parse_map_info(doc).hash == "new"
+
+
+def test_parse_without_published_version_raises():
+    with pytest.raises(BeatSaverError):
+        parse_map_info(_doc("a", [_ver("t", "Testplay", "2025-01-01T00:00:00Z")]))
+
+
+def test_by_ids_lowercases_ids_sent():
+    seen = []
+    c = _client(lambda r: seen.append(r.url.path) or httpx.Response(200, json={}))
+    c.get_maps_by_ids(["1A2B", "FF"])
+    assert seen == ["/maps/ids/1a2b,ff"]
+
+
+def test_by_ids_bad_doc_skipped_valid_kept():
+    body = {"a": _doc("a", [_ver("h", "Published", "2020-01-01T00:00:00Z")]),
+            "b": _doc("b", [_ver("t", "Testplay", "2020-01-01T00:00:00Z")]), "c": None}
+    c = _client(lambda r: httpx.Response(200, json=body))
+    assert set(c.get_maps_by_ids(["a", "b", "c"])) == {"a"}
+
+
+def test_by_ids_single_id_shapes():
+    d = _doc("a", [_ver("h", "Published", "2020-01-01T00:00:00Z")])
+    for body in ({"a": d}, d):
+        c = _client(lambda r, body=body: httpx.Response(200, json=body))
+        assert set(c.get_maps_by_ids(["a"])) == {"a"}
+
+
+def test_by_ids_all_unknown_is_empty():
+    assert _client(lambda r: httpx.Response(200, json={})).get_maps_by_ids(["x", "y"]) == {}

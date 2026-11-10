@@ -21,7 +21,7 @@ def fetch_metadata(conn: sqlite3.Connection, client: BeatSaverClient) -> tuple[i
         batch = keys[i:i + BATCH_SIZE]
         found = client.get_maps_by_ids(batch)
         for key in batch:
-            info = found.get(key)
+            info = found.get(key.lower())
             if info is None:
                 upsert_map(conn, {"key": key, **_NOT_FOUND})
                 not_found += 1

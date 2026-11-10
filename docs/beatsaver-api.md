@@ -61,3 +61,15 @@ clients for contact details (the User-Agent therefore carries none). We keep
 `tests/fixtures/beatsaver/maps_by_ids.json` (2 maps, `/maps/ids/2,3a,zzzz`) and
 `search_page.json` (3 maps from `/search/text/0?leaderboard=Ranked&order=Rating`), trimmed to
 metadata: descriptions emptied, uploader reduced to the name, no avatars, difficulties dropped.
+
+## Fix round 1 findings (2026-11-10)
+
+- `versions[]` ordering is undocumented in the swagger spec (items are plain `MapVersion`).
+  The client therefore picks, among versions with `state == "Published"` and a hash and
+  `downloadURL`, the one with the latest `createdAt` (ties: later list position). A map with no
+  Published version is treated as unusable (key counts as not returned).
+- by-ids with exactly one id returns `{id: doc}` (checked live with `/maps/ids/2`), although the
+  spec labels the 200 schema `MapDetail`; the client also accepts a bare document.
+- by-ids where no id exists returns HTTP 200 with `{}` (checked live, one and two unknown ids);
+  those keys are marked not found. Unusable documents inside a batch are skipped, not fatal.
+- Ids are sent lower-cased (the API returns lower-case ids); manifest keys keep their case.

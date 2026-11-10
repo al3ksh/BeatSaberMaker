@@ -47,10 +47,12 @@ def parse_map_info(doc: dict) -> MapInfo:
             raise BeatSaverError("map document has no id")
         if not isinstance(versions, list):
             raise BeatSaverError(f"map {key}: no versions")
-        ver = next((v for v in reversed(versions)
-                    if isinstance(v, dict) and v.get("hash") and v.get("downloadURL")), None)
-        if ver is None:
-            raise BeatSaverError(f"map {key}: no version with hash and downloadURL")
+        usable = [v for v in versions if isinstance(v, dict) and v.get("state") == "Published"
+                  and v.get("hash") and v.get("downloadURL")]
+        if not usable:
+            raise BeatSaverError(f"map {key}: no Published version with hash and downloadURL")
+        # newest by creation timestamp; list order breaks ties (max keeps the later one)
+        ver = max(enumerate(usable), key=lambda iv: (str(iv[1].get("createdAt") or ""), iv[0]))[1]
         stats = doc.get("stats") if isinstance(doc.get("stats"), dict) else {}
         uploader = doc.get("uploader") if isinstance(doc.get("uploader"), dict) else {}
         tags = doc.get("tags") if isinstance(doc.get("tags"), list) else []
@@ -134,14 +136,17 @@ class BeatSaverClient:
         """Look up maps by BeatSaver id; ids the API does not return are absent from the result."""
         out: dict[str, MapInfo] = {}
         for i in range(0, len(keys), BATCH_SIZE):
-            batch = list(keys[i:i + BATCH_SIZE])
+            batch = [k.lower() for k in keys[i:i + BATCH_SIZE]]
             data = self._get_json("/maps/ids/" + ",".join(batch))
             if not isinstance(data, dict):
                 raise BeatSaverError("by-ids response is not an object")
+            if "id" in data and "versions" in data:  # bare document instead of {id: doc}
+                data = {str(data["id"]): data}
             for doc in data.values():
-                if doc is None:
-                    continue
-                info = parse_map_info(doc)
+                try:
+                    info = parse_map_info(doc)
+                except BeatSaverError:
+                    continue  # unusable document: that key counts as not returned
                 out[info.key] = info
         return out
 

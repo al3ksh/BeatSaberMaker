@@ -53,3 +53,18 @@ def test_fetch_metadata_marks_not_found(tmp_path):
     assert fetch_metadata(conn, _client()) == (1, 1)
     r = conn.execute("SELECT * FROM maps WHERE key='dead'").fetchone()
     assert r["bs_fetched"] == 1 and r["bs_hash"] is None and r["bs_tags"] is None
+
+
+def test_fetch_metadata_uppercase_key_found(tmp_path):
+    conn = _setup(tmp_path, ["2", "3A"])
+    assert fetch_metadata(conn, _client()) == (2, 0)
+    r = conn.execute("SELECT * FROM maps WHERE key='3A'").fetchone()
+    assert r["bs_hash"] == "9b0881baab8b72f33424ecf0d9ad247ea10afbb2" and r["key"] == "3A"
+
+
+def test_fetch_metadata_bad_doc_marks_only_that_key_not_found(tmp_path):
+    good = json.loads((FIX / "maps_by_ids.json").read_text(encoding="utf-8"))
+    body = {"2": good["2"], "bad": {"id": "bad", "versions": []}}
+    c = BeatSaverClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    conn = _setup(tmp_path, ["2", "bad"])
+    assert fetch_metadata(conn, c) == (1, 1)
