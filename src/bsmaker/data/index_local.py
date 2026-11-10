@@ -44,6 +44,18 @@ def probe_duration(path: Path | None) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
+def _mark_unreadable(conn, key: str) -> None:
+    for r in conn.execute("SELECT characteristic, rank, reject_reasons FROM difficulties "
+                          "WHERE map_key = ?", (key,)).fetchall():
+        reasons = json.loads(r["reject_reasons"] or "[]")
+        if "unreadable" not in reasons:
+            reasons.append("unreadable")
+        conn.execute("UPDATE difficulties SET accepted = 0, reject_reasons = ? "
+                     "WHERE map_key = ? AND characteristic = ? AND rank = ?",
+                     (json.dumps(reasons), key, r["characteristic"], r["rank"]))
+    conn.commit()
+
+
 def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local",
                  progress_every: int = 0) -> IndexSummary:
     summary = IndexSummary()
@@ -62,7 +74,15 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
             bm = read_map(folder)
         except Exception:  # noqa: BLE001 - one malformed map must never stop the run
             summary.reasons["unreadable"] = summary.reasons.get("unreadable", 0) + 1
+            _mark_unreadable(conn, key)
             continue
+        current = [(d.characteristic, d.rank) for d in bm.difficulties]
+        for ch, rk in [(r["characteristic"], r["rank"]) for r in conn.execute(
+                "SELECT characteristic, rank FROM difficulties WHERE map_key = ?", (key,))]:
+            if (ch, rk) not in current:
+                conn.execute("DELETE FROM difficulties WHERE map_key = ? AND characteristic = ? "
+                             "AND rank = ?", (key, ch, rk))
+        conn.commit()
         duration = probe_duration(bm.audio_path)
         row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
         automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
