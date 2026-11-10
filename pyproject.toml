@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bsmaker"
+version = "0.1.0"
+description = "Beat Saber map generator"
+requires-python = ">=3.13"
+dependencies = [
+    # torch (CUDA build) is installed separately, see docs/environment.md
+    "numpy",
+    "librosa",
+    "soundfile",
+    "httpx",
+    "typer",
+    "pytest",
+]
+
+[project.scripts]
+bsmaker = "bsmaker.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
