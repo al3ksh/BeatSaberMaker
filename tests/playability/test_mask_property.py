@@ -37,13 +37,14 @@ def test_mask_agrees_with_check():
 
 def test_doubles_symmetric_in_hand_order():
     state = initial_state()
+    as_right = {t: allowed(state, 1.0, 1, CFG, other_token=t) for t in range(1, VOCAB_SIZE)}
+    as_left = {t: allowed(state, 1.0, 0, CFG, other_token=t) for t in range(1, VOCAB_SIZE)}
     for left in range(1, VOCAB_SIZE):
-        m1 = allowed(state, 1.0, 1, CFG, other_token=left)
-        for right in np.flatnonzero(m1):
-            if right:
-                assert allowed(state, 1.0, 0, CFG, other_token=int(right))[left]
-        for right in np.flatnonzero(~m1):
-            assert not allowed(state, 1.0, 0, CFG, other_token=int(right))[left]
+        for right in range(1, VOCAB_SIZE):
+            assert as_right[left][right] == as_left[right][left]
+    # both verdicts occur, so the check is not vacuous
+    assert any(not v for m in as_right.values() for v in m[1:])
+    assert any(v for m in as_right.values() for v in m[1:])
 
 
 def test_blocked_token_is_reported():

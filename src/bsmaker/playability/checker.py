@@ -13,106 +13,121 @@ from bsmaker.playability.geometry import angle_diff, direction_angle
 from bsmaker.playability.state import HandState, State, initial_state
 
 _DECODED = [(0, 0, 8)] + [decode_token(t) for t in range(1, VOCAB_SIZE)]
-_ANGLE = [direction_angle(d) for (_, _, d) in _DECODED]
+_X = [d[0] for d in _DECODED]
+_Y = [d[1] for d in _DECODED]
+_ANGLE = [direction_angle(d[2]) for d in _DECODED]
 
-Rule = Callable[[State, float, int, int, int, PlayabilityConfig], "str | None"]
+class _Ctx:
+    """Per-call invariants shared by all rule functions (built once per allowed/check call)."""
+
+    __slots__ = (
+        "hand", "cfg", "last_t", "last_x", "last_y", "gap", "expected", "limit", "rare",
+        "other", "ox", "oy", "oangle", "vision_x",
+    )
+
+    def __init__(self, state: State, time_s: float, hand: int, cfg: PlayabilityConfig, other: int):
+        h = state.left if hand == 0 else state.right
+        self.hand = hand
+        self.cfg = cfg
+        self.last_t = h.time_s
+        self.last_x, self.last_y = h.x, h.y
+        self.gap = None if h.time_s is None else time_s - h.time_s
+        self.expected = None if h.angle is None else (h.angle + 180) % 360
+        gap = self.gap
+        # Parity limit in degrees: None = no limit (reset), else the allowed angle difference.
+        if gap is None or gap >= cfg.reset_gap_s:
+            self.limit = None
+        elif gap >= cfg.slow_gap_s:
+            self.limit = cfg.lenient_angle_deg
+        else:
+            self.limit = cfg.strict_angle_deg
+        self.rare = cfg.rare_tokens[hand]
+        self.other = other
+        self.ox, self.oy, self.oangle = _X[other], _Y[other], _ANGLE[other]
+        self.vision_x = -1
+        if state.prev_time_s is not None and time_s - state.prev_time_s < cfg.vision_gap_s:
+            prev = state.prev_right if hand == 0 else state.prev_left
+            if prev != NONE_TOKEN and _Y[prev] == 1 and _X[prev] in (1, 2):
+                self.vision_x = _X[prev]
 
 
-def _hand(state: State, hand: int) -> HandState:
-    return state.left if hand == 0 else state.right
+Rule = Callable[[_Ctx, int], "str | None"]
 
 
-def _parity_delta(h: HandState, token: int) -> float | None:
-    """Angle difference to the expected swing, or None if parity does not apply."""
+def _rare_token(c, token):
+    return "rare_token" if token in c.rare else None
+
+
+def _hand_speed(c, token):
+    if c.gap is None:
+        return None
+    cfg = c.cfg
+    need = cfg.min_hand_gap_s + cfg.min_hand_gap_per_cell_s * max(
+        abs(_X[token] - c.last_x), abs(_Y[token] - c.last_y)
+    )
+    return "hand_speed" if c.gap < need else None
+
+
+def _parity_delta(c, token):
     new = _ANGLE[token]
-    if h.angle is None or new is None:
+    if c.expected is None or new is None:
         return None
-    return angle_diff(new, (h.angle + 180) % 360)
+    return angle_diff(new, c.expected)
 
 
-def _parity(state, time_s, hand, token, other, cfg):
-    h = _hand(state, hand)
-    d = _parity_delta(h, token)
-    if d is None or h.time_s is None:
+def _parity(c, token):
+    if c.limit is None:
         return None
-    gap = time_s - h.time_s
-    if gap >= cfg.reset_gap_s:
+    d = _parity_delta(c, token)
+    return "parity" if d is not None and d > c.limit else None
+
+
+def _vision_block(c, token):
+    return "vision_block" if c.vision_x >= 0 and _X[token] == c.vision_x else None
+
+
+def _same_cell(c, token):
+    if c.other == NONE_TOKEN:
         return None
-    limit = cfg.lenient_angle_deg if gap >= cfg.slow_gap_s else cfg.strict_angle_deg
-    return "parity" if d > limit else None
+    return "same_cell" if _X[token] == c.ox and _Y[token] == c.oy else None
 
 
-def _hand_speed(state, time_s, hand, token, other, cfg):
-    h = _hand(state, hand)
-    if h.time_s is None:
+def _crossover(c, token):
+    if c.other == NONE_TOKEN or not c.cfg.forbid_crossover:
         return None
-    x, y, _ = _DECODED[token]
-    need = cfg.min_hand_gap_s + cfg.min_hand_gap_per_cell_s * max(abs(x - h.x), abs(y - h.y))
-    return "hand_speed" if time_s - h.time_s < need else None
+    xr, xb = (_X[token], c.ox) if c.hand == 0 else (c.ox, _X[token])
+    return "crossover" if xr > xb else None
 
 
-def _rare_token(state, time_s, hand, token, other, cfg):
-    return "rare_token" if token in cfg.rare_tokens[hand] else None
-
-
-def _pair(hand: int, token: int, other: int) -> tuple[int, int]:
-    """Return (red, blue) tokens."""
-    return (token, other) if hand == 0 else (other, token)
-
-
-def _same_cell(state, time_s, hand, token, other, cfg):
-    if other == NONE_TOKEN:
+def _handclap(c, token):
+    if c.other == NONE_TOKEN or _Y[token] != c.oy:
         return None
-    r, b = _pair(hand, token, other)
-    return "same_cell" if _DECODED[r][:2] == _DECODED[b][:2] else None
-
-
-def _crossover(state, time_s, hand, token, other, cfg):
-    if other == NONE_TOKEN or not cfg.forbid_crossover:
+    if c.hand == 0:
+        xr, xb, ar, ab = _X[token], c.ox, _ANGLE[token], c.oangle
+    else:
+        xr, xb, ar, ab = c.ox, _X[token], c.oangle, _ANGLE[token]
+    if xb - xr != 1:
         return None
-    r, b = _pair(hand, token, other)
-    return "crossover" if _DECODED[r][0] > _DECODED[b][0] else None
-
-
-def _handclap(state, time_s, hand, token, other, cfg):
-    if other == NONE_TOKEN:
-        return None
-    r, b = _pair(hand, token, other)
-    (xr, yr, _), (xb, yb, _) = _DECODED[r], _DECODED[b]
-    if yr != yb or xb - xr != 1:
-        return None
-    return "handclap" if _ANGLE[r] in (0, 45, 315) and _ANGLE[b] in (135, 180, 225) else None
-
-
-def _vision_block(state, time_s, hand, token, other, cfg):
-    if state.prev_time_s is None or time_s - state.prev_time_s >= cfg.vision_gap_s:
-        return None
-    prev = state.prev_right if hand == 0 else state.prev_left
-    if prev == NONE_TOKEN:
-        return None
-    px, py, _ = _DECODED[prev]
-    return "vision_block" if py == 1 and px in (1, 2) and _DECODED[token][0] == px else None
+    return "handclap" if ar in (0, 45, 315) and ab in (135, 180, 225) else None
 
 
 HARD_RULES: tuple[Rule, ...] = (
-    _parity, _hand_speed, _same_cell, _handclap, _crossover, _vision_block, _rare_token,
+    _rare_token, _hand_speed, _vision_block, _same_cell, _crossover, _handclap, _parity,
 )
 
 
-def _reset(state, time_s, hand, token, other, cfg):
-    h = _hand(state, hand)
-    d = _parity_delta(h, token)
-    if d is None or h.time_s is None:
+def _reset(c, token):
+    if c.gap is None or c.gap < c.cfg.reset_gap_s:
         return None
-    return "reset" if time_s - h.time_s >= cfg.reset_gap_s and d > cfg.lenient_angle_deg else None
+    d = _parity_delta(c, token)
+    return "reset" if d is not None and d > c.cfg.lenient_angle_deg else None
 
 
-def _big_jump(state, time_s, hand, token, other, cfg):
-    h = _hand(state, hand)
-    if h.time_s is None:
+def _big_jump(c, token):
+    if c.gap is None:
         return None
-    x, y, _ = _DECODED[token]
-    return "big_jump" if max(abs(x - h.x), abs(y - h.y)) >= 3 and time_s - h.time_s < 0.20 else None
+    far = max(abs(_X[token] - c.last_x), abs(_Y[token] - c.last_y)) >= 3
+    return "big_jump" if far and c.gap < 0.20 else None
 
 
 SOFT_RULES: tuple[Rule, ...] = (_reset, _big_jump)
@@ -122,12 +137,15 @@ def allowed(
     state: State, time_s: float, hand: int, cfg: PlayabilityConfig, other_token: int = NONE_TOKEN
 ) -> np.ndarray:
     """Boolean mask over all tokens that break no hard rule for `hand` at `time_s`."""
+    ctx = _Ctx(state, time_s, hand, cfg, other_token)
     mask = np.zeros(VOCAB_SIZE, dtype=bool)
     mask[NONE_TOKEN] = True
     for token in range(1, VOCAB_SIZE):
-        mask[token] = all(
-            rule(state, time_s, hand, token, other_token, cfg) is None for rule in HARD_RULES
-        )
+        for rule in HARD_RULES:
+            if rule(ctx, token) is not None:
+                break
+        else:
+            mask[token] = True
     return mask
 
 
@@ -177,12 +195,14 @@ def check(events: Sequence[Event], cfg: PlayabilityConfig) -> Report:
             n_notes += 1
             # Doubles are attributed to the right hand: only hand 1 sees the other token.
             other = e.left if hand == 1 else NONE_TOKEN
+            ctx = _Ctx(state, e.time_s, hand, cfg, other)
             for rule in HARD_RULES:
-                name = rule(state, e.time_s, hand, token, other, cfg)
+                name = rule(ctx, token)
                 if name:
                     hard.append(Violation(e.time_s, hand, name))
+            sctx = _Ctx(state, e.time_s, hand, cfg, NONE_TOKEN)
             for rule in SOFT_RULES:
-                name = rule(state, e.time_s, hand, token, NONE_TOKEN, cfg)
+                name = rule(sctx, token)
                 if name:
                     soft.append(Violation(e.time_s, hand, name))
         state = advance(state, e.time_s, e.left, e.right)
