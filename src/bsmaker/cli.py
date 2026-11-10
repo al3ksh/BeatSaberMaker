@@ -1,4 +1,5 @@
 """Command line interface."""
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -16,9 +17,12 @@ from bsmaker.playability.calibrate import (
     write_playability_toml,
 )
 from bsmaker.playability.checker import check as check_events
+from bsmaker.data.beatsaver import BeatSaverClient
 from bsmaker.data.features import build_features
+from bsmaker.data.fetch_metadata import fetch_metadata
 from bsmaker.data.index_local import index_folder
 from bsmaker.data.manifest import open_manifest
+from bsmaker.data.styles import STYLES, styles_from_tags
 from bsmaker.playability.config import PlayabilityConfig, load_playability_config
 
 app = typer.Typer(help="BeatSaberMaker: Beat Saber map generator.", no_args_is_help=True)
@@ -57,6 +61,29 @@ def features() -> None:
     conn = open_manifest(cfg.manifest_path)
     computed, failed = build_features(conn, cfg.features_dir, progress_every=100)
     print(f"computed: {computed}, failed: {failed}")
+
+
+@data_app.command("fetch-metadata")
+def fetch_metadata_cmd() -> None:
+    """Fetch BeatSaver metadata (tags, ratings, flags) for indexed maps; safe to repeat."""
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    with BeatSaverClient() as client:
+        updated, not_found = fetch_metadata(conn, client)
+        n_requests = client.n_requests
+    print(f"updated: {updated}, not found: {not_found}, requests: {n_requests}")
+    per_style: Counter = Counter()
+    n_styled = 0
+    for r in conn.execute("SELECT bs_tags FROM maps WHERE bs_tags IS NOT NULL"):
+        styles = [s for s in styles_from_tags(json.loads(r["bs_tags"])) if s in STYLES]
+        n_styled += bool(styles)
+        per_style.update(styles)
+    print(f"maps with at least one style tag: {n_styled}")
+    for s in STYLES:
+        print(f"  {s}: {per_style[s]}")
+    for col in ("ranked", "bl_ranked", "curated", "automapper"):
+        n = conn.execute(f"SELECT COUNT(*) FROM maps WHERE bs_{col} = 1").fetchone()[0]
+        print(f"{col}: {n}")
 
 
 @data_app.command("calibrate-playability")

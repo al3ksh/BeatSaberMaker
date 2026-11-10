@@ -1,0 +1,148 @@
+{
+ "docs": [
+  {
+   "id": "32693",
+   "name": "Fall Out Boy - The Phoenix",
+   "metadata": {
+    "bpm": 138.0,
+    "duration": 246,
+    "songName": "The Phoenix",
+    "songSubName": "",
+    "songAuthorName": "Fall Out Boy",
+    "levelAuthorName": "Bytrius"
+   },
+   "stats": {
+    "plays": 0,
+    "downloads": 0,
+    "upvotes": 5484,
+    "downvotes": 59,
+    "score": 0.9861,
+    "reviews": 6,
+    "sentiment": "VERY_POSITIVE"
+   },
+   "uploaded": "2023-05-31T23:01:59.709120Z",
+   "automapper": false,
+   "ranked": false,
+   "qualified": false,
+   "blRanked": true,
+   "declaredAi": "None",
+   "tags": [
+    "dance-style",
+    "pop",
+    "punk"
+   ],
+   "curatedAt": "2023-06-01T02:16:21.699148Z",
+   "description": "",
+   "uploader": {
+    "name": "Bytrius"
+   },
+   "curator": {
+    "name": "Phoenix"
+   },
+   "versions": [
+    {
+     "hash": "bf2c367d29b133b66dc27f6f8e20467d0ec3301f",
+     "state": "Published",
+     "downloadURL": "https://r2cdn.beatsaver.com/bf2c367d29b133b66dc27f6f8e20467d0ec3301f.zip"
+    }
+   ]
+  },
+  {
+   "id": "1fccd",
+   "name": "Ori and the Blind Forest - Escaping the Ruins",
+   "metadata": {
+    "bpm": 160.0,
+    "duration": 140,
+    "songName": "Escaping the Ruins",
+    "songSubName": "",
+    "songAuthorName": "Gareth Coker",
+    "levelAuthorName": "Sp234"
+   },
+   "stats": {
+    "plays": 0,
+    "downloads": 0,
+    "upvotes": 2597,
+    "downvotes": 38,
+    "score": 0.9804
+   },
+   "uploaded": "2022-01-07T20:59:04.300499Z",
+   "automapper": false,
+   "ranked": true,
+   "qualified": false,
+   "blRanked": true,
+   "declaredAi": "None",
+   "tags": [
+    "video-game-soundtrack",
+    "balanced",
+    "accuracy",
+    "instrumental"
+   ],
+   "curatedAt": "2022-01-07T20:59:04.300499Z",
+   "description": "",
+   "uploader": {
+    "name": "Sp234"
+   },
+   "curator": {
+    "name": "maybeemae"
+   },
+   "versions": [
+    {
+     "hash": "2717b6bf388b3963f4f9fb023b9a12d9e565127b",
+     "state": "Published",
+     "downloadURL": "https://r2cdn.beatsaver.com/2717b6bf388b3963f4f9fb023b9a12d9e565127b.zip"
+    }
+   ]
+  },
+  {
+   "id": "28240",
+   "name": "I Prevail - Bad Things",
+   "metadata": {
+    "bpm": 184.0,
+    "duration": 231,
+    "songName": "Bad Things",
+    "songSubName": "",
+    "songAuthorName": "I Prevail",
+    "levelAuthorName": "Bytrius"
+   },
+   "stats": {
+    "plays": 0,
+    "downloads": 0,
+    "upvotes": 2423,
+    "downvotes": 36,
+    "score": 0.9799,
+    "reviews": 6,
+    "sentiment": "VERY_POSITIVE"
+   },
+   "uploaded": "2022-07-31T11:01:19.806607Z",
+   "automapper": false,
+   "ranked": false,
+   "qualified": false,
+   "blRanked": true,
+   "declaredAi": "None",
+   "tags": [
+    "balanced",
+    "rock"
+   ],
+   "curatedAt": "2022-07-31T19:58:19.365241Z",
+   "description": "",
+   "uploader": {
+    "name": "Bytrius"
+   },
+   "curator": {
+    "name": "tinkervr85"
+   },
+   "versions": [
+    {
+     "hash": "f3f707a6bb61054c2c11124b0390faaeb685fa58",
+     "state": "Published",
+     "downloadURL": "https://r2cdn.beatsaver.com/f3f707a6bb61054c2c11124b0390faaeb685fa58.zip"
+    }
+   ]
+  }
+ ],
+ "info": {
+  "total": 2613,
+  "pages": 131,
+  "duration": 0.001
+ }
+}

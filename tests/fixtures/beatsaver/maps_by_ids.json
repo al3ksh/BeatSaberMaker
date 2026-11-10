@@ -1,0 +1,84 @@
+{
+ "2": {
+  "id": "2",
+  "name": "Fatima (TV Size) - Kanako Ito (Steins;Gate 0 OP)",
+  "metadata": {
+   "bpm": 179.0,
+   "duration": 91,
+   "songName": "Fatima",
+   "songSubName": "",
+   "songAuthorName": "(TV Size)",
+   "levelAuthorName": "Kanako Ito"
+  },
+  "stats": {
+   "plays": 0,
+   "downloads": 0,
+   "upvotes": 287,
+   "downvotes": 38,
+   "score": 0.8677
+  },
+  "uploaded": "2018-05-08T15:23:50Z",
+  "automapper": false,
+  "ranked": false,
+  "qualified": false,
+  "blRanked": false,
+  "declaredAi": "None",
+  "tags": [
+   "anime"
+  ],
+  "description": "",
+  "uploader": {
+   "name": "jugglernaut"
+  },
+  "versions": [
+   {
+    "hash": "1178b3cbb90746a210ebba8b6a1f0ac4117b0654",
+    "key": "2",
+    "state": "Published",
+    "downloadURL": "https://r2cdn.beatsaver.com/1178b3cbb90746a210ebba8b6a1f0ac4117b0654.zip"
+   }
+  ]
+ },
+ "3a": {
+  "id": "3a",
+  "name": "Through the Fire and Flames - Dragonforce",
+  "metadata": {
+   "bpm": 200.0,
+   "duration": 444,
+   "songName": "TTFAF",
+   "songSubName": "",
+   "songAuthorName": "DragonForce",
+   "levelAuthorName": "Freeek"
+  },
+  "stats": {
+   "plays": 0,
+   "downloads": 0,
+   "upvotes": 5811,
+   "downvotes": 1812,
+   "score": 0.7609,
+   "reviews": 9,
+   "sentiment": "MIXED"
+  },
+  "uploaded": "2018-05-11T12:36:36Z",
+  "automapper": false,
+  "ranked": false,
+  "qualified": false,
+  "blRanked": false,
+  "declaredAi": "None",
+  "tags": [
+   "rock"
+  ],
+  "description": "",
+  "uploader": {
+   "name": "freeek"
+  },
+  "versions": [
+   {
+    "hash": "9b0881baab8b72f33424ecf0d9ad247ea10afbb2",
+    "key": "3a",
+    "state": "Published",
+    "downloadURL": "https://r2cdn.beatsaver.com/9b0881baab8b72f33424ecf0d9ad247ea10afbb2.zip"
+   }
+  ]
+ }
+}
