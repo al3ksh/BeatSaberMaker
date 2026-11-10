@@ -10,6 +10,12 @@ from pathlib import Path
 class Config:
     custom_levels: Path
     data_dir: Path
+    base_dir: Path = Path(".")  # folder holding bsmaker.toml
+
+    @property
+    def playability_path(self) -> Path | None:
+        p = self.base_dir / "playability.toml"
+        return p if p.is_file() else None
 
     @property
     def manifest_path(self) -> Path:
@@ -42,4 +48,5 @@ def load_config(path: Path | None = None) -> Config:
     return Config(
         custom_levels=Path(data["custom_levels"]),
         data_dir=Path(data["data_dir"]),
+        base_dir=path.parent,
     )
