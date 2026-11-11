@@ -13,6 +13,7 @@ from bsmaker.formats.model import Note
 
 _RANK_NUMBERS = {"Easy": 1, "Normal": 3, "Hard": 5, "Expert": 7, "ExpertPlus": 9}
 _AUTHOR = "BeatSaberMaker"
+_FFMPEG_TIMEOUT_S = 300
 
 
 def _png(size: int, rgb: tuple[int, int, int]) -> bytes:
@@ -28,14 +29,17 @@ def _png(size: int, rgb: tuple[int, int, int]) -> bytes:
 
 
 def _encode_audio(src: Path, dst: Path) -> None:
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
            "-c:a", "libvorbis", "-q:a", "6", "-f", "ogg", str(dst)]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT_S)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S} s encoding song.egg") from e
     except FileNotFoundError as e:
         raise RuntimeError("ffmpeg not found on PATH; cannot encode song.egg") from e
     if res.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed (exit {res.returncode}): {res.stderr.strip()}")
+        lines = res.stderr.strip().splitlines()
+        raise RuntimeError(f"ffmpeg failed (exit {res.returncode}): {lines[-1] if lines else ''}")
 
 
 def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, njs: float,

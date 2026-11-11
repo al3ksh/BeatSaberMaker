@@ -41,3 +41,7 @@ normalised title is its own song), stores the smallest key of the group in `maps
 sets every `difficulties.split` to `assign_split(song_id)`. It is idempotent. Re-indexing keeps
 an existing row's split; run `resplit` after indexing new maps. The manifest schema version
 lives in `PRAGMA user_version` (2); older files are migrated by adding `maps.song_id`.
+
+Splits are frozen for a model generation: `index.json` of the event cache stores the split of every
+difficulty at `data build-events` time. After any `data resplit` that changes a split, rebuild the
+event cache with `data build-events` and retrain both models (`resplit` prints a warning).

@@ -92,7 +92,10 @@ def resplit_cmd() -> None:
     conn = open_manifest(cfg.manifest_path)
     before = {r[0]: r[1] for r in conn.execute(
         "SELECT split, COUNT(*) FROM difficulties GROUP BY split")}
+    rows_before = {r[0]: r[1] for r in conn.execute("SELECT rowid, split FROM difficulties")}
     after = resplit(conn)
+    rows_after = {r[0]: r[1] for r in conn.execute("SELECT rowid, split FROM difficulties")}
+    changed = sum(1 for k, v in rows_after.items() if rows_before.get(k) != v)
     n_maps, n_songs = conn.execute(
         "SELECT COUNT(*), COUNT(DISTINCT song_id) FROM maps").fetchone()
     lines = [f"difficulties per split before: {dict(sorted(before.items(), key=str))}",
@@ -108,6 +111,9 @@ def resplit_cmd() -> None:
         lines.append(f"  {r['song_id']}: {r['n']} maps, titles {titles}")
     text = "\n".join(lines)
     print(text)
+    if changed:
+        print(f"WARNING: {changed} difficulties changed split; the event cache still holds the "
+              "old splits. Rebuild it with `data build-events` and retrain the models.")
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     (cfg.reports_dir / "resplit.txt").write_text(text + "\n", encoding="utf-8")
 
@@ -250,6 +256,10 @@ def scrape_cmd(max_maps: int = typer.Option(20000, "--max-maps", help="Maximum m
 
 train_app = typer.Typer(help="Model training commands.", no_args_is_help=True)
 app.add_typer(train_app, name="train")
+
+
+_NO_PLAYABILITY_WARNING = ("playability.toml not found next to bsmaker.toml; "
+                           "using built-in mask defaults")
 
 
 def _fail(message: str) -> None:
@@ -414,11 +424,15 @@ def generate_cmd(
         mask_cfg = load_playability_config(cfg.playability_path, "mask")
         require_stats(timing.stats)
         require_stats(pattern.stats, ("mel_mean", "mel_std"))
+        extra = ()
+        if cfg.playability_path is None:
+            extra = (_NO_PLAYABILITY_WARNING,)
+            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
         result = generate_map(
             audio, nps=nps, styles=tuple(style), seed=seed,
             out_dir=out if out is not None else cfg.custom_levels, timing=timing,
             pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
-            overwrite=overwrite)
+            overwrite=overwrite, extra_warnings=extra)
     except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     for w in result.warnings:
@@ -443,6 +457,12 @@ def preview(folder: Path = typer.Argument(..., help="Map folder."),
         target = Path.cwd() / f"preview - {folder.resolve().name}.wav"
     else:
         target = out
+    try:
+        levels = load_config().custom_levels
+    except Exception:  # noqa: BLE001 - no usable config: nothing to guard
+        levels = None
+    if levels is not None and inside(target, levels):
+        _fail("preview output must not be inside the CustomLevels folder; pass --out elsewhere")
     try:
         path = render_preview(folder, target, rank=rank)
     except (ValueError, OSError, AudioDecodeError, FfmpegMissingError) as e:
@@ -499,6 +519,8 @@ def eval_cmd(
         require_stats(timing.stats)
         require_stats(pattern.stats, ("mel_mean", "mel_std"))
         mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        if cfg.playability_path is None:
+            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
     except (GenerateError, ValueError, KeyError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     steps = {name: load_checkpoint(ck).get("step", "?")

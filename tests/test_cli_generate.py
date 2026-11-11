@@ -112,3 +112,19 @@ def test_cli_internal_keyerror_propagates(tmp_path, monkeypatch):
                                  str(tmp_path / "o3"), "--device", "cpu"])
     assert r.exit_code == 1 and isinstance(r.exception, KeyError)
     assert "dataset stats" not in r.output
+
+
+def test_cli_generate_warns_without_playability_toml(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    audio = write_audio(tmp_path / "a.wav")
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--style", "tech",
+                                 "--out", str(tmp_path / "out"), "--device", "cpu"])
+    assert r.exit_code == 0, r.output
+    assert "playability.toml not found" in r.output
+
+
+def test_resplit_runs_and_warns_only_on_change(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch, checkpoints=False)
+    r = CliRunner().invoke(app, ["data", "resplit"])
+    assert r.exit_code == 0, r.output
+    assert "WARNING" not in r.output

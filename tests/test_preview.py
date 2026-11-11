@@ -167,3 +167,21 @@ def test_sample_accuracy(tmp_path):
     first = int(np.flatnonzero(x)[0])
     # first sample of a linear fade-in is 0, so allow a couple of samples
     assert abs(first - round(t * SR)) <= 2
+
+
+def test_preview_refuses_output_in_custom_levels(tmp_path, monkeypatch):
+    folder = _map(tmp_path, [_n(1.0, 0)])
+    levels = tmp_path / "levels"
+    levels.mkdir()
+    cfg = tmp_path / "bsmaker.toml"
+    cfg.write_text(f"custom_levels = '{levels}'\ndata_dir = '{tmp_path / 'data'}'\n",
+                   encoding="utf-8")
+    from bsmaker import cli
+    from bsmaker.config import load_config
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: load_config(cfg))
+    monkeypatch.chdir(levels)
+    res = CliRunner().invoke(app, ["preview", str(folder)])
+    assert res.exit_code == 1 and "CustomLevels" in res.output
+    assert list(levels.iterdir()) == []
+    res = CliRunner().invoke(app, ["preview", str(folder), "--out", str(levels / "x.wav")])
+    assert res.exit_code == 1 and list(levels.iterdir()) == []

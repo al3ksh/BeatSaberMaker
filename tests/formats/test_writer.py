@@ -74,3 +74,20 @@ def test_ffmpeg_failure_leaves_no_folder(tmp_path):
     with pytest.raises(RuntimeError, match="ffmpeg"):
         _write(tmp_path / "BSM - x", audio_src=bad)
     assert not (tmp_path / "BSM - x").exists()
+
+
+def test_ffmpeg_timeout_is_a_clean_error(tmp_path, monkeypatch):
+    import subprocess
+
+    from bsmaker.formats import writer as W
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["timeout"] = cmd, kw.get("timeout")
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+    monkeypatch.setattr(W.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        W._encode_audio(tmp_path / "a.wav", tmp_path / "b.egg")
+    assert "-nostdin" in seen["cmd"] and seen["timeout"] == 300
