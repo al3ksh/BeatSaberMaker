@@ -148,8 +148,11 @@ def test_slider_drop_removes_empty_event():
     assert drop_slider_tails(events, 0.0) == events
 
 
-def test_allowed_ignores_slider_gap():
-    state = initial_state()
-    a = allowed(state, 1.0, 1, CFG)
-    b = allowed(state, 1.0, 1, SLIDER)
-    assert (a == b).all()
+def test_allowed_refuses_a_profile_with_slider_tails():
+    import pytest
+
+    from bsmaker.playability.checker import allowed
+    from bsmaker.playability.config import PlayabilityConfig
+    from bsmaker.playability.state import initial_state
+    with pytest.raises(ValueError):
+        allowed(initial_state(), 0.0, 0, PlayabilityConfig(slider_gap_s=0.12))

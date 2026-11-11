@@ -246,3 +246,35 @@ def test_429_counter_and_thread_safe_throttle(no_sleep):
     c = _client(handler)
     assert c.search(0) == []
     assert c.n_429 == 1
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-5", "soon"])
+def test_unusable_retry_after_falls_back_to_normal_backoff(no_sleep, bad):
+    n = {"c": 0}
+
+    def handler(req):
+        n["c"] += 1
+        if n["c"] == 1:
+            return httpx.Response(429, headers={"Retry-After": bad})
+        return httpx.Response(200, json={})
+
+    _client(handler).get_maps_by_ids(["1"])
+    assert 1.0 in no_sleep  # 2 ** attempt 0
+    assert all(0 <= x < 5 for x in no_sleep)
+
+
+@pytest.mark.parametrize("exc", [httpx.DecodingError("bad gzip"), httpx.InvalidURL("bad url")])
+def test_every_httpx_error_surfaces_as_beatsaver_error(no_sleep, exc):
+    def handler(req):
+        raise exc
+
+    with pytest.raises(BeatSaverError):
+        _client(handler, max_retries=1).get_maps_by_ids(["1"])
+
+
+def test_download_invalid_url_error_is_beatsaver_error(tmp_path):
+    def handler(req):
+        raise httpx.InvalidURL("bad")
+
+    with pytest.raises(BeatSaverError):
+        _client(handler).download("https://r2cdn.beatsaver.com/a.zip", tmp_path / "a.zip")

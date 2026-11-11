@@ -5,6 +5,7 @@ from pathlib import Path
 
 import typer
 
+from bsmaker.audio.decode import FfmpegMissingError, require_ffmpeg
 from bsmaker.config import load_config
 from bsmaker.formats.events import to_events
 from bsmaker.formats.reader import read_map
@@ -29,9 +30,19 @@ data_app = typer.Typer(help="Dataset commands.", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 
 
-def _summarise(conn, s, report_name: str, cfg) -> None:
+def _require_ffmpeg() -> None:
+    """Exit with code 2 and a clear message when ffmpeg or ffprobe is not on PATH."""
+    try:
+        require_ffmpeg()
+    except FfmpegMissingError as e:
+        typer.echo(f"{e}; install ffmpeg and put it on PATH", err=True)
+        raise typer.Exit(2) from None
+
+
+def _summarise(conn, s, report_name: str, cfg, source: str) -> None:
     per_rank = Counter(r["rank"] for r in conn.execute(
-        "SELECT rank FROM difficulties WHERE accepted = 1"))
+        "SELECT d.rank FROM difficulties d JOIN maps m ON m.key = d.map_key "
+        "WHERE d.accepted = 1 AND m.source = ?", (source,)))
     lines = [f"n_maps (unique folders): {s.n_maps}",
              f"n_duplicate_keys skipped: {s.n_duplicate_keys}",
              f"unreadable: {s.reasons.get('unreadable', 0)}",
@@ -50,16 +61,18 @@ def _summarise(conn, s, report_name: str, cfg) -> None:
 @data_app.command("index-local")
 def index_local() -> None:
     """Index the local CustomLevels folder into the manifest (data playability profile)."""
+    _require_ffmpeg()
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
     s = index_folder(conn, cfg.custom_levels,
                      load_playability_config(cfg.playability_path, "data"), progress_every=100)
-    _summarise(conn, s, "index-local.txt", cfg)
+    _summarise(conn, s, "index-local.txt", cfg, "local")
 
 
 @data_app.command("index-raw")
 def index_raw() -> None:
     """Index the downloaded BeatSaver maps in the raw folder (data playability profile)."""
+    _require_ffmpeg()
     cfg = load_config()
     if not cfg.raw_dir.is_dir():
         print(f"raw folder does not exist: {cfg.raw_dir}")
@@ -67,12 +80,13 @@ def index_raw() -> None:
     conn = open_manifest(cfg.manifest_path)
     s = index_folder(conn, cfg.raw_dir, load_playability_config(cfg.playability_path, "data"),
                      source="beatsaver", progress_every=100)
-    _summarise(conn, s, "index-raw.txt", cfg)
+    _summarise(conn, s, "index-raw.txt", cfg, "beatsaver")
 
 
 @data_app.command("features")
 def features() -> None:
     """Compute log-mel features for every map with an accepted difficulty."""
+    _require_ffmpeg()
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
     computed, failed = build_features(conn, cfg.features_dir, progress_every=100)
@@ -144,6 +158,8 @@ def check_map(folder: str, profile: str = typer.Option(
         pcfg = load_playability_config(load_config().playability_path, profile)
     except FileNotFoundError:
         pcfg = load_playability_config(None, profile)
+        typer.echo("warning: no playability.toml found; using built-in defaults "
+                   "(no rare-token blocking)", err=True)
     except ValueError as e:
         typer.echo(str(e).splitlines()[0], err=True)
         raise typer.Exit(2) from None
@@ -170,6 +186,7 @@ def scrape_cmd(max_maps: int = typer.Option(20000, "--max-maps", help="Maximum m
 
     from bsmaker.data.scrape import scrape
 
+    _require_ffmpeg()
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
     t0 = time.monotonic()

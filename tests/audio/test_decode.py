@@ -51,3 +51,18 @@ def test_write_compact_is_mono_22050(tmp_path):
     assert abs(len(a) - 2 * SAMPLE_RATE) <= 0.02 * 2 * SAMPLE_RATE
     info = sf.info(out)
     assert info.channels == 1 and info.samplerate == SAMPLE_RATE
+
+
+def test_missing_ffmpeg_is_not_a_decode_failure(tmp_path, monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from bsmaker.audio.decode import AudioDecodeError, FfmpegMissingError, decode_mono
+
+    def missing(*a, **k):
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(subprocess, "run", missing)
+    with pytest.raises(FfmpegMissingError) as info:
+        decode_mono(tmp_path / "x.ogg")
+    assert not isinstance(info.value, AudioDecodeError)

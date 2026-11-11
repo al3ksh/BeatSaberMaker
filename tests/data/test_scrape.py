@@ -284,3 +284,30 @@ def test_key_with_trailing_newline_rejected():
     assert [m.key for m in select_candidates(c, 10)] == ["cd"]
     with pytest.raises(BeatSaverError):
         download_one(FakeClient(), info("ab\n"), Path("unused"))
+
+
+def test_settle_error_does_not_leave_other_finished_futures_unsettled(tmp_path, monkeypatch):
+    import sqlite3
+    real = scrape_mod.upsert_map
+
+    def flaky(conn, row, **kw):
+        if row.get("key") == "1a" and row.get("download_state") == "done":
+            raise sqlite3.OperationalError("database is locked")
+        return real(conn, row, **kw)
+    monkeypatch.setattr(scrape_mod, "upsert_map", flaky)
+    c = FakeClient(ranked=[info("1a", ranked=True), info("2b", ranked=True)])
+    cfg = _cfg(tmp_path)
+    conn = open_manifest(cfg.manifest_path)
+    with pytest.raises(sqlite3.OperationalError):
+        scrape(conn, c, cfg, max_maps=2, free_bytes=lambda p: MIN_FREE_BYTES * 2)
+    assert conn.execute("SELECT download_state FROM maps WHERE key='2b'").fetchone()[0] == "done"
+
+
+def test_scrape_indexes_only_what_it_downloaded(tmp_path):
+    cfg = _cfg(tmp_path)
+    shutil.copytree(FIX, cfg.raw_dir / "9f")  # an older raw folder, not part of this run
+    conn = open_manifest(cfg.manifest_path)
+    s = scrape(conn, FakeClient(ranked=[info("1a", ranked=True)]), cfg, max_maps=1,
+               free_bytes=lambda p: MIN_FREE_BYTES * 2)
+    assert s.downloaded == 1
+    assert [r["key"] for r in conn.execute("SELECT key FROM maps")] == ["1a"]

@@ -51,3 +51,14 @@ def test_missing_sidecar_is_a_miss(tmp_path, monkeypatch):
     monkeypatch.setattr(mel_mod, "decode_mono", lambda p: calls.append(p) or real(p))
     cached_log_mel(src, cache)
     assert len(calls) == 1
+
+
+def test_corrupt_cached_npy_is_a_miss(tmp_path):
+    src = tmp_path / "a.wav"
+    sf.write(src, np.zeros(SAMPLE_RATE, dtype=np.float32), SAMPLE_RATE)
+    cache = tmp_path / "a.npy"
+    first = cached_log_mel(src, cache)
+    cache.write_bytes(b"truncated garbage")  # sidecar still matches the source
+    again = cached_log_mel(src, cache)
+    assert np.array_equal(first, again)
+    assert np.array_equal(np.load(cache), first)

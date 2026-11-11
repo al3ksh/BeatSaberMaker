@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+from collections.abc import Callable
 from pathlib import Path
 
+from bsmaker.audio.decode import AudioDecodeError
 from bsmaker.audio.mel import cached_log_mel
 from bsmaker.formats.reader import read_map
 
@@ -22,23 +25,46 @@ def _mark_no_audio(conn, key: str) -> None:
     conn.commit()
 
 
-def build_features(conn, features_dir: Path, progress_every: int = 0) -> tuple[int, int]:
-    """Write features_dir/<key>.npy per map with an accepted difficulty; return (computed, failed)."""
+MIN_FREE_BYTES = 10 * 2**30
+
+
+def _default_free(path: Path) -> int:
+    return shutil.disk_usage(path).free
+
+
+def build_features(conn, features_dir: Path, progress_every: int = 0,
+                   free_bytes: Callable[[Path], int] = _default_free) -> tuple[int, int]:
+    """Write features_dir/<key>.npy per map with an accepted difficulty; return (computed, failed).
+
+    Only a failed decode of that map's audio marks it `no_audio`. Environment errors (missing
+    ffmpeg, OSError such as a full disk, sqlite3.Error) propagate. The run stops with a message
+    when free space in `features_dir` drops below 10 GB.
+    """
     features_dir = Path(features_dir)
-    keys = [r["map_key"] for r in conn.execute(
-        "SELECT DISTINCT map_key FROM difficulties WHERE accepted = 1 ORDER BY map_key")]
+    features_dir.mkdir(parents=True, exist_ok=True)
+    # fetchall: do not hold a read transaction open across slow decoding
+    todo = conn.execute(
+        "SELECT DISTINCT d.map_key AS key, m.folder AS folder FROM difficulties d "
+        "JOIN maps m ON m.key = d.map_key WHERE d.accepted = 1 ORDER BY d.map_key").fetchall()
     computed = failed = 0
-    for i, key in enumerate(keys, 1):
+    for i, row in enumerate(todo, 1):
         if progress_every and i % progress_every == 0:
-            print(f"  features {i}/{len(keys)}", flush=True)
-        folder = conn.execute("SELECT folder FROM maps WHERE key = ?", (key,)).fetchone()["folder"]
-        try:
-            audio = read_map(Path(folder)).audio_path
-            if audio is None:
-                raise FileNotFoundError("no audio file")
-            cached_log_mel(audio, features_dir / f"{key}.npy")
-            computed += 1
-        except Exception:  # noqa: BLE001 - a decode failure must not stop the run
+            print(f"  features {i}/{len(todo)}", flush=True)
+        if free_bytes(features_dir) < MIN_FREE_BYTES:
+            print(f"stopping: free space in {features_dir} is below "
+                  f"{MIN_FREE_BYTES // 2**30} GB; {len(todo) - i + 1} maps left", flush=True)
+            break
+        key = row["key"]
+        audio = read_map(Path(row["folder"])).audio_path
+        if audio is None:
             _mark_no_audio(conn, key)
             failed += 1
+            continue
+        try:
+            cached_log_mel(audio, features_dir / f"{key}.npy")
+        except AudioDecodeError:
+            _mark_no_audio(conn, key)
+            failed += 1
+        else:
+            computed += 1
     return computed, failed

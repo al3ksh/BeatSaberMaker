@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from typer.testing import CliRunner
 
@@ -80,3 +81,49 @@ def test_index_raw_missing_dir_exits_zero(tmp_path: Path, monkeypatch) -> None:
     _project(tmp_path, monkeypatch)
     result = CliRunner().invoke(app, ["data", "index-raw"])
     assert result.exit_code == 0 and "does not exist" in result.output
+
+
+def test_check_warns_when_no_playability_toml(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)  # no bsmaker.toml, no playability.toml
+    result = CliRunner().invoke(app, ["check", str(FIXTURES / "v2_basic")])
+    assert result.exit_code == 0, result.output
+    warnings = [ln for ln in result.output.splitlines() if "built-in defaults" in ln]
+    assert len(warnings) == 1 and "playability.toml" in warnings[0]
+
+
+def test_check_does_not_warn_with_playability_toml(tmp_path: Path, monkeypatch) -> None:
+    _project(tmp_path, monkeypatch)
+    result = CliRunner().invoke(app, ["check", str(FIXTURES / "v2_basic")])
+    assert "built-in defaults" not in result.output
+
+
+@pytest.mark.parametrize("args", [["data", "index-local"], ["data", "index-raw"],
+                                  ["data", "features"], ["data", "scrape"]])
+def test_data_commands_exit_2_without_ffmpeg(tmp_path: Path, monkeypatch, args) -> None:
+    import shutil
+    _project(tmp_path, monkeypatch)
+    monkeypatch.setattr("bsmaker.cli.BeatSaverClient", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not reach the network")))
+    real = shutil.which
+    monkeypatch.setattr(shutil, "which",
+                        lambda name, *a, **k: None if name in ("ffmpeg", "ffprobe") else real(name, *a, **k))
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 2
+    assert "ffmpeg" in result.output
+    assert not (tmp_path / "data" / "manifest.sqlite").exists()
+
+
+def test_summarise_counts_only_the_indexed_source(tmp_path: Path) -> None:
+    from bsmaker.cli import _summarise
+    from bsmaker.config import Config
+    from bsmaker.data.index_local import IndexSummary
+    from bsmaker.data.manifest import open_manifest, upsert_difficulty, upsert_map
+    cfg = Config(custom_levels=tmp_path, data_dir=tmp_path / "d", base_dir=tmp_path)
+    conn = open_manifest(cfg.manifest_path)
+    for key, source, rank in (("1a", "local", "Easy"), ("2b", "beatsaver", "Expert")):
+        upsert_map(conn, {"key": key, "source": source})
+        upsert_difficulty(conn, {"map_key": key, "characteristic": "Standard", "rank": rank,
+                                 "accepted": 1})
+    _summarise(conn, IndexSummary(), "r.txt", cfg, "beatsaver")
+    text = (cfg.reports_dir / "r.txt").read_text("utf-8")
+    assert "Expert: 1" in text and "Easy" not in text

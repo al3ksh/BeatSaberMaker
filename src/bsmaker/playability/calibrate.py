@@ -7,8 +7,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import numpy as np
-
 from bsmaker.formats.events import Event, to_events
 from bsmaker.formats.reader import read_map
 from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
@@ -40,7 +38,6 @@ class CalibrationResult:
     pass_share: float
     pass_share_02: float
     rule_note_share: dict[str, float]
-    hand_gap_p01_s: float
     rare_tokens: tuple[frozenset[int], frozenset[int]]
     config: PlayabilityConfig
 
@@ -53,37 +50,21 @@ class Calibration:
     start: CalibrationResult  # data profile before any ladder step
 
 
-def _hand_gaps(events: Sequence[Event]) -> list[float]:
-    gaps: list[float] = []
-    last: list[float | None] = [None, None]
-    for e in events:
-        for hand, token in ((0, e.left), (1, e.right)):
-            if token == NONE_TOKEN:
-                continue
-            if last[hand] is not None:
-                gaps.append(e.time_s - last[hand])
-            last[hand] = e.time_s
-    return gaps
-
-
 def measure(event_lists: Sequence[Sequence[Event]], cfg: PlayabilityConfig) -> CalibrationResult:
     """Check every list with `cfg`; pass = hard_rate <= 0.01 (also reports the share <= 0.02)."""
     passed = 0
     passed_02 = 0
     notes = 0
     counts: Counter[str] = Counter()
-    gaps: list[float] = []
     for events in event_lists:
         report = check(events, cfg)
         passed += report.hard_rate <= PASS_HARD_RATE
         passed_02 += report.hard_rate <= PASS_HARD_RATE_02
         notes += report.n_notes
         counts.update(v.rule for v in report.hard)
-        gaps.extend(_hand_gaps(events))
     n = len(event_lists)
     share = {r: counts.get(r, 0) / max(notes, 1) for r in HARD_RULE_NAMES}
-    p01 = float(np.percentile(gaps, 1)) if gaps else 0.0
-    return CalibrationResult(n, passed / n if n else 0.0, passed_02 / n if n else 0.0, share, p01,
+    return CalibrationResult(n, passed / n if n else 0.0, passed_02 / n if n else 0.0, share,
                              cfg.rare_tokens, cfg)
 
 
@@ -150,7 +131,8 @@ def write_playability_toml(mask: PlayabilityConfig, data: PlayabilityConfig, pat
 def collect_event_lists(conn: sqlite3.Connection) -> list[list[Event]]:
     """Event lists of local Standard difficulties with no requirements and clean flags."""
     lists: list[list[Event]] = []
-    for row in conn.execute("SELECT folder FROM maps WHERE source = 'local' ORDER BY key"):
+    # fetchall: a live cursor would keep a read transaction open during the slow map reads
+    for row in conn.execute("SELECT folder FROM maps WHERE source = 'local' ORDER BY key").fetchall():
         try:
             bm = read_map(Path(row["folder"]))
         except Exception:  # noqa: BLE001 - untrusted map, skip it

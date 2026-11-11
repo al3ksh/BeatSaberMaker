@@ -1,6 +1,7 @@
 """Minimal BeatSaver API client. API responses are untrusted data: parsed, never executed."""
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Sequence
@@ -108,9 +109,11 @@ class BeatSaverClient:
     def _backoff(resp: httpx.Response | None, attempt: int) -> float:
         if resp is not None:
             try:
-                return min(max(float(resp.headers["Retry-After"]), 0.0), MAX_BACKOFF_S)
+                wait = float(resp.headers["Retry-After"])
             except (KeyError, ValueError):
-                pass
+                wait = math.nan
+            if math.isfinite(wait) and wait >= 0:
+                return min(wait, MAX_BACKOFF_S)
         return min(2.0 ** attempt, MAX_BACKOFF_S)
 
     def _get_json(self, path: str, params: dict | None = None) -> object:
@@ -120,7 +123,9 @@ class BeatSaverClient:
             resp: httpx.Response | None = None
             try:
                 resp = self._http.get(path, params=params)
-            except httpx.TransportError as exc:
+            except httpx.InvalidURL as exc:
+                raise BeatSaverError(f"GET {path}: invalid URL: {exc}") from exc
+            except httpx.HTTPError as exc:
                 last = f"transport error: {exc}"
             else:
                 if resp.status_code == 429 or resp.status_code >= 500:
@@ -202,7 +207,7 @@ class BeatSaverClient:
         except BeatSaverError:
             tmp.unlink(missing_ok=True)
             raise
-        except (httpx.HTTPError, OSError) as exc:
+        except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
             tmp.unlink(missing_ok=True)
             raise BeatSaverError(f"download {url} failed: {exc}") from exc
         except BaseException:

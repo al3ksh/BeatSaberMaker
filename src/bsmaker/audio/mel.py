@@ -41,7 +41,7 @@ def cached_log_mel(audio_path: Path, cache_path: Path) -> np.ndarray:
     try:
         if json.loads(sidecar.read_text("utf-8")) == meta:
             return np.load(cache_path)
-    except (OSError, ValueError):
+    except (OSError, ValueError, EOFError):  # unreadable sidecar or .npy: recompute
         pass
     mel = log_mel(decode_mono(audio_path))
     cache_path.parent.mkdir(parents=True, exist_ok=True)

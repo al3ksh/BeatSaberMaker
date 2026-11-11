@@ -135,3 +135,9 @@ def test_render_report_lists_steps() -> None:
     cal = calibrate([turn90_list()])
     text = render_report(cal)
     assert "pass share" in text and LADDER[0][0] in text and "mask" in text
+
+
+def test_calibration_result_has_no_dead_hand_gap_field():
+    from bsmaker.playability import calibrate
+    assert "hand_gap_p01_s" not in calibrate.CalibrationResult.__dataclass_fields__
+    assert not hasattr(calibrate, "_hand_gaps")

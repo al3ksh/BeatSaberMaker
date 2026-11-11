@@ -42,3 +42,32 @@ def test_iter_accepted_filters_by_split(tmp_path):
     upsert_difficulty(conn, _diff("c", split="train", accepted=0))
     assert {r["map_key"] for r in iter_accepted(conn)} == {"a", "b"}
     assert [r["map_key"] for r in iter_accepted(conn, "val")] == ["b"]
+
+
+def test_open_manifest_uses_wal_and_long_timeout(tmp_path):
+    conn = open_manifest(tmp_path / "m.sqlite")
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1  # NORMAL
+
+
+def test_open_reader_cursor_does_not_block_a_committing_writer(tmp_path):
+    path = tmp_path / "m.sqlite"
+    reader = open_manifest(path)
+    for i in range(5):
+        upsert_map(reader, {"key": f"a{i}", "source": "local"})
+    cur = reader.execute("SELECT key FROM maps ORDER BY key")
+    cur.fetchone()  # cursor stays open, as in a slow row-by-row loop
+    writer = sqlite3.connect(path, timeout=0.5)
+    writer.execute("INSERT INTO maps (key, source) VALUES ('zz', 'local')")
+    writer.commit()  # must not raise "database is locked"
+    writer.close()
+    assert len(cur.fetchall()) == 4
+
+
+def test_upsert_without_commit_can_be_rolled_back(tmp_path):
+    conn = open_manifest(tmp_path / "m.sqlite")
+    upsert_map(conn, {"key": "a1", "source": "local"}, commit=False)
+    upsert_difficulty(conn, _diff("a1"), commit=False)
+    conn.rollback()
+    assert conn.execute("SELECT COUNT(*) FROM maps").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM difficulties").fetchone()[0] == 0

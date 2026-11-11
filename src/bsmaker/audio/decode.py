@@ -1,6 +1,7 @@
 """Audio decoding through ffmpeg. Input files are treated as untrusted."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -16,12 +17,23 @@ class AudioDecodeError(Exception):
     """Raised when an audio file cannot be decoded."""
 
 
+class FfmpegMissingError(Exception):
+    """ffmpeg or ffprobe cannot be run: an environment problem, never a verdict on a file."""
+
+
+def require_ffmpeg() -> None:
+    """Raise FfmpegMissingError unless both ffmpeg and ffprobe are on PATH."""
+    missing = [t for t in ("ffmpeg", "ffprobe") if shutil.which(t) is None]
+    if missing:
+        raise FfmpegMissingError(f"{' and '.join(missing)} not found on PATH")
+
+
 def _run(args: list[str], path: Path) -> bytes:
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", *args]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=_TIMEOUT_S, shell=False)
     except FileNotFoundError as exc:
-        raise AudioDecodeError(f"ffmpeg not found while decoding {path}") from exc
+        raise FfmpegMissingError("ffmpeg not found on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise AudioDecodeError(f"ffmpeg timed out decoding {path}") from exc
     if proc.returncode != 0:

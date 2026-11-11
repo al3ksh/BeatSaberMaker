@@ -25,8 +25,11 @@ CREATE TABLE IF NOT EXISTS difficulties (
 def open_manifest(path: Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=120)
     conn.row_factory = sqlite3.Row
+    # WAL: readers never block the writer and the writer never blocks readers.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
     conn.commit()
     return conn
@@ -36,7 +39,8 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def _upsert(conn: sqlite3.Connection, table: str, pk: tuple[str, ...], row: dict) -> None:
+def _upsert(conn: sqlite3.Connection, table: str, pk: tuple[str, ...], row: dict,
+            commit: bool = True) -> None:
     unknown = set(row) - _columns(conn, table)
     if unknown:
         raise ValueError(f"unknown columns for {table}: {sorted(unknown)}")
@@ -49,16 +53,20 @@ def _upsert(conn: sqlite3.Connection, table: str, pk: tuple[str, ...], row: dict
     sql = (f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
            f"ON CONFLICT({', '.join(pk)}) {action}")
     conn.execute(sql, [row[c] for c in cols])
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def upsert_map(conn: sqlite3.Connection, row: dict) -> None:
-    """Insert, or update only the columns present in `row`."""
-    _upsert(conn, "maps", ("key",), row)
+def upsert_map(conn: sqlite3.Connection, row: dict, commit: bool = True) -> None:
+    """Insert, or update only the columns present in `row`.
+
+    `commit=False` leaves the write in the caller's transaction (the caller commits).
+    """
+    _upsert(conn, "maps", ("key",), row, commit)
 
 
-def upsert_difficulty(conn: sqlite3.Connection, row: dict) -> None:
-    _upsert(conn, "difficulties", ("map_key", "characteristic", "rank"), row)
+def upsert_difficulty(conn: sqlite3.Connection, row: dict, commit: bool = True) -> None:
+    _upsert(conn, "difficulties", ("map_key", "characteristic", "rank"), row, commit)
 
 
 def iter_accepted(conn: sqlite3.Connection, split: str | None = None) -> Iterator[sqlite3.Row]:

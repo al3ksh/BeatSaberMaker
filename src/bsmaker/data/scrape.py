@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sys
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
-from bsmaker.audio.decode import write_compact
+from bsmaker.audio.decode import FfmpegMissingError, write_compact
 from bsmaker.config import Config
 from bsmaker.data.beatsaver import BeatSaverClient, BeatSaverError, MapInfo
 from bsmaker.data.extract import safe_extract
@@ -145,27 +146,38 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
     running: dict[Future, str] = {}
     existing = {r["key"].lower(): r for r in conn.execute("SELECT key, source, download_state FROM maps")}
     n_settled = 0
+    downloaded_keys: set[str] = set()
 
     def progress() -> None:
         print(f"  {summary.downloaded} downloaded, {summary.skipped_existing} skipped, "
               f"{summary.failed} failed", flush=True)
 
     def settle(done: set[Future]) -> None:
+        """Record every finished future; re-raise the first environment/database error after."""
         nonlocal n_settled
+        first_error: BaseException | None = None
         for fut in done:
             key = running.pop(fut)
             try:
-                fut.result()
-            except Exception as exc:  # noqa: BLE001 - any failure of one map is just that map failing
-                print(f"  failed {key}: {type(exc).__name__}: {str(exc)[:120]!r}", flush=True)
-                summary.failed += 1
-                upsert_map(conn, {"key": key, "download_state": "failed"})
-            else:
-                summary.downloaded += 1
-                upsert_map(conn, {"key": key, "download_state": "done"})
+                try:
+                    fut.result()
+                except FfmpegMissingError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - any failure of one map is just that map failing
+                    print(f"  failed {key}: {type(exc).__name__}: {str(exc)[:120]!r}", flush=True)
+                    summary.failed += 1
+                    upsert_map(conn, {"key": key, "download_state": "failed"})
+                else:
+                    summary.downloaded += 1
+                    downloaded_keys.add(key)
+                    upsert_map(conn, {"key": key, "download_state": "done"})
+            except Exception as exc:  # noqa: BLE001 - keep settling the others, re-raise below
+                first_error = first_error or exc
             n_settled += 1
             if n_settled % PROGRESS_EVERY == 0:
                 progress()
+        if first_error is not None:
+            raise first_error
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         try:
@@ -192,10 +204,17 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
         except BeatSaverError as exc:
             print(f"candidate search failed, ending run: {str(exc)[:200]!r}", flush=True)
         finally:
+            drain_error: Exception | None = None
             while running:  # also runs on KeyboardInterrupt: finished work is recorded
-                settle(wait(running, return_when=FIRST_COMPLETED).done)
+                try:
+                    settle(wait(running, return_when=FIRST_COMPLETED).done)
+                except Exception as exc:  # noqa: BLE001 - keep draining, re-raise afterwards
+                    drain_error = drain_error or exc
+            if drain_error is not None and sys.exc_info()[1] is None:
+                raise drain_error
     progress()
 
-    index_folder(conn, raw_dir, load_playability_config(cfg.playability_path, "data"), source="beatsaver")
+    index_folder(conn, raw_dir, load_playability_config(cfg.playability_path, "data"),
+                 source="beatsaver", only_keys=downloaded_keys)
     return summary
 

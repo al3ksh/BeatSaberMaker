@@ -138,8 +138,11 @@ def allowed(
 ) -> np.ndarray:
     """Boolean mask over all tokens that break no hard rule for `hand` at `time_s`.
 
-    Ignores `cfg.slider_gap_s`: the generator does not produce slider tails in v1.
+    Only a profile without slider tails (`slider_gap_s == 0`, the mask profile) may drive
+    generation: `check()` drops slider tails first, so the mask would disagree with it.
     """
+    if cfg.slider_gap_s > 0:
+        raise ValueError("allowed() needs a profile with slider_gap_s == 0 (the mask profile)")
     ctx = _Ctx(state, time_s, hand, cfg, other_token)
     mask = np.zeros(VOCAB_SIZE, dtype=bool)
     mask[NONE_TOKEN] = True
