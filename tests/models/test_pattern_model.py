@@ -59,6 +59,7 @@ def test_encode_is_causal():
     y["mel_slices"][:, 5] += 1.0
     y["gaps"][:, 5] += 1.0
     y["prev_left"][:, 5] = (y["prev_left"][:, 5] + 1) % 109
+    y["prev_right"][:, 5] = (y["prev_right"][:, 5] + 1) % 109
     out = m.encode(**y)
     assert torch.allclose(base[:, :5], out[:, :5], atol=1e-6)
     assert not torch.allclose(base[:, 5:], out[:, 5:], atol=1e-6)
@@ -92,18 +93,46 @@ def test_slices_padded_at_edges():
 
 def test_prev_tokens_are_shifted_targets(tmp_path):
     ds = _ds(tmp_path, [1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12])
-    it = ds[0]
+    it = ds[0]  # run starts at the first event of the song
     assert it["prev_left"].tolist() == [BOS_TOKEN, 5, 6, 7]
     assert it["prev_right"].tolist() == [BOS_TOKEN, 9, 10, 11]
     assert it["left"].tolist() == [5, 6, 7, 8]
-    # a run in the middle of the song gets the real previous event and true gaps
-    ds2 = _ds(tmp_path, [1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6], [1] * 6, context=2)
-    ds2.fixed = True
-    seen = {ds2[0]["prev_left"][0].item() for _ in range(1)}
-    assert seen <= {BOS_TOKEN, 1, 2, 3, 4}
-    it = ds2[0]
-    if it["left"][0] != 1:
-        assert it["prev_left"][0] == it["left"][0] - 1 and it["gaps"][0, 0] > 0
+    assert it["gaps"][0, 0] == 0
+
+
+class _Rng:
+    """Stand-in generator: forces the run start."""
+
+    def __init__(self, start):
+        self.start = start
+
+    def integers(self, lo, hi):
+        assert lo <= self.start < hi
+        return self.start
+
+    def random(self):
+        return 1.0
+
+
+def test_mid_song_run_uses_true_neighbours(tmp_path, monkeypatch):
+    times = [1.0, 1.5, 2.5, 2.75, 4.0, 4.5, 6.0, 6.25, 7.0]
+    left = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    right = [11, 12, 13, 14, 15, 16, 17, 18, 19]
+    ds = _ds(tmp_path, times, left, right, context=4)
+    monkeypatch.setattr("bsmaker.models.pattern.dataset.np.random.default_rng",
+                        lambda *_: _Rng(3))
+    it = ds[0]  # events 3..6 of the song
+    assert it["left"].tolist() == [4, 5, 6, 7]
+    assert it["prev_left"].tolist() == [3, 4, 5, 6]
+    assert it["prev_right"].tolist() == [13, 14, 15, 16]
+    g = it["gaps"]
+    assert g[0, 0].item() == pytest.approx(np.log1p(times[3] - times[2]))
+    last = 6  # song index of the last position; events 7 and 8 follow, then none
+    assert g[3, 1].item() == pytest.approx(np.log1p(times[7] - times[last]))
+    assert g[3, 2].item() == pytest.approx(np.log1p(times[8] - times[last]))
+    assert g[3, 1] > 0 and g[3, 2] > 0
+    assert (g[3, 3:] == 0).all()
+    assert g[0, 4].item() == pytest.approx(np.log1p(times[7] - times[3]))
 
 
 def test_no_event_with_both_hands_empty_in_dataset(tmp_path):
