@@ -78,7 +78,11 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
     duration = probe_duration(bm.audio_path)
     row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
     automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
-    split = assign_split(key)
+    existing = {(r["characteristic"], r["rank"]): r["split"] for r in conn.execute(
+        "SELECT characteristic, rank, split FROM difficulties WHERE map_key = ?", (key,))}
+    # keep the split of a re-indexed map (set by `data resplit`); new maps get a per-key
+    # placeholder until the next resplit
+    map_split = next((s for s in existing.values() if s), None) or assign_split(key)
     diff_rows: list[dict] = []
     n_acc = 0
     counts: dict[str, int] = {}
@@ -93,7 +97,7 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
             "merged_notes": merged, "nps": nps(d.notes), "njs": d.njs,
             "njs_offset": d.njs_offset, "hard_rate": hard_rate,
             "accepted": 0 if reasons else 1, "reject_reasons": json.dumps(reasons),
-            "split": split,
+            "split": existing.get((d.characteristic, d.rank)) or map_split,
         })
         if reasons:
             for r in reasons:

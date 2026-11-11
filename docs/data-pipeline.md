@@ -31,3 +31,13 @@ Workers only write `.npy` files; the main process alone reads and writes the man
 `scrape` indexes only the maps it downloaded in that run plus maps marked `done` that have no
 difficulty rows (left unindexed by a crashed run); use `index-raw` to re-index everything
 in the raw folder.
+
+## Song-level split
+
+Train/val/test is assigned per song, not per map key: maps of the same song must never land in
+different splits. `bsmaker data resplit` groups all maps in the manifest (title+artist equal
+after normalisation, or equal title with durations within 2 s, transitively; an empty
+normalised title is its own song), stores the smallest key of the group in `maps.song_id` and
+sets every `difficulties.split` to `assign_split(song_id)`. It is idempotent. Re-indexing keeps
+an existing row's split; run `resplit` after indexing new maps. The manifest schema version
+lives in `PRAGMA user_version` (2); older files are migrated by adding `maps.song_id`.

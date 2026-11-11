@@ -23,6 +23,7 @@ from bsmaker.data.features import build_features
 from bsmaker.data.fetch_metadata import fetch_metadata
 from bsmaker.data.index_local import index_folder
 from bsmaker.data.manifest import open_manifest
+from bsmaker.data.songs import resplit
 from bsmaker.data.styles import STYLES, styles_from_tags
 from bsmaker.playability.config import PROFILES, load_playability_config
 
@@ -82,6 +83,33 @@ def index_raw() -> None:
     s = index_folder(conn, cfg.raw_dir, load_playability_config(cfg.playability_path, "data"),
                      source="beatsaver", progress_every=100)
     _summarise(conn, s, "index-raw.txt", cfg, "beatsaver")
+
+
+@data_app.command("resplit")
+def resplit_cmd() -> None:
+    """Group maps into songs and re-assign train/val/test by song (safe to repeat)."""
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    before = {r[0]: r[1] for r in conn.execute(
+        "SELECT split, COUNT(*) FROM difficulties GROUP BY split")}
+    after = resplit(conn)
+    n_maps, n_songs = conn.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT song_id) FROM maps").fetchone()
+    lines = [f"difficulties per split before: {dict(sorted(before.items(), key=str))}",
+             f"difficulties per split after: {after}",
+             f"maps: {n_maps}, songs: {n_songs}"]
+    big = conn.execute(
+        "SELECT song_id, COUNT(*) AS n FROM maps GROUP BY song_id ORDER BY n DESC, song_id "
+        "LIMIT 5").fetchall()
+    lines.append("largest groups:")
+    for r in big:
+        titles = [t[0] for t in conn.execute(
+            "SELECT DISTINCT title FROM maps WHERE song_id = ? LIMIT 3", (r["song_id"],))]
+        lines.append(f"  {r['song_id']}: {r['n']} maps, titles {titles}")
+    text = "\n".join(lines)
+    print(text)
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.reports_dir / "resplit.txt").write_text(text + "\n", encoding="utf-8")
 
 
 @data_app.command("features")
