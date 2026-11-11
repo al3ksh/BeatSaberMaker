@@ -269,3 +269,18 @@ def test_keyboard_interrupt_settles_finished(tmp_path):
         scrape(conn, c, cfg, max_maps=10, free_bytes=lambda p: MIN_FREE_BYTES * 2)
     states = {r[0]: r[1] for r in conn.execute("SELECT key, download_state FROM maps")}
     assert states == {"1a": "done", "2b": "done"}
+
+
+def test_rated_category_continues_past_pages_already_seen():
+    shared = [info(f"{i + 16:x}", ranked=True) for i in range(16)]  # 8 pages of 2
+    fresh = info("fff", score=0.9, upvotes=500)
+    rated = [info(m.key, score=0.9, upvotes=500) for m in shared] + [fresh]
+    c = FakeClient(ranked=shared, rated=rated)
+    assert [m.key for m in select_candidates(c, 100)][-1] == "fff"
+
+
+def test_key_with_trailing_newline_rejected():
+    c = FakeClient(ranked=[info("ab\n", ranked=True), info("cd", ranked=True)])
+    assert [m.key for m in select_candidates(c, 10)] == ["cd"]
+    with pytest.raises(BeatSaverError):
+        download_one(FakeClient(), info("ab\n"), Path("unused"))

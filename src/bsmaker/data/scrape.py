@@ -21,7 +21,7 @@ from bsmaker.playability.config import load_playability_config
 MIN_FREE_BYTES = 20 * 2**30
 MIN_SCORE = 0.85
 MIN_UPVOTES = 100
-_KEY_RE = re.compile(r"^[0-9a-f]{1,16}$")
+_KEY_RE = re.compile(r"[0-9a-f]{1,16}")
 MAX_STALE_PAGES = 5
 MAX_INFO_BYTES = 2**20
 PROGRESS_EVERY = 100
@@ -53,14 +53,16 @@ def select_candidates(client: BeatSaverClient, max_maps: int) -> Iterator[MapInf
     for _name, filters, keep in _CATEGORIES:
         page = 0
         stale = 0
+        returned: set[str] = set()  # every raw key this category has returned
         while stale < MAX_STALE_PAGES:
             docs = client.search(page, **filters)
             if not docs:
                 break
-            n_before = len(seen)
+            n_before = len(returned)
             for m in docs:
                 k = m.key.lower()
-                if not _KEY_RE.match(k):
+                returned.add(k)
+                if not _KEY_RE.fullmatch(k):
                     seen.add(k)
                     continue
                 if k in seen or m.automapper or not keep(m):
@@ -70,7 +72,7 @@ def select_candidates(client: BeatSaverClient, max_maps: int) -> Iterator[MapInf
                 yielded += 1
                 if yielded >= max_maps:
                     return
-            stale = stale + 1 if len(seen) == n_before else 0
+            stale = stale + 1 if len(returned) == n_before else 0
             page += 1
 
 
@@ -92,7 +94,7 @@ def _audio_name(folder: Path) -> str | None:
 def download_one(client: BeatSaverClient, info: MapInfo, raw_dir: Path) -> Path:
     """Download, extract and convert one map into raw_dir/<key>; returns the final folder."""
     key = info.key.lower()
-    if not _KEY_RE.match(key):
+    if not _KEY_RE.fullmatch(key):
         raise BeatSaverError(f"refusing unsafe map key {info.key!r}")
     raw_dir = Path(raw_dir)
     partial = raw_dir / f"{key}.partial"
