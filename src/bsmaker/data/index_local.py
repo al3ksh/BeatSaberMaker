@@ -46,7 +46,11 @@ def probe_duration(path: Path | None) -> float | None:
         value = float(json.loads(proc.stdout.decode("utf-8", "replace"))["format"]["duration"])
     except FileNotFoundError as exc:
         raise FfmpegMissingError("ffprobe not found on PATH") from exc
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+    except OSError:
+        if not Path(path).is_file():
+            return None  # the input file itself is missing or unreadable
+        raise  # e.g. PermissionError launching ffprobe: an environment problem
+    except (subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return None
     return value if math.isfinite(value) and value > 0 else None
 

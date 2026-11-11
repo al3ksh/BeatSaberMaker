@@ -146,6 +146,9 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
     running: dict[Future, str] = {}
     existing = {r["key"].lower(): r for r in conn.execute("SELECT key, source, download_state FROM maps")}
     n_settled = 0
+    unindexed = {r["key"].lower() for r in conn.execute(  # left behind by a crashed run
+        "SELECT key FROM maps WHERE download_state = 'done' "
+        "AND key NOT IN (SELECT map_key FROM difficulties)")}
     downloaded_keys: set[str] = set()
 
     def progress() -> None:
@@ -156,7 +159,7 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
         """Record every finished future; re-raise the first environment/database error after."""
         nonlocal n_settled
         first_error: BaseException | None = None
-        for fut in done:
+        for fut in sorted(done, key=lambda f: running[f]):
             key = running.pop(fut)
             try:
                 try:
@@ -215,6 +218,6 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
     progress()
 
     index_folder(conn, raw_dir, load_playability_config(cfg.playability_path, "data"),
-                 source="beatsaver", only_keys=downloaded_keys)
+                 source="beatsaver", only_keys=downloaded_keys | unindexed)
     return summary
 

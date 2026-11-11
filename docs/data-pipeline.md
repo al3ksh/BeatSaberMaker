@@ -25,5 +25,6 @@ database aborts the command; it is never recorded as a verdict on a map (`unread
 `no_audio`). `features` also stops with a message when free space in the features folder drops
 below 10 GB.
 
-`scrape` indexes only the maps it downloaded in that run; use `index-raw` to re-index everything
+`scrape` indexes only the maps it downloaded in that run plus maps marked `done` that have no
+difficulty rows (left unindexed by a crashed run); use `index-raw` to re-index everything
 in the raw folder.

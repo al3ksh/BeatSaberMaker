@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -55,8 +56,13 @@ def build_features(conn, features_dir: Path, progress_every: int = 0,
                   f"{MIN_FREE_BYTES // 2**30} GB; {len(todo) - i + 1} maps left", flush=True)
             break
         key = row["key"]
-        audio = read_map(Path(row["folder"])).audio_path
-        if audio is None:
+        try:
+            audio = read_map(Path(row["folder"])).audio_path
+        except sqlite3.Error:
+            raise
+        except Exception:  # noqa: BLE001 - this one map is unreadable now: record it, go on
+            audio = None
+        if audio is None or not Path(audio).is_file():
             _mark_no_audio(conn, key)
             failed += 1
             continue

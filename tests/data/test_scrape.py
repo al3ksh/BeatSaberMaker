@@ -311,3 +311,13 @@ def test_scrape_indexes_only_what_it_downloaded(tmp_path):
                free_bytes=lambda p: MIN_FREE_BYTES * 2)
     assert s.downloaded == 1
     assert [r["key"] for r in conn.execute("SELECT key FROM maps")] == ["1a"]
+
+
+def test_scrape_also_indexes_done_maps_without_difficulty_rows(tmp_path):
+    cfg = _cfg(tmp_path)
+    shutil.copytree(FIX, cfg.raw_dir / "9f")  # finished download, crash before indexing
+    conn = open_manifest(cfg.manifest_path)
+    upsert_map(conn, {"key": "9f", "source": "beatsaver", "download_state": "done"})
+    scrape(conn, FakeClient(ranked=[info("1a", ranked=True)]), cfg, max_maps=1,
+           free_bytes=lambda p: MIN_FREE_BYTES * 2)
+    assert conn.execute("SELECT COUNT(*) FROM difficulties WHERE map_key='9f'").fetchone()[0] > 0

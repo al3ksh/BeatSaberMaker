@@ -124,7 +124,7 @@ def test_build_features_and_decode_failure(tmp_path):
     conn.execute("UPDATE difficulties SET accepted=1, reject_reasons='[]'")
     conn.commit()
     feats = tmp_path / "features"
-    assert build_features(conn, feats) == (1, 1)
+    assert build_features(conn, feats, free_bytes=lambda p: 1 << 40) == (1, 1)
     assert (feats / "1f00.npy").is_file()
     bad = conn.execute("SELECT * FROM maps WHERE key='2f00'").fetchone()
     assert bad["audio_ok"] == 0
@@ -251,7 +251,7 @@ def test_build_features_environment_errors_propagate_without_verdicts(tmp_path, 
             raise _e
         monkeypatch.setattr(features, "cached_log_mel", fail)
         with pytest.raises(type(exc)):
-            build_features(conn, tmp_path / "features")
+            build_features(conn, tmp_path / "features", free_bytes=lambda p: 1 << 40)
     assert conn.execute("SELECT COUNT(*) FROM difficulties WHERE accepted=0").fetchone()[0] == 0
     assert conn.execute("SELECT audio_ok FROM maps").fetchone()[0] == 1
 
@@ -263,3 +263,56 @@ def test_build_features_stops_when_disk_is_low(tmp_path, capsys):
     assert "free space" in capsys.readouterr().out
     assert not list(feats.glob("*.npy"))
     assert conn.execute("SELECT COUNT(*) FROM difficulties WHERE accepted=0").fetchone()[0] == 0
+
+
+def _two_accepted(tmp_path):
+    root = tmp_path / "levels"
+    root.mkdir()
+    shutil.copytree(FIX / "v2_basic", root / "1f00 (A)")
+    shutil.copytree(FIX / "v2_basic", root / "2f00 (B)")
+    conn = open_manifest(tmp_path / "m.sqlite")
+    index_folder(conn, root, CFG)
+    conn.execute("UPDATE maps SET audio_ok=1")
+    conn.execute("UPDATE difficulties SET accepted=1, reject_reasons='[]'")
+    conn.commit()
+    return root, conn
+
+
+def _break_first(root, how):
+    a = root / "1f00 (A)"
+    if how == "deleted":
+        shutil.rmtree(a)
+    elif how == "corrupt_info":
+        (a / "Info.dat").write_text("{not json", "utf-8")
+    else:
+        (a / "song.egg").unlink()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("how", ["deleted", "corrupt_info", "audio_deleted"])
+def test_build_features_one_vanished_map_is_no_audio_and_run_continues(tmp_path, how):
+    root, conn = _two_accepted(tmp_path)
+    _break_first(root, how)
+    feats = tmp_path / "features"
+    assert build_features(conn, feats, free_bytes=lambda p: 1 << 40) == (1, 1)
+    assert (feats / "2f00.npy").is_file()
+    rows = conn.execute("SELECT accepted, reject_reasons FROM difficulties "
+                        "WHERE map_key='1f00'").fetchall()
+    assert rows and all(r["accepted"] == 0 and "no_audio" in r["reject_reasons"] for r in rows)
+
+
+def test_probe_duration_permission_error_propagates_but_missing_input_is_none(tmp_path, monkeypatch):
+    import subprocess
+
+    from bsmaker.data import index_local
+    existing = tmp_path / "a.ogg"
+    existing.write_bytes(b"x")
+
+    def denied(*a, **k):
+        raise PermissionError("launch")
+    monkeypatch.setattr(subprocess, "run", denied)
+    with pytest.raises(PermissionError):
+        index_local.probe_duration(existing)
+    assert index_local.probe_duration(tmp_path / "gone.ogg") is None
