@@ -12,7 +12,7 @@ from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.audio.mel import HOP, N_MELS
 from bsmaker.data.events_cache import Entry, EventCache
 from bsmaker.data.styles import UNKNOWN
-from bsmaker.models.common import log_nps_value, style_vector
+from bsmaker.models.common import log_nps_value, normalise_mel, style_vector
 
 
 def _frames(times_s: np.ndarray) -> np.ndarray:
@@ -52,8 +52,7 @@ class TimingWindows(Dataset):
         self.events_dir = Path(events_dir) if events_dir is not None else None
         self.entries = list(entries)
         self.features_dir = Path(features_dir)
-        self.mean = float(stats["mel_mean"])
-        self.std = float(stats["mel_std"]) or 1.0
+        self.stats = {"mel_mean": stats["mel_mean"], "mel_std": stats["mel_std"]}
         self.window = window
         self.seed = seed
         self.style_dropout = style_dropout
@@ -94,8 +93,7 @@ class TimingWindows(Dataset):
         start = int(rng.integers(0, total - self.window + 1)) if total > self.window else 0
         length = min(self.window, total - start)
         mel = np.zeros((self.window, N_MELS), dtype=np.float32)
-        mel[:length] = (np.asarray(mel_all[start:start + length], dtype=np.float32)
-                        - self.mean) / self.std
+        mel[:length] = normalise_mel(mel_all[start:start + length], self.stats)
         frames = _frames(self._event_times(e.i)) - start
         target = np.zeros(self.window, dtype=np.float32)
         target[:length] = _targets_from_frames(frames, length)

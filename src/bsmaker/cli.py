@@ -263,6 +263,8 @@ def train_timing(
         batch_size: int = typer.Option(32, "--batch-size"),
         num_workers: int = typer.Option(4, "--num-workers"),
         device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
+        eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
+        save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
         out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
                                         "(default: <data_dir>/checkpoints/timing).")) -> None:
     """Train the timing model on the event cache; resumes from the checkpoint folder."""
@@ -273,6 +275,7 @@ def train_timing(
     from bsmaker.data.events_cache import EventCache
     from bsmaker.data.stats import load_stats
     from bsmaker.models.timing.dataset import TimingWindows
+    from bsmaker.models.timing.decode import make_timing_eval, timing_better
     from bsmaker.models.timing.model import (
         TimingConfig, TimingModel, timing_eval, timing_step)
     from bsmaker.models.train_loop import TrainSettings, run_training
@@ -299,10 +302,11 @@ def train_timing(
     train_ds = TimingWindows(cache, train_entries, seed=0, **common)
     val_ds = TimingWindows(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
-                             device=device)
+                             device=device, eval_every=eval_every, save_every=save_every)
     result = run_training(
-        TimingModel(mcfg), train_ds, val_ds, timing_step, timing_eval,
+        TimingModel(mcfg), train_ds, val_ds, timing_step,
+        make_timing_eval(cache, val_all, cfg.features_dir, stats, timing_eval),
         out if out is not None else cfg.checkpoints_dir / "timing", settings, asdict(mcfg),
-        lambda new, best: best is None or new["loss"] < best["loss"],
+        timing_better,
         lambda m: print(m, flush=True), stats=stats)
     print(f"done at step {result['step']}, best {result['best']}")

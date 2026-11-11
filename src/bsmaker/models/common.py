@@ -26,6 +26,12 @@ def style_vector(styles: Iterable[str]) -> np.ndarray:
     return v
 
 
+def normalise_mel(mel: np.ndarray, stats: dict) -> np.ndarray:
+    """Float32 `(mel - mel_mean) / mel_std`; the one place this formula lives."""
+    std = float(stats["mel_std"]) or 1.0
+    return (np.asarray(mel, dtype=np.float32) - float(stats["mel_mean"])) / std
+
+
 def log_nps_value(nps: float) -> float:
     """Density conditioning value fed to `Conditioning`."""
     return float(np.log1p(max(nps, 0.0)))
