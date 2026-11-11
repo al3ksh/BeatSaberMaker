@@ -23,9 +23,13 @@ def fit_grid(beat_times_s: np.ndarray) -> Grid:
     t = np.asarray(beat_times_s, dtype=np.float64).ravel()
     if len(t) < 2:
         return Grid(120.0, 0.0, False)
-    k = np.arange(len(t), dtype=np.float64)
-    slope, intercept = np.polyfit(k, t, 1)
     fallback_interval = float(np.median(np.diff(t)))
+    if not fallback_interval > 0:
+        return Grid(120.0, 0.0, False)
+    # beat index from the time, so a missed beat does not shift later indices
+    steps = np.maximum(1.0, np.round(np.diff(t) / fallback_interval))
+    k = np.concatenate(([0.0], np.cumsum(steps)))
+    slope, intercept = np.polyfit(k, t, 1)
     if not (slope > 0 and np.isfinite(slope) and np.isfinite(intercept)):
         if fallback_interval > 0:
             return Grid(60.0 / fallback_interval, 0.0, False)
@@ -56,6 +60,7 @@ def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = 0.025) -> n
     beat = 60.0 / grid.bpm
     out = times.copy()
     prev = -np.inf
+    n = len(times)
     for i, t in enumerate(times):
         best = t
         best_shift = np.inf
@@ -64,11 +69,10 @@ def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = 0.025) -> n
             cand = grid.offset_s + np.round((t - grid.offset_s) / step) * step
             if abs(cand - t) < best_shift:
                 best, best_shift = cand, abs(cand - t)
-        value = best if best_shift <= max_shift_s else t
-        if value <= prev:
-            value = t
-        out[i] = value
-        prev = value
+        upper = times[i + 1] if i + 1 < n else np.inf
+        if best_shift <= max_shift_s and prev < best < upper:
+            out[i] = best
+        prev = out[i]
     return out
 
 

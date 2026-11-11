@@ -110,3 +110,35 @@ def test_unsteady_grid_leaves_times_alone():
 def test_to_beats():
     np.testing.assert_allclose(to_beats(np.array([0.0, 0.5, 1.0]), 120.0), [0.0, 1.0, 2.0])
     assert to_beats(np.array([]), 120.0).shape == (0,)
+
+
+def test_snap_regression_forward_snap_past_next_event():
+    out = snap_times(np.array([10.55809, 10.57170]), Grid(65.249, 0.1748, True))
+    assert np.all(np.diff(out) > 0)
+
+
+def test_snap_random_property():
+    rng = np.random.default_rng(7)
+    for _ in range(500):
+        bpm = rng.uniform(60, 240)
+        g = Grid(bpm, rng.uniform(0, 60 / bpm), True)
+        t = rng.uniform(0, 5) + np.cumsum(rng.uniform(0.012, 2.0, rng.integers(2, 41)))
+        out = snap_times(t, g)
+        assert np.all(np.diff(out) > 0)
+        assert np.all(np.abs(out - t) <= 0.025 + 1e-9)
+        beat = 60 / bpm
+        for o, orig in zip(out, t):
+            if o == orig:
+                continue
+            ok = any(
+                abs((o - g.offset_s) / (beat / d) - round((o - g.offset_s) / (beat / d))) * (beat / d) < 1e-6
+                for d in (16, 12)
+            )
+            assert ok
+
+
+def test_fit_grid_tolerates_missed_beat():
+    t = np.arange(40) * 0.5
+    g = fit_grid(np.delete(t, 20))
+    assert g.steady
+    assert abs(g.bpm - 120) < 0.5
