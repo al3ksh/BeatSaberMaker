@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
@@ -36,15 +37,20 @@ def _lr_factor(step: int, warmup: int, max_steps: int) -> float:
 
 
 def _load_resume(out_dir: Path, device: str) -> dict | None:
+    """Newest loadable checkpoint; a corrupt `last.pt` is deleted so it is never rotated."""
     errors = []
     for name in ("last.pt", "prev.pt"):
         p = out_dir / name
         if not p.exists():
             continue
         try:
-            return load_checkpoint(p, map_location=device)
+            ckpt = load_checkpoint(p, map_location=device)
         except Exception as exc:  # noqa: BLE001 - truncated or corrupt file: try the older one
             errors.append(f"{name}: {type(exc).__name__}")
+            continue
+        if errors and name == "prev.pt":
+            (out_dir / "last.pt").unlink(missing_ok=True)
+        return ckpt
     if errors:
         raise RuntimeError(f"no loadable checkpoint in {out_dir} ({'; '.join(errors)})")
     return None
@@ -84,6 +90,12 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
             scaler.load_state_dict(ckpt["scaler"])
         step, best = int(ckpt["step"]), ckpt["best"]
         log(f"resumed from step {step}")
+    try:  # a best.pt that is better than the resumed checkpoint's record is kept
+        saved = load_checkpoint(out_dir / "best.pt", map_location="cpu").get("best")
+    except Exception:  # noqa: BLE001 - missing or unreadable: ignore
+        saved = None
+    if saved is not None and (best is None or better(saved, best)):
+        best = saved
 
     def payload() -> dict:
         return {"model": model.state_dict(), "optimizer": opt.state_dict(),
@@ -98,7 +110,8 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
         save_checkpoint(last, payload())
 
     pin = device.type == "cuda"
-    gen = torch.Generator().manual_seed(step)
+    gen = torch.Generator().manual_seed(
+        int(np.random.SeedSequence([0, step]).generate_state(1, dtype=np.uint64)[0] >> 1))
     loader = DataLoader(train_ds, batch_size=s.batch_size, shuffle=True, drop_last=True,
                         num_workers=s.num_workers, persistent_workers=s.num_workers > 0,
                         pin_memory=pin, generator=gen)

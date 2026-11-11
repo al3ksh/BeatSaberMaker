@@ -82,3 +82,24 @@ def test_resume_fails_when_nothing_loads(tmp_path):
         (tmp_path / n).write_bytes(b"junk")
     with pytest.raises(RuntimeError):
         _run(tmp_path, 30)
+
+
+def test_rotation_after_fallback_keeps_good_prev(tmp_path):
+    _run(tmp_path, 20)
+    last = tmp_path / "last.pt"
+    last.write_bytes(last.read_bytes()[:100])
+    _run(tmp_path, 30, model=nn.Linear(4, 1))  # resumes from prev (step 10), saves 20 and 30
+    assert load_checkpoint(tmp_path / "last.pt")["step"] == 30
+    assert load_checkpoint(tmp_path / "prev.pt")["step"] == 20
+
+
+def test_best_pt_kept_when_better_than_resumed_record(tmp_path):
+    _run(tmp_path, 20)
+    ck = load_checkpoint(tmp_path / "best.pt")
+    ck["best"] = {"loss": -1.0}  # unbeatable
+    torch.save(ck, tmp_path / "best.pt")
+    last = tmp_path / "last.pt"
+    last.write_bytes(last.read_bytes()[:100])
+    _, r, _ = _run(tmp_path, 30, model=nn.Linear(4, 1))
+    assert r["best"] == {"loss": -1.0}
+    assert load_checkpoint(tmp_path / "best.pt")["best"] == {"loss": -1.0}

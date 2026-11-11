@@ -58,13 +58,21 @@ class TimingWindows(Dataset):
         self.seed = seed
         self.style_dropout = style_dropout
         self.fixed = fixed
-        self._calls: dict[int, int] = {}
+        self._rng: np.random.Generator | None = None
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
+        state["_rng"] = None  # every process seeds its own generator
         if self.events_dir is not None:
             state["_cache"] = None
         return state
+
+    def _process_rng(self) -> np.random.Generator:
+        if self._rng is None:
+            info = torch.utils.data.get_worker_info()
+            base = info.seed if info is not None else torch.initial_seed()
+            self._rng = np.random.default_rng([self.seed, int(base)])
+        return self._rng
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -78,10 +86,8 @@ class TimingWindows(Dataset):
         e = self.entries[idx]
         if self.fixed:
             rng = np.random.default_rng([self.seed, idx])
-        else:  # reproducible from (seed, idx); differs on every visit of the same index
-            n = self._calls.get(idx, 0)
-            self._calls[idx] = n + 1
-            rng = np.random.default_rng([self.seed, idx, n])
+        else:  # one stream per process, seeded from (seed, worker/torch seed)
+            rng = self._process_rng()
         mel_all = np.load(self.features_dir / f"{e.map_key}.npy", mmap_mode="r",
                           allow_pickle=False)
         total = min(int(e.n_frames), mel_all.shape[0])

@@ -85,6 +85,7 @@ def test_window_randomness_and_fixed(tmp_path):
     f = TimingWindows(cache, entries, tmp_path, STATS, 64, seed=1, fixed=True)
     first = f[0]["target"]
     assert all(torch.equal(first, f[0]["target"]) for _ in range(5))
+    assert not all(torch.equal(seq_a[0], x) for x in seq_a)  # successive visits differ
 
 
 def test_window_targets_follow_the_window(tmp_path):
