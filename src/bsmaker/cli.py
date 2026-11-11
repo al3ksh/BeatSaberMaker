@@ -12,7 +12,6 @@ from bsmaker.playability.calibrate import (
     HARD_RULE_NAMES,
     calibrate,
     collect_event_lists,
-    measure,
     render_report,
     write_playability_toml,
 )
@@ -23,20 +22,14 @@ from bsmaker.data.fetch_metadata import fetch_metadata
 from bsmaker.data.index_local import index_folder
 from bsmaker.data.manifest import open_manifest
 from bsmaker.data.styles import STYLES, styles_from_tags
-from bsmaker.playability.config import PlayabilityConfig, load_playability_config
+from bsmaker.playability.config import PROFILES, load_playability_config
 
 app = typer.Typer(help="BeatSaberMaker: Beat Saber map generator.", no_args_is_help=True)
 data_app = typer.Typer(help="Dataset commands.", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 
 
-@data_app.command("index-local")
-def index_local() -> None:
-    """Index the local CustomLevels folder into the manifest."""
-    cfg = load_config()
-    conn = open_manifest(cfg.manifest_path)
-    s = index_folder(conn, cfg.custom_levels,
-                     load_playability_config(cfg.playability_path), progress_every=100)
+def _summarise(conn, s, report_name: str, cfg) -> None:
     per_rank = Counter(r["rank"] for r in conn.execute(
         "SELECT rank FROM difficulties WHERE accepted = 1"))
     lines = [f"n_maps (unique folders): {s.n_maps}",
@@ -51,7 +44,30 @@ def index_local() -> None:
     text = "\n".join(lines)
     print(text)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.reports_dir / "index-local.txt").write_text(text + "\n", encoding="utf-8")
+    (cfg.reports_dir / report_name).write_text(text + "\n", encoding="utf-8")
+
+
+@data_app.command("index-local")
+def index_local() -> None:
+    """Index the local CustomLevels folder into the manifest (data playability profile)."""
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    s = index_folder(conn, cfg.custom_levels,
+                     load_playability_config(cfg.playability_path, "data"), progress_every=100)
+    _summarise(conn, s, "index-local.txt", cfg)
+
+
+@data_app.command("index-raw")
+def index_raw() -> None:
+    """Index the downloaded BeatSaver maps in the raw folder (data playability profile)."""
+    cfg = load_config()
+    if not cfg.raw_dir.is_dir():
+        print(f"raw folder does not exist: {cfg.raw_dir}")
+        return
+    conn = open_manifest(cfg.manifest_path)
+    s = index_folder(conn, cfg.raw_dir, load_playability_config(cfg.playability_path, "data"),
+                     source="beatsaver", progress_every=100)
+    _summarise(conn, s, "index-raw.txt", cfg)
 
 
 @data_app.command("features")
@@ -88,23 +104,20 @@ def fetch_metadata_cmd() -> None:
 
 @data_app.command("calibrate-playability")
 def calibrate_playability() -> None:
-    """Calibrate the playability thresholds on local maps; writes playability.toml and a report."""
+    """Calibrate both playability profiles on local maps; writes playability.toml and a report."""
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
     print("reading calibration maps...", flush=True)
     lists = collect_event_lists(conn)
-    print(f"{len(lists)} difficulties; measuring with defaults", flush=True)
-    start = PlayabilityConfig()
-    before = measure(lists, start)
-    print(f"before: pass_share={before.pass_share:.4f}", flush=True)
-    after, steps = calibrate(lists, start, progress=lambda m: print(m, flush=True))
-    write_playability_toml(after.config, cfg.base_dir / "playability.toml")
+    print(f"{len(lists)} difficulties", flush=True)
+    cal = calibrate(lists, progress=lambda m: print(m, flush=True))
+    write_playability_toml(cal.mask.config, cal.data.config, cfg.base_dir / "playability.toml")
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.reports_dir / "playability-calibration.md").write_text(
-        render_report(before, after, steps), encoding="utf-8")
-    print(f"after: pass_share={after.pass_share:.4f}")
-    if after.pass_share < 0.95:
-        print("pass_share still below 0.95; thresholds not loosened further.")
+    (cfg.reports_dir / "playability-calibration.md").write_text(render_report(cal), encoding="utf-8")
+    print(f"data profile: pass_share={cal.data.pass_share:.4f} "
+          f"(<=0.02: {cal.data.pass_share_02:.4f}); mask: pass_share={cal.mask.pass_share:.4f}")
+    if cal.data.pass_share < 0.95:
+        print("data profile pass_share still below 0.95; thresholds not loosened further.")
         raise typer.Exit(1)
 
 
@@ -114,8 +127,12 @@ def _mmss(t: float) -> str:
 
 
 @app.command("check")
-def check_map(folder: str) -> None:
+def check_map(folder: str, profile: str = typer.Option(
+        "mask", "--profile", help="Playability profile: mask or data.")) -> None:
     """Report playability rule violations for every difficulty of a map folder."""
+    if profile not in PROFILES:
+        typer.echo(f"unknown profile {profile!r}; expected one of {', '.join(PROFILES)}", err=True)
+        raise typer.Exit(2)
     try:
         bm = read_map(Path(folder))
         if not bm.difficulties:
@@ -124,9 +141,13 @@ def check_map(folder: str) -> None:
         typer.echo(f"not a readable map: {folder}: {type(e).__name__}: {e}".splitlines()[0], err=True)
         raise typer.Exit(2) from None
     try:
-        pcfg = load_playability_config(load_config().playability_path)
+        pcfg = load_playability_config(load_config().playability_path, profile)
     except FileNotFoundError:
-        pcfg = PlayabilityConfig()
+        pcfg = load_playability_config(None, profile)
+    except ValueError as e:
+        typer.echo(str(e).splitlines()[0], err=True)
+        raise typer.Exit(2) from None
+    print(f"profile: {profile}")
     for d in bm.difficulties:
         events, _ = to_events(d.notes)
         report = check_events(events, pcfg)

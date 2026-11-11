@@ -3,14 +3,22 @@ from pathlib import Path
 
 from bsmaker.formats.events import Event
 from bsmaker.formats.tokens import NONE_TOKEN, encode_token
+import pytest
+
 from bsmaker.playability.calibrate import (
+    LADDER,
     calibrate,
     measure,
     rare_tokens_from,
     render_report,
     write_playability_toml,
 )
-from bsmaker.playability.config import PlayabilityConfig, load_playability_config
+from bsmaker.playability.config import (
+    DATA_DEFAULTS,
+    PROFILES,
+    PlayabilityConfig,
+    load_playability_config,
+)
 
 UP, DOWN, LEFT, RIGHT = 0, 1, 2, 3
 
@@ -57,47 +65,73 @@ def test_rare_tokens_from() -> None:
     assert len(left) == 108  # left hand has no notes: every token is blocked
 
 
-def test_relaxation_order_parity() -> None:
-    lists = [turn90_list(), turn90_list()]
-    start = PlayabilityConfig()
-    first, steps = calibrate(lists, start, max_rounds=1)
-    assert first.config.strict_angle_deg == 67.5 and len(steps) == 1
-    final, steps = calibrate(lists, start, max_rounds=6)
-    assert final.config.strict_angle_deg == 90.0
-    assert final.pass_share == 1.0 and len(steps) == 2
+def test_ladder_stops_at_first_passing_step() -> None:
+    lists = [[Event(i * 0.4, NONE_TOKEN, encode_token(2, 1, DOWN)) for i in range(20)]] * 3
+    cal = calibrate(lists)
+    assert cal.data.pass_share == 1.0
+    assert [label for label, _ in cal.steps] == [LADDER[0][0]]
+    assert cal.data.config.reset_gap_s == 0.25
+    assert cal.data.config.forbid_crossover is True
 
 
-def test_never_relaxes_same_cell() -> None:
+def test_ladder_exhausted_reports_below_target() -> None:
     lists = [same_cell_list()] * 3
-    start = PlayabilityConfig()
-    result, steps = calibrate(lists, start, max_rounds=6)
-    assert result.rule_note_share["same_cell"] > 0
-    assert steps == []
-    assert replace(result.config, rare_tokens=start.rare_tokens) == start
-    assert result.pass_share == 0.0
+    cal = calibrate(lists)
+    assert len(cal.steps) == 5 == len(LADDER)
+    assert cal.data.pass_share < 0.95
+    assert cal.data.config.slider_gap_s == 0.12 and cal.data.config.forbid_crossover is False
+    assert "FAILED" in render_report(cal)
 
 
-def test_unrelaxable_top_rule_falls_through_to_next() -> None:
-    lists = [same_cell_list(), turn90_list(10)]
-    result, steps = calibrate(lists, PlayabilityConfig(), max_rounds=1)
-    share = measure(lists, PlayabilityConfig()).rule_note_share
-    assert share["same_cell"] > share["parity"] > 0
-    assert len(steps) == 1 and result.config.strict_angle_deg == 67.5
+def test_mask_profile_keeps_default_thresholds_and_rare_tokens() -> None:
+    cal = calibrate([clean_list()] * 2)
+    assert replace(cal.mask.config, rare_tokens=PlayabilityConfig().rare_tokens) == PlayabilityConfig()
+    assert cal.mask.config.rare_tokens == rare_tokens_from([clean_list()] * 2, 1e-4)
+    assert cal.mask.rare_tokens[1]  # unseen tokens are blocked
 
 
-def test_toml_roundtrip(tmp_path: Path) -> None:
-    cfg = replace(PlayabilityConfig(), strict_angle_deg=67.5, slow_gap_s=0.3, forbid_crossover=False,
-                  min_hand_gap_s=0.0733, rare_tokens=(frozenset({3, 9}), frozenset({1, 108})))
+def test_data_profile_has_no_rare_tokens() -> None:
+    cal = calibrate([turn90_list()] * 2)
+    assert cal.data.config.rare_tokens == (frozenset(), frozenset())
+
+
+def test_pass_share_02() -> None:
+    base = [_right(i, DOWN if i % 2 == 0 else UP) for i in range(101)]
+    flipped = list(base)
+    flipped[30] = _right(30, UP)  # two parity violations in 101 notes: rate 0.0198
+    r = measure([base, flipped], PlayabilityConfig())
+    assert r.pass_share == 0.5
+    assert r.pass_share_02 == 1.0
+
+
+def test_toml_roundtrip_two_profiles(tmp_path: Path) -> None:
+    mask = replace(PlayabilityConfig(), rare_tokens=(frozenset({3, 9}), frozenset({1, 108})))
+    data = replace(DATA_DEFAULTS, min_hand_gap_s=0.0733)
     path = tmp_path / "playability.toml"
-    write_playability_toml(cfg, path)
-    assert load_playability_config(path) == cfg
-    write_playability_toml(PlayabilityConfig(), path)
-    assert load_playability_config(path) == PlayabilityConfig()
+    write_playability_toml(mask, data, path)
+    assert load_playability_config(path, "mask") == mask
+    assert load_playability_config(path, "data") == data
+
+
+def test_load_missing_table_raises(tmp_path: Path) -> None:
+    path = tmp_path / "old.toml"
+    path.write_text("strict_angle_deg = 90.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="old.toml.*mask"):
+        load_playability_config(path)
+    with pytest.raises(ValueError, match="data"):
+        load_playability_config(path, "data")
+    with pytest.raises(ValueError):
+        load_playability_config(path, "nope")
+
+
+def test_load_none_gives_profile_defaults() -> None:
+    assert PROFILES == ("mask", "data")
+    assert load_playability_config(None) == PlayabilityConfig()
+    assert load_playability_config(None, "data") == DATA_DEFAULTS
+    assert DATA_DEFAULTS.slider_gap_s == 0.12
 
 
 def test_render_report_lists_steps() -> None:
-    lists = [turn90_list()]
-    before = measure(lists, PlayabilityConfig())
-    after, steps = calibrate(lists, PlayabilityConfig())
-    text = render_report(before, after, steps)
-    assert "pass_share" in text and steps[0] in text
+    cal = calibrate([turn90_list()])
+    text = render_report(cal)
+    assert "pass share" in text and LADDER[0][0] in text and "mask" in text

@@ -196,6 +196,6 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
                 settle(wait(running, return_when=FIRST_COMPLETED).done)
     progress()
 
-    index_folder(conn, raw_dir, load_playability_config(cfg.playability_path), source="beatsaver")
+    index_folder(conn, raw_dir, load_playability_config(cfg.playability_path, "data"), source="beatsaver")
     return summary
 

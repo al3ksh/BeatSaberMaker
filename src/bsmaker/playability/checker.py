@@ -136,7 +136,10 @@ SOFT_RULES: tuple[Rule, ...] = (_reset, _big_jump)
 def allowed(
     state: State, time_s: float, hand: int, cfg: PlayabilityConfig, other_token: int = NONE_TOKEN
 ) -> np.ndarray:
-    """Boolean mask over all tokens that break no hard rule for `hand` at `time_s`."""
+    """Boolean mask over all tokens that break no hard rule for `hand` at `time_s`.
+
+    Ignores `cfg.slider_gap_s`: the generator does not produce slider tails in v1.
+    """
     ctx = _Ctx(state, time_s, hand, cfg, other_token)
     mask = np.zeros(VOCAB_SIZE, dtype=bool)
     mask[NONE_TOKEN] = True
@@ -182,8 +185,34 @@ class Report:
         return len(self.hard) / max(self.n_notes, 1)
 
 
+def drop_slider_tails(events: Sequence[Event], gap_s: float) -> list[Event]:
+    """Remove slider tails: same-hand notes < `gap_s` after the hand's last kept note, with a
+    compatible direction (either is a dot, or the angles differ by <= 45). `gap_s <= 0` keeps all."""
+    if gap_s <= 0:
+        return list(events)
+    last: list[tuple[float, int] | None] = [None, None]
+    out: list[Event] = []
+    for e in events:
+        tokens = [e.left, e.right]
+        for hand in (0, 1):
+            token = tokens[hand]
+            if token == NONE_TOKEN:
+                continue
+            prev = last[hand]
+            if prev is not None and e.time_s - prev[0] < gap_s:
+                a, b = _ANGLE[prev[1]], _ANGLE[token]
+                if a is None or b is None or angle_diff(a, b) <= 45:
+                    tokens[hand] = NONE_TOKEN
+                    continue
+            last[hand] = (e.time_s, token)
+        if tokens[0] != NONE_TOKEN or tokens[1] != NONE_TOKEN:
+            out.append(Event(e.time_s, tokens[0], tokens[1]))
+    return out
+
+
 def check(events: Sequence[Event], cfg: PlayabilityConfig) -> Report:
-    """Replay events through the same rules `allowed` uses."""
+    """Replay events through the same rules `allowed` uses, after dropping slider tails."""
+    events = drop_slider_tails(events, cfg.slider_gap_s)
     state = initial_state()
     hard: list[Violation] = []
     soft: list[Violation] = []

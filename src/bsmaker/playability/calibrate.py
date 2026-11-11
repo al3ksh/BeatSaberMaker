@@ -16,23 +16,41 @@ from bsmaker.playability.checker import check
 from bsmaker.playability.config import PlayabilityConfig
 
 PASS_HARD_RATE = 0.01
+PASS_HARD_RATE_02 = 0.02
 TARGET_PASS_SHARE = 0.95
-MAX_ROUNDS = 6
 HARD_RULE_NAMES = ("rare_token", "hand_speed", "vision_block", "same_cell", "crossover",
                    "handclap", "parity")
-_ANGLE_STEP, _ANGLE_CAP = 22.5, 90.0
-_SLOW_STEP, _SLOW_FLOOR = 0.05, 0.15
-_VISION_STEP, _VISION_FLOOR = 0.03, 0.03
+# Fixed relaxation steps for the data profile, applied in this order.
+LADDER: tuple[tuple[str, dict[str, float | bool]], ...] = (
+    ("reset_gap_s = 0.25", {"reset_gap_s": 0.25}),
+    ("forbid_crossover = False", {"forbid_crossover": False}),
+    ("strict_angle_deg = 90.0, lenient_angle_deg = 90.0",
+     {"strict_angle_deg": 90.0, "lenient_angle_deg": 90.0}),
+    ("slider_gap_s = 0.12", {"slider_gap_s": 0.12}),
+    ("min_hand_gap_s = 0.06, min_hand_gap_per_cell_s = 0.0",
+     {"min_hand_gap_s": 0.06, "min_hand_gap_per_cell_s": 0.0}),
+)
+_FIELDS = ("strict_angle_deg", "lenient_angle_deg", "slow_gap_s", "reset_gap_s", "min_hand_gap_s",
+           "min_hand_gap_per_cell_s", "vision_gap_s", "slider_gap_s", "forbid_crossover")
 
 
 @dataclass(frozen=True)
 class CalibrationResult:
     n_files: int
     pass_share: float
+    pass_share_02: float
     rule_note_share: dict[str, float]
     hand_gap_p01_s: float
     rare_tokens: tuple[frozenset[int], frozenset[int]]
     config: PlayabilityConfig
+
+
+@dataclass(frozen=True)
+class Calibration:
+    mask: CalibrationResult
+    data: CalibrationResult
+    steps: list[tuple[str, CalibrationResult]]
+    start: CalibrationResult  # data profile before any ladder step
 
 
 def _hand_gaps(events: Sequence[Event]) -> list[float]:
@@ -49,21 +67,24 @@ def _hand_gaps(events: Sequence[Event]) -> list[float]:
 
 
 def measure(event_lists: Sequence[Sequence[Event]], cfg: PlayabilityConfig) -> CalibrationResult:
-    """Check every list with `cfg`; pass = hard_rate <= 0.01."""
+    """Check every list with `cfg`; pass = hard_rate <= 0.01 (also reports the share <= 0.02)."""
     passed = 0
+    passed_02 = 0
     notes = 0
     counts: Counter[str] = Counter()
     gaps: list[float] = []
     for events in event_lists:
         report = check(events, cfg)
         passed += report.hard_rate <= PASS_HARD_RATE
+        passed_02 += report.hard_rate <= PASS_HARD_RATE_02
         notes += report.n_notes
         counts.update(v.rule for v in report.hard)
         gaps.extend(_hand_gaps(events))
     n = len(event_lists)
     share = {r: counts.get(r, 0) / max(notes, 1) for r in HARD_RULE_NAMES}
     p01 = float(np.percentile(gaps, 1)) if gaps else 0.0
-    return CalibrationResult(n, passed / n if n else 0.0, share, p01, cfg.rare_tokens, cfg)
+    return CalibrationResult(n, passed / n if n else 0.0, passed_02 / n if n else 0.0, share, p01,
+                             cfg.rare_tokens, cfg)
 
 
 def rare_tokens_from(
@@ -85,71 +106,44 @@ def rare_tokens_from(
     return out[0], out[1]
 
 
-def _relax(rule: str, cfg: PlayabilityConfig, p01: float) -> tuple[PlayabilityConfig, str] | None:
-    """One relaxation step for `rule`, or None when it is never relaxed or has no step left."""
-    if rule == "parity":
-        if cfg.strict_angle_deg < _ANGLE_CAP:
-            v = min(_ANGLE_CAP, cfg.strict_angle_deg + _ANGLE_STEP)
-            return replace(cfg, strict_angle_deg=v), f"parity: strict_angle_deg -> {v}"
-        if cfg.slow_gap_s > _SLOW_FLOOR + 1e-9:
-            v = round(max(_SLOW_FLOOR, cfg.slow_gap_s - _SLOW_STEP), 4)
-            return replace(cfg, slow_gap_s=v), f"parity: slow_gap_s -> {v}"
-    elif rule == "hand_speed":
-        if p01 < cfg.min_hand_gap_s:
-            return (replace(cfg, min_hand_gap_s=p01),
-                    f"hand_speed: min_hand_gap_s -> {p01:.4f} (1st percentile of hand gaps)")
-        if cfg.min_hand_gap_per_cell_s != 0:
-            return (replace(cfg, min_hand_gap_per_cell_s=0.0),
-                    "hand_speed: min_hand_gap_per_cell_s -> 0.0")
-    elif rule == "crossover":
-        if cfg.forbid_crossover:
-            return replace(cfg, forbid_crossover=False), "crossover: forbid_crossover -> False"
-    elif rule == "vision_block":
-        if cfg.vision_gap_s > _VISION_FLOOR + 1e-9:
-            v = round(max(_VISION_FLOOR, cfg.vision_gap_s - _VISION_STEP), 4)
-            return replace(cfg, vision_gap_s=v), f"vision_block: vision_gap_s -> {v}"
-    return None
-
-
 def calibrate(
     event_lists: Sequence[Sequence[Event]],
-    start: PlayabilityConfig,
-    max_rounds: int = MAX_ROUNDS,
     progress: Callable[[str], None] | None = None,
-) -> tuple[CalibrationResult, list[str]]:
-    """Set rare tokens, then relax one rule by one step per round until pass_share >= 0.95."""
+) -> Calibration:
+    """Measure the strict mask profile, then relax the data profile along LADDER until 0.95."""
     say = progress or (lambda _msg: None)
-    cfg = replace(start, rare_tokens=rare_tokens_from(event_lists))
-    result = measure(event_lists, cfg)
-    say(f"round 0 (rare tokens): pass_share={result.pass_share:.4f}")
-    steps: list[str] = []
-    for rnd in range(1, max_rounds + 1):
-        if result.pass_share >= TARGET_PASS_SHARE:
+    mask_cfg = replace(PlayabilityConfig(), rare_tokens=rare_tokens_from(event_lists, 1e-4))
+    mask = measure(event_lists, mask_cfg)
+    say(f"mask: pass_share={mask.pass_share:.4f}")
+    cfg = PlayabilityConfig()
+    data = measure(event_lists, cfg)
+    say(f"data start: pass_share={data.pass_share:.4f}")
+    start = data
+    steps: list[tuple[str, CalibrationResult]] = []
+    for label, values in LADDER:
+        if data.pass_share >= TARGET_PASS_SHARE:
             break
-        ranked = sorted((r for r in HARD_RULE_NAMES if result.rule_note_share[r] > 0),
-                        key=lambda r: -result.rule_note_share[r])
-        for rule in ranked:
-            step = _relax(rule, result.config, result.hand_gap_p01_s)
-            if step is not None:
-                break
-        else:
-            say(f"round {rnd}: no rule has a relaxation step left, stopping")
-            break
-        cfg, text = step
-        steps.append(text)
-        result = measure(event_lists, cfg)
-        say(f"round {rnd}: {text}; pass_share={result.pass_share:.4f}")
-    return result, steps
+        cfg = replace(cfg, **values)
+        data = measure(event_lists, cfg)
+        steps.append((label, data))
+        say(f"data step {label}: pass_share={data.pass_share:.4f}")
+    return Calibration(mask, data, steps, start)
 
 
-def write_playability_toml(cfg: PlayabilityConfig, path: Path) -> None:
-    lines = []
-    for name in ("strict_angle_deg", "lenient_angle_deg", "slow_gap_s", "reset_gap_s",
-                 "min_hand_gap_s", "min_hand_gap_per_cell_s", "vision_gap_s"):
-        lines.append(f"{name} = {float(getattr(cfg, name))!r}")
-    lines.append(f"forbid_crossover = {'true' if cfg.forbid_crossover else 'false'}")
-    for name, tokens in zip(("rare_tokens_left", "rare_tokens_right"), cfg.rare_tokens):
-        lines.append(f"{name} = [{', '.join(str(t) for t in sorted(tokens))}]")
+def _table(name: str, cfg: PlayabilityConfig) -> list[str]:
+    lines = [f"[{name}]"]
+    for field in _FIELDS:
+        v = getattr(cfg, field)
+        lines.append(f"{field} = {'true' if v else 'false'}" if isinstance(v, bool)
+                     else f"{field} = {float(v)!r}")
+    for key, tokens in zip(("rare_tokens_left", "rare_tokens_right"), cfg.rare_tokens):
+        lines.append(f"{key} = [{', '.join(str(t) for t in sorted(tokens))}]")
+    return lines
+
+
+def write_playability_toml(mask: PlayabilityConfig, data: PlayabilityConfig, path: Path) -> None:
+    """Write both profiles as [mask] and [data] tables."""
+    lines = _table("mask", mask) + [""] + _table("data", data)
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -174,25 +168,28 @@ def collect_event_lists(conn: sqlite3.Connection) -> list[list[Event]]:
     return lists
 
 
-def render_report(before: CalibrationResult, after: CalibrationResult,
-                  steps: Sequence[str] = ()) -> str:
-    c = after.config
-    lines = ["# Playability calibration", "", "| metric | before | after |", "|---|---|---|",
-             f"| files | {before.n_files} | {after.n_files} |",
-             f"| pass_share | {before.pass_share:.4f} | {after.pass_share:.4f} |"]
-    lines += [f"| note share: {r} | {before.rule_note_share[r]:.5f} | "
-              f"{after.rule_note_share[r]:.5f} |" for r in HARD_RULE_NAMES]
-    lines += ["", "## Relaxation steps", ""]
-    lines += [f"{i}. {s}" for i, s in enumerate(steps, 1)] or ["(none)"]
-    lines += ["", "## Final thresholds", ""]
-    for name in ("strict_angle_deg", "lenient_angle_deg", "slow_gap_s", "reset_gap_s",
-                 "min_hand_gap_s", "min_hand_gap_per_cell_s", "vision_gap_s", "forbid_crossover"):
-        lines.append(f"- {name}: {getattr(c, name)}")
-    lines.append(f"- blocked tokens (left / right): {len(c.rare_tokens[0])} / {len(c.rare_tokens[1])}")
-    lines.append(f"- hand-gap 1st percentile (before): {before.hand_gap_p01_s:.4f} s")
-    ok = after.pass_share >= TARGET_PASS_SHARE
+def render_report(cal: Calibration) -> str:
+    lines = ["# Playability calibration", "",
+             f"Files: {cal.mask.n_files}. Pass share = share of files with hard rate below the bound.",
+             "", "| profile / step | pass share <= 0.01 | pass share <= 0.02 | "
+             + " | ".join(f"note share: {r}" for r in HARD_RULE_NAMES) + " |",
+             "|---|---|---|" + "---|" * len(HARD_RULE_NAMES)]
+
+    def row(label: str, r: CalibrationResult) -> str:
+        shares = " | ".join(f"{r.rule_note_share[n]:.5f}" for n in HARD_RULE_NAMES)
+        return f"| {label} | {r.pass_share:.4f} | {r.pass_share_02:.4f} | {shares} |"
+
+    lines.append(row("mask", cal.mask))
+    lines.append(row("data: start (no relaxation)", cal.start))
+    lines += [row(f"data: {i}. {label}", r) for i, (label, r) in enumerate(cal.steps, 1)]
+    for name, res in (("mask", cal.mask), ("data", cal.data)):
+        lines += ["", f"## Final values: {name}", ""]
+        lines += [f"- {f}: {getattr(res.config, f)}" for f in _FIELDS]
+        lines.append(f"- blocked tokens (left / right): "
+                     f"{len(res.config.rare_tokens[0])} / {len(res.config.rare_tokens[1])}")
+    ok = cal.data.pass_share >= TARGET_PASS_SHARE
     lines += ["", f"Result: {'target reached' if ok else 'FAILED'} "
-              f"(pass_share {after.pass_share:.4f}, target {TARGET_PASS_SHARE})."]
+              f"(data profile pass share {cal.data.pass_share:.4f}, target {TARGET_PASS_SHARE})."]
     if not ok:
-        lines.append("Thresholds were not loosened further; this decision goes back to the user.")
+        lines.append("The ladder is exhausted; thresholds were not loosened further.")
     return "\n".join(lines) + "\n"

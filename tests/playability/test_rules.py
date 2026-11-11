@@ -108,3 +108,48 @@ def test_big_jump_is_soft():
 def test_hard_rate():
     assert Report(0, (), ()).hard_rate == 0
     assert Report(4, (Violation(0.0, 1, "parity"),), ()).hard_rate == 0.25
+
+
+# --- slider tails ---------------------------------------------------------------------------
+
+from bsmaker.playability.checker import allowed, drop_slider_tails  # noqa: E402
+from bsmaker.playability.state import initial_state  # noqa: E402
+
+SLIDER = replace(CFG, slider_gap_s=0.12)
+
+
+def test_slider_tail_dropped():
+    events = [ev(0, right=(2, 1, DOWN)), ev(0.05, right=(2, 2, DOT)), ev(0.30, right=(2, 1, UP))]
+    r = check(events, SLIDER)
+    assert r.hard == () and r.n_notes == 2
+    assert "hand_speed" in rules(check(events, replace(CFG, slider_gap_s=0.0)))
+
+
+def test_slider_tail_needs_compatible_direction():
+    events = [ev(0, right=(2, 1, DOWN)), ev(0.05, right=(2, 2, UP))]
+    r = check(events, SLIDER)
+    assert "hand_speed" in rules(r) and r.n_notes == 2
+
+
+def test_slider_chain_measured_from_kept_note():
+    events = [ev(0, right=(2, 1, DOWN)), ev(0.05, right=(2, 1, DOT)), ev(0.10, right=(2, 1, DOT))]
+    assert len(drop_slider_tails(events, 0.12)) == 1
+    events.append(ev(0.13, right=(2, 1, DOT)))
+    kept = drop_slider_tails(events, 0.12)
+    assert [e.time_s for e in kept] == [0, 0.13]
+
+
+def test_slider_drop_removes_empty_event():
+    events = [ev(0, left=(1, 1, DOWN), right=(2, 1, DOWN)),
+              ev(0.05, left=(1, 1, DOT), right=(2, 1, DOT)),
+              ev(0.30, left=(1, 1, UP))]
+    kept = drop_slider_tails(events, 0.12)
+    assert [e.time_s for e in kept] == [0, 0.30]
+    assert drop_slider_tails(events, 0.0) == events
+
+
+def test_allowed_ignores_slider_gap():
+    state = initial_state()
+    a = allowed(state, 1.0, 1, CFG)
+    b = allowed(state, 1.0, 1, SLIDER)
+    assert (a == b).all()
