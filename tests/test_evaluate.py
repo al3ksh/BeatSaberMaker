@@ -94,3 +94,39 @@ def test_cli_eval_bad_split_and_missing_checkpoint(tmp_path, monkeypatch):
     assert CliRunner().invoke(app, ["eval", "--split", "train"]).exit_code == 2
     r = CliRunner().invoke(app, ["eval"])
     assert r.exit_code == 1 and "checkpoint not found" in r.output
+
+
+def test_cli_eval_success(tmp_path, monkeypatch):
+    import json
+    from dataclasses import asdict
+
+    from typer.testing import CliRunner
+
+    from bsmaker.cli import app
+    from bsmaker.models.common import save_checkpoint
+    data = tmp_path / "data"
+    cache, feats = tiny_cache(tmp_path)
+    (data / "events").mkdir(parents=True)
+    import shutil
+    shutil.copytree(feats, data / "features")
+    np.savez(data / "events" / "events.npz", time_s=cache._t, left=cache._l, right=cache._r,
+             offsets=cache._o)
+    (data / "events" / "index.json").write_text(json.dumps([
+        {"map_key": e.map_key, "characteristic": e.characteristic, "rank": e.rank,
+         "split": "val", "nps": e.nps, "styles": list(e.styles), "njs": e.njs,
+         "njs_offset": e.njs_offset, "n_frames": e.n_frames} for e in cache.entries]))
+    t, p = make_models()
+    for name, m in (("timing", t), ("pattern", p)):
+        save_checkpoint(data / "checkpoints" / name / "best.pt", {
+            "model": m.model.state_dict(), "model_config": asdict(m.config), "stats": STATS,
+            "step": 7, "best": {}})
+    (tmp_path / "bsmaker.toml").write_text(
+        f"custom_levels = '{tmp_path / 'levels'}'\ndata_dir = '{data}'\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(app, ["eval", "--device", "cpu", "--n", "2", "--n-generated", "2"])
+    assert r.exit_code == 0, r.output
+    text = (data / "reports" / "eval-val.md").read_text(encoding="utf-8")
+    for h in ("## Summary", "## Timing", "## Pattern", "## Generated vs human", "## Setup"):
+        assert h in text
+    assert "## Summary" in r.output
+    assert not list((data / "reports").glob("*.tmp"))

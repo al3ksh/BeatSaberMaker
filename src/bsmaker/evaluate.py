@@ -11,7 +11,6 @@ import numpy as np
 from bsmaker.data.events_cache import Entry, EventCache
 from bsmaker.formats.events import Event, to_events
 from bsmaker.formats.tokens import NONE_TOKEN, decode_token
-from bsmaker.generate import _measured_nps
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
 from bsmaker.models.timing.decode import LoadedTiming, make_timing_eval, predict_events
 from bsmaker.playability.checker import check
@@ -38,13 +37,22 @@ def _spaced(entries: Sequence[Entry], n: int) -> list[Entry]:
     return [entries[i] for i in np.unique(np.linspace(0, len(entries) - 1, n).astype(int))]
 
 
+def _measured_nps(notes) -> float:
+    if len(notes) < 2:
+        return 0.0
+    span = notes[-1].time_s - notes[0].time_s
+    return len(notes) / span if span > 0 else 0.0
+
+
 def _one_per_song(entries: Sequence[Entry]) -> list[Entry]:
-    seen: set[str] = set()
-    out = []
+    """Per song the difficulty with the median nps (ties: the lower)."""
+    by_song: dict[str, list[Entry]] = {}
     for e in entries:
-        if e.map_key not in seen:
-            seen.add(e.map_key)
-            out.append(e)
+        by_song.setdefault(e.map_key, []).append(e)
+    out = []
+    for group in by_song.values():
+        group = sorted(group, key=lambda e: (e.nps, e.i))
+        out.append(group[(len(group) - 1) // 2])
     return out
 
 
@@ -70,16 +78,19 @@ def eval_timing(loaded: LoadedTiming, cache: EventCache, features_dir: Path, spl
     edges = list(loaded.stats.get("nps_bins", []))
     scores: list[tuple[float, float, float]] = []
     labels: list[str] = []
+    order: dict[str, int] = {}
     for e in entries:
         # the training-time whole-song eval, run on one song at a time
         fn = make_timing_eval(cache, [e], features_dir, loaded.stats, lambda m, loader: {},
                               n_songs=1)
         m = fn(loaded.model, None)
         scores.append((m["precision"], m["recall"], m["f1"]))
-        labels.append(_bin_label(edges, e.nps) if len(edges) >= 2 else "all")
+        lab = _bin_label(edges, e.nps) if len(edges) >= 2 else "all"
+        order.setdefault(lab, len(edges) and int(np.searchsorted(edges, e.nps, side="right")))
+        labels.append(lab)
     arr = np.asarray(scores, dtype=np.float64).reshape(-1, 3)
     by_bin: dict[str, dict] = {}
-    for lab in dict.fromkeys(sorted(set(labels), key=lambda s: float(s.split("-")[0]))):
+    for lab in sorted(set(labels), key=lambda k: order[k]):
         sel = np.asarray([x == lab for x in labels])
         by_bin[lab] = {"n": int(sel.sum()), "f1": float(arr[sel, 2].mean())}
     nan = float("nan")
@@ -164,7 +175,12 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
         mel = _mel(features_dir, e)
         times = predict_events(timing, mel, e.nps, e.styles, device)
         notes, rep = sample_notes(pattern, times, mel, e.nps, e.styles, seed, mask_cfg, device)
-        events, _ = to_events(notes)
+        events, dropped = to_events(notes)
+        if dropped:
+            raise RuntimeError(f"{dropped} generated notes dropped by to_events in {e.map_key} (bug)")
+        if check(events, mask_cfg).hard:
+            raise RuntimeError(f"generated map for {e.map_key} breaks a hard rule "
+                               f"({len(check(events, mask_cfg).hard)} violations; bug)")
         gen_lists.append(events)
         hum_lists.append(human_events(cache, e))
         n_events += rep.n_events
@@ -176,10 +192,11 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
         hits += int(m > 0 and abs(m / e.nps - 1.0) <= DENSITY_TOLERANCE)
     gen_soft, gen_notes, gen_hard = _soft_rates(gen_lists, mask_cfg)
     hum_soft, hum_notes, hum_hard = _soft_rates(hum_lists, mask_cfg)
-    assert gen_hard == 0, f"generated maps have {gen_hard} hard violations (bug)"
     gd, hd = distribution(gen_lists), distribution(hum_lists)
     return {
-        "n": len(entries), "generated": gd, "human": hd,
+        "n": len(entries), "dropped_notes": 0,
+        "nps_range": [float(x) for x in np.percentile([e.nps for e in entries], [0, 50, 100])]
+        if entries else [0.0, 0.0, 0.0], "generated": gd, "human": hd,
         "tv": {a: tv_distance(gd[a], hd[a]) for a in AXES},
         "soft_per_1000": {"generated": gen_soft, "human": hum_soft},
         "hard_violations_generated": gen_hard,
@@ -201,7 +218,8 @@ def _summary(r: dict) -> list[str]:
         "## Summary", "",
         f"- Timing onset F1 ({t['n']} songs, human event count): {_f(t['f1'])} "
         f"(precision {_f(t['precision'])}, recall {_f(t['recall'])})",
-        f"- Pattern cross-entropy: {_f(p['ce'])} (left {_f(p['ce_left'])}, right {_f(p['ce_right'])})",
+        f"- Pattern cross-entropy, both hands (joint, per event): {_f(p['ce'])} "
+        f"(left hand {_f(p['ce_left'])}, right hand given left {_f(p['ce_right'])})",
         f"- Generated maps ({g['n']}): {g['hard_violations_generated']} hard violations, "
         f"density within 10% after a single round: {100 * g['density_hit_share']:.0f}%",
         f"- Double share: generated {_f(g['generated']['double_share'])} vs "
@@ -223,7 +241,8 @@ def render_eval_report(results: dict) -> str:
           "F1 by notes-per-second bin:", "", "| nps bin | songs | F1 |", "|---|---|---|"]
     L += [f"| {k} | {v['n']} | {_f(v['f1'])} |" for k, v in t["f1_by_nps_bin"].items()]
     L += ["", "## Pattern", "", "| | cross-entropy | perplexity |", "|---|---|---|"]
-    for name, key in (("total", "ce"), ("left hand", "ce_left"), ("right hand", "ce_right")):
+    for name, key in (("both hands (joint, per event)", "ce"), ("left hand", "ce_left"),
+                      ("right hand given left", "ce_right")):
         v = p[key]
         L.append(f"| {name} | {_f(v)} | {_f(float(np.exp(v)) if v == v else v)} |")
     L += ["", "## Generated vs human", "",
@@ -242,15 +261,18 @@ def render_eval_report(results: dict) -> str:
     gs, hs = g["soft_per_1000"]["generated"], g["soft_per_1000"]["human"]
     L += [f"| {r} | {_f(gs.get(r, 0.0), 1)} | {_f(hs.get(r, 0.0), 1)} |"
           for r in sorted(set(gs) | set(hs))] or []
-    L += ["", f"- Hard violations in generated maps: {g['hard_violations_generated']} (must be 0)",
+    L += ["", f"- Notes dropped by event grouping in generated maps: {g['dropped_notes']} (must be 0)",
+          f"- Hard violations in generated maps: {g['hard_violations_generated']} (must be 0)",
           f"- Hard violations in human maps under the mask profile (information): "
           f"{_f(g['hard_rate_human_per_1000'], 1)} per 1 000 notes",
           f"- Skipped-event rate: {100 * g['skipped_rate']:.2f}%",
           f"- Mean probability mass removed by the mask: {_f(g['masked_mass_mean'], 4)}",
           f"- Share of maps within 10% of the target nps after a single round: "
           f"{100 * g['density_hit_share']:.0f}%", ""]
+    lo, med, hi = g["nps_range"]
     L += ["## Setup", "", f"- Timing checkpoint: {s['timing_checkpoint']} (step {s['timing_step']})",
           f"- Pattern checkpoint: {s['pattern_checkpoint']} (step {s['pattern_step']})",
           f"- Split: {s['split']}", f"- n (timing, pattern): {s['n']}; n generated: {s['n_generated']}",
+          f"- Generated difficulties' nps (min / median / max): {lo:.2f} / {med:.2f} / {hi:.2f}",
           f"- Seed: {s['seed']}", f"- Date: {s.get('date', date.today().isoformat())}", ""]
     return "\n".join(L)

@@ -466,6 +466,8 @@ def eval_cmd(
         raise typer.Exit(2)
 
     import tempfile
+
+    from bsmaker.generate import GenerateError, require_stats
     from datetime import date
 
     import torch
@@ -494,26 +496,32 @@ def eval_cmd(
             _fail(f"no {split} difficulties in the event cache")
         timing = load_timing(timing_ck, dev)
         pattern = load_pattern(pattern_ck, dev)
+        require_stats(timing.stats)
+        require_stats(pattern.stats, ("mel_mean", "mel_std"))
         mask_cfg = load_playability_config(cfg.playability_path, "mask")
-        steps = {name: load_checkpoint(ck).get("step", "?")
-                 for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
-        results = {
-            "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev),
-            "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev),
-            "generated": eval_generated(timing, pattern, cache, cfg.features_dir, mask_cfg,
-                                        split, n_generated, seed, dev),
-            "setup": {"timing_checkpoint": str(timing_ck), "timing_step": steps["timing"],
-                      "pattern_checkpoint": str(pattern_ck), "pattern_step": steps["pattern"],
-                      "split": split, "n": n, "n_generated": n_generated, "seed": seed,
-                      "date": date.today().isoformat()},
-        }
-    except (KeyError, ValueError, OSError) as e:
-        _fail(f"evaluation failed: {e}".splitlines()[0])
+    except (GenerateError, ValueError, KeyError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    steps = {name: load_checkpoint(ck).get("step", "?")
+             for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
+    results = {
+        "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev),
+        "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev),
+        "generated": eval_generated(timing, pattern, cache, cfg.features_dir, mask_cfg,
+                                    split, n_generated, seed, dev),
+        "setup": {"timing_checkpoint": str(timing_ck), "timing_step": steps["timing"],
+                  "pattern_checkpoint": str(pattern_ck), "pattern_step": steps["pattern"],
+                  "split": split, "n": n, "n_generated": n_generated, "seed": seed,
+                  "date": date.today().isoformat()},
+    }
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     target = cfg.reports_dir / f"eval-{split}.md"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=cfg.reports_dir,
-                                     suffix=".tmp", delete=False) as fh:
-        fh.write(render_eval_report(results))
-    os.replace(fh.name, target)
+    fd, tmp_name = tempfile.mkstemp(dir=cfg.reports_dir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(render_eval_report(results))
+        os.replace(tmp_name, target)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
     typer.echo(render_summary(results))
     typer.echo(f"wrote {target}")
