@@ -36,20 +36,25 @@ def _lr_factor(step: int, warmup: int, max_steps: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
 
 
-def _load_resume(out_dir: Path, device: str) -> dict | None:
-    """Newest loadable checkpoint; a corrupt `last.pt` is deleted so it is never rotated."""
+def _load_resume(out_dir: Path, log: Callable[[str], None]) -> dict | None:
+    """Newest loadable checkpoint (read on the CPU).
+
+    An unloadable `last.pt` is never deleted: when `prev.pt` is used instead, it is renamed to
+    `last.corrupt.pt`, so the next save does not rotate it over the good `prev.pt`.
+    """
     errors = []
     for name in ("last.pt", "prev.pt"):
         p = out_dir / name
         if not p.exists():
             continue
         try:
-            ckpt = load_checkpoint(p, map_location=device)
+            ckpt = load_checkpoint(p, map_location="cpu")
         except Exception as exc:  # noqa: BLE001 - truncated or corrupt file: try the older one
             errors.append(f"{name}: {type(exc).__name__}")
             continue
         if errors and name == "prev.pt":
-            (out_dir / "last.pt").unlink(missing_ok=True)
+            (out_dir / "last.pt").replace(out_dir / "last.corrupt.pt")
+            log("last.pt could not be loaded; kept as last.corrupt.pt, resuming from prev.pt")
         return ckpt
     if errors:
         raise RuntimeError(f"no loadable checkpoint in {out_dir} ({'; '.join(errors)})")
@@ -79,7 +84,7 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
 
     step = 0
     best: dict | None = None
-    ckpt = _load_resume(out_dir, s.device)
+    ckpt = _load_resume(out_dir, log)
     stats = dict(stats or {})
     if ckpt is not None:
         if ckpt["model_config"] != model_config:
@@ -90,12 +95,15 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
             scaler.load_state_dict(ckpt["scaler"])
         step, best = int(ckpt["step"]), ckpt["best"]
         log(f"resumed from step {step}")
-    try:  # a best.pt that is better than the resumed checkpoint's record is kept
-        saved = load_checkpoint(out_dir / "best.pt", map_location="cpu").get("best")
+    try:  # a best.pt of the same model config that beats the resumed record is kept
+        saved_ck = load_checkpoint(out_dir / "best.pt", map_location="cpu")
     except Exception:  # noqa: BLE001 - missing or unreadable: ignore
-        saved = None
-    if saved is not None and (best is None or better(saved, best)):
-        best = saved
+        saved_ck = None
+    if saved_ck is not None and saved_ck.get("best") is not None:
+        if saved_ck.get("model_config") != model_config:
+            log("ignoring best.pt: it was saved with a different model_config")
+        elif best is None or better(saved_ck["best"], best):
+            best = saved_ck["best"]
 
     def payload() -> dict:
         return {"model": model.state_dict(), "optimizer": opt.state_dict(),

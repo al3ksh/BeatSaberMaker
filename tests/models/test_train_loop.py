@@ -72,7 +72,7 @@ def test_resume_falls_back_when_last_is_truncated(tmp_path):
     last = tmp_path / "last.pt"
     last.write_bytes(last.read_bytes()[:100])
     _, r, logs = _run(tmp_path, 30, model=nn.Linear(4, 1))
-    assert logs[0] == "resumed from step 10"
+    assert "resumed from step 10" in logs
     assert r["step"] == 30
 
 
@@ -88,9 +88,12 @@ def test_rotation_after_fallback_keeps_good_prev(tmp_path):
     _run(tmp_path, 20)
     last = tmp_path / "last.pt"
     last.write_bytes(last.read_bytes()[:100])
-    _run(tmp_path, 30, model=nn.Linear(4, 1))  # resumes from prev (step 10), saves 20 and 30
-    assert load_checkpoint(tmp_path / "last.pt")["step"] == 30
-    assert load_checkpoint(tmp_path / "prev.pt")["step"] == 20
+    # resumes from prev (step 10) and trains to 15: the first save after the fallback
+    _, _, logs = _run(tmp_path, 15, model=nn.Linear(4, 1))  # first save after fallback: step 15
+    assert any("last.corrupt.pt" in m for m in logs)
+    assert (tmp_path / "last.corrupt.pt").exists()
+    assert load_checkpoint(tmp_path / "last.pt")["step"] == 15
+    assert load_checkpoint(tmp_path / "prev.pt")["step"] == 10  # the good old checkpoint
 
 
 def test_best_pt_kept_when_better_than_resumed_record(tmp_path):
@@ -103,3 +106,11 @@ def test_best_pt_kept_when_better_than_resumed_record(tmp_path):
     _, r, _ = _run(tmp_path, 30, model=nn.Linear(4, 1))
     assert r["best"] == {"loss": -1.0}
     assert load_checkpoint(tmp_path / "best.pt")["best"] == {"loss": -1.0}
+
+
+def test_best_pt_of_other_config_is_ignored(tmp_path):
+    torch.save({"model": {}, "step": 1, "model_config": {"d": 999}, "stats": {},
+                "best": {"loss": -1.0}, "optimizer": {}, "scaler": {}}, tmp_path / "best.pt")
+    _, r, logs = _run(tmp_path, 10)
+    assert r["best"] != {"loss": -1.0}
+    assert any("ignoring best.pt" in m for m in logs)
