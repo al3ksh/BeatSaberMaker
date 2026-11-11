@@ -389,7 +389,7 @@ def generate_cmd(
     import torch
 
     from bsmaker.audio.decode import AudioDecodeError
-    from bsmaker.generate import GenerateError, generate_map
+    from bsmaker.generate import GenerateError, generate_map, require_stats
     from bsmaker.models.pattern.sample import load_pattern
     from bsmaker.models.timing.decode import load_timing
 
@@ -412,17 +412,15 @@ def generate_cmd(
         timing = load_timing(timing_ck, dev)
         pattern = load_pattern(pattern_ck, dev)
         mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        require_stats(timing.stats)
+        require_stats(pattern.stats, ("mel_mean", "mel_std"))
         result = generate_map(
             audio, nps=nps, styles=tuple(style), seed=seed,
             out_dir=out if out is not None else cfg.custom_levels, timing=timing,
             pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
             overwrite=overwrite)
-    except KeyError as e:
-        _fail(f"checkpoint has no dataset stats ({e}); retrain or use a newer checkpoint")
     except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
-    except OSError as e:
-        _fail(f"cannot write the map: {e}".splitlines()[0])
     for w in result.warnings:
         typer.echo(f"warning: {w}")
     typer.echo(f"wrote {result.folder}")

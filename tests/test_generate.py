@@ -122,11 +122,11 @@ def test_info_keeps_original_title(models, tmp_path):
 
 def test_to_planned_times_maps_frames_and_rejects_unknown():
     fps = 22050 / 256
-    planned = np.array([1.0, 1.0 + 0.5 / fps * 0.8, 2.0])  # 2nd shares frame with 1st
-    frames = [round(1.0 * fps), round(2.0 * fps)]
-    notes = [Note(f / fps, 0.0, 0, 0, 0, 1) for f in frames]
+    t = 100 / fps  # exactly on a frame
+    planned = np.array([t, t + 0.2 / fps, 2.0])  # first two share a frame; first wins
+    notes = [Note(t, 0.0, 0, 0, 0, 1), Note(round(2.0 * fps) / fps, 0.0, 0, 0, 0, 1)]
     out = G._to_planned_times(notes, planned)
-    assert [n.time_s for n in out] == [1.0, 2.0]
+    assert [n.time_s for n in out] == [t, 2.0]
     with pytest.raises(RuntimeError):
         G._to_planned_times([Note(5.0, 0.0, 0, 0, 0, 1)], planned)
 
@@ -142,7 +142,7 @@ def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monke
     monkeypatch.setattr(G, "predict_events", fake_predict)
     _stub_sampler(monkeypatch)
     res = _gen(models, write_audio(tmp_path / "a.wav"), tmp_path / "out", nps=4.0)
-    assert len(calls) == 2 and res.density_rounds == 1 and res.n_notes == 240
+    assert len(calls) == 2 and res.density_rounds == 2 and res.n_notes == 240
     assert any("stopped early" in w for w in res.warnings)
     assert any("density" in w and "outside" in w for w in res.warnings)
 
@@ -202,3 +202,9 @@ def test_pick_rank_and_njs_from_stats():
     assert pick_rank(4.0, {}) == "Expert"
     assert pick_njs(2.0, STATS) == (12.0, 0.0)
     assert pick_njs(5.0, STATS) == (16.0, 0.5)
+
+
+def test_require_stats_names_missing_keys():
+    with pytest.raises(GenerateError, match="coverage_median"):
+        G.require_stats({})
+    G.require_stats(STATS, ("mel_mean", "mel_std"))

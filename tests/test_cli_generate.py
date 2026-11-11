@@ -95,4 +95,20 @@ def test_cli_checkpoint_without_stats_and_unwritable_out(tmp_path, monkeypatch):
         "step": 1, "best": {}})
     r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--out",
                                  str(tmp_path / "o2"), "--device", "cpu"])
-    assert r.exit_code == 1 and "dataset stats" in r.output
+    assert r.exit_code == 1 and "dataset stats" in r.output and "njs_by_bin" in r.output
+
+
+def test_cli_internal_keyerror_propagates(tmp_path, monkeypatch):
+    from bsmaker import generate as G
+
+    _project(tmp_path, monkeypatch)
+    audio = write_audio(tmp_path / "a.wav")
+
+    def boom(*a, **k):
+        raise KeyError("bug")
+
+    monkeypatch.setattr(G, "sample_notes", boom)
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--out",
+                                 str(tmp_path / "o3"), "--device", "cpu"])
+    assert r.exit_code == 1 and isinstance(r.exception, KeyError)
+    assert "dataset stats" not in r.output

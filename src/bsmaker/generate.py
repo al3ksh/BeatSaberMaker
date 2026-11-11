@@ -53,6 +53,18 @@ def safe_title(text: str) -> str:
     return t or "untitled"
 
 
+STATS_KEYS = ("coverage_median", "mel_mean", "mel_std", "nps_bins", "njs_by_bin",
+              "njs_offset_by_bin", "double_share_by_bin")
+
+
+def require_stats(stats: dict, keys: Sequence[str] = STATS_KEYS) -> None:
+    """Raise GenerateError naming the dataset-stats keys a checkpoint is missing."""
+    missing = [k for k in keys if k not in (stats or {})]
+    if missing:
+        raise GenerateError(f"checkpoint has no dataset stats ({', '.join(missing)}); "
+                            "retrain or use a newer checkpoint")
+
+
 def pick_rank(nps: float, stats: dict) -> str:
     medians = stats.get("rank_median_nps", {})
     known = [r for r in _RANKS if r in medians]
@@ -100,10 +112,11 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
     grid: Grid = detect_grid(audio)
 
     count_scale = 1.0
-    best = None  # (relative error, notes, planned, report, rounds)
+    best = None  # (relative error, notes, planned, report)
     rounds = 0
     early_stop = ""
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
+        rounds = rnd
         events = predict_events(timing, mel, nps, styles, device, count_scale)
         if len(events) < MIN_EVENTS:
             if best is None:
@@ -111,17 +124,16 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
                                     "or has no usable rhythm")
             early_stop = f"density search stopped early: only {len(events)} events in round {rnd}"
             break
-        rounds = rnd
         planned = snap_times(events, grid)
         notes, report = sample_notes(pattern, planned, mel, nps, styles, seed, mask_cfg, device)
         measured = _measured_nps(notes)
         err = abs(measured / nps - 1.0) if measured > 0 else float("inf")
         if best is None or err < best[0]:
-            best = (err, notes, planned, report, rnd)
+            best = (err, notes, planned, report)
         if err <= DENSITY_TOLERANCE:
             break
         count_scale *= nps / measured if measured > 0 else 2.0
-    _, notes, planned, report, _ = best
+    _, notes, planned, report = best
     if len(notes) < 2:
         raise GenerateError("no notes could be placed")
 
@@ -148,7 +160,12 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
     name = re.sub(r"[\x00-\x1f\x7f]", "", raw).strip()[:120] or "untitled"
     style = "+".join(styles) or "unknown"
     folder = Path(out_dir) / f"BSM - {safe_title(name)} [nps {nps:g}, {style}]"
-    write_map(folder, title=name, artist="Unknown", bpm=grid.bpm, rank=rank, njs=njs,
-              njs_offset=njs_offset, notes=notes, audio_src=audio_path, overwrite=overwrite)
+    try:
+        write_map(folder, title=name, artist="Unknown", bpm=grid.bpm, rank=rank, njs=njs,
+                  njs_offset=njs_offset, notes=notes, audio_src=audio_path, overwrite=overwrite)
+    except FileExistsError:
+        raise
+    except OSError as e:
+        raise GenerateError(f"cannot write the map to {out_dir}: {e}") from e
     return GenerateResult(folder, len(notes), measured, grid.bpm, grid.steady, rank,
                           report.n_skipped, rounds, tuple(warnings))
