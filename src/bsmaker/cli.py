@@ -246,3 +246,63 @@ def scrape_cmd(max_maps: int = typer.Option(20000, "--max-maps", help="Maximum m
     print(f"downloaded: {s.downloaded}, skipped existing: {s.skipped_existing}, "
           f"failed: {s.failed}, stopped for low disk: {s.stopped_low_disk}")
     print(f"requests: {n_req}, HTTP 429: {n_429}, seconds: {time.monotonic() - t0:.0f}")
+
+
+train_app = typer.Typer(help="Model training commands.", no_args_is_help=True)
+app.add_typer(train_app, name="train")
+
+
+def _fail(message: str) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+@train_app.command("timing")
+def train_timing(
+        max_steps: int = typer.Option(40000, "--max-steps", help="Optimizer steps to train for."),
+        batch_size: int = typer.Option(32, "--batch-size"),
+        num_workers: int = typer.Option(4, "--num-workers"),
+        device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
+        out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
+                                        "(default: <data_dir>/checkpoints/timing).")) -> None:
+    """Train the timing model on the event cache; resumes from the checkpoint folder."""
+    from dataclasses import asdict
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.data.stats import load_stats
+    from bsmaker.models.timing.dataset import TimingWindows
+    from bsmaker.models.timing.model import (
+        TimingConfig, TimingModel, timing_eval, timing_step)
+    from bsmaker.models.train_loop import TrainSettings, run_training
+
+    cfg = load_config()
+    stats_path = cfg.base_dir / "dataset_stats.json"
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    if not stats_path.is_file():
+        _fail(f"{stats_path} not found; run `bsmaker data build-events`")
+    if device == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    cache = EventCache.load(cfg.events_dir)
+    stats = load_stats(stats_path)
+    mcfg = TimingConfig()
+    train_entries = cache.select("train")
+    val_all = cache.select("val")
+    if not train_entries or not val_all:
+        _fail("event cache has no train or val entries")
+    step = max(1, len(val_all) // 512)
+    val_entries = val_all[::step][:512]
+    common = dict(features_dir=cfg.features_dir, stats=stats, window=mcfg.window,
+                  events_dir=cfg.events_dir)
+    train_ds = TimingWindows(cache, train_entries, seed=0, **common)
+    val_ds = TimingWindows(cache, val_entries, seed=1, fixed=True, **common)
+    settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
+                             device=device)
+    result = run_training(
+        TimingModel(mcfg), train_ds, val_ds, timing_step, timing_eval,
+        out if out is not None else cfg.checkpoints_dir / "timing", settings, asdict(mcfg),
+        lambda new, best: best is None or new["loss"] < best["loss"],
+        lambda m: print(m, flush=True), stats=stats)
+    print(f"done at step {result['step']}, best {result['best']}")
