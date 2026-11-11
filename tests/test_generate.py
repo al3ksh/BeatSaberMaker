@@ -120,17 +120,6 @@ def test_info_keeps_original_title(models, tmp_path):
     assert info["_songName"] == "AC/DC: Live?"
 
 
-def test_to_planned_times_maps_frames_and_rejects_unknown():
-    fps = 22050 / 256
-    t = 100 / fps  # exactly on a frame
-    planned = np.array([t, t + 0.2 / fps, 2.0])  # first two share a frame; first wins
-    notes = [Note(t, 0.0, 0, 0, 0, 1), Note(round(2.0 * fps) / fps, 0.0, 0, 0, 0, 1)]
-    out = G._to_planned_times(notes, planned)
-    assert [n.time_s for n in out] == [t, 2.0]
-    with pytest.raises(RuntimeError):
-        G._to_planned_times([Note(5.0, 0.0, 0, 0, 0, 1)], planned)
-
-
 def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
     calls = []
 
@@ -208,3 +197,26 @@ def test_require_stats_names_missing_keys():
     with pytest.raises(GenerateError, match="coverage_median"):
         G.require_stats({})
     G.require_stats(STATS, ("mel_mean", "mel_std"))
+
+
+def test_check_exact_groups_identical_times_without_frame_rounding():
+    t = 2.0
+    ok = [Note(t, 0.0, 0, 0, 0, 1), Note(t, 0.0, 3, 0, 1, 1)]
+    assert G.check_exact(ok, MASK).n_notes == 2
+    # two same-hand notes 87.9 ms apart: one frame-rounded merge would hide it
+    close = [Note(t, 0.0, 0, 0, 0, 1), Note(t + 0.0879, 0.0, 1, 0, 0, 1)]
+    assert any(v.rule == "hand_speed" for v in G.check_exact(close, MASK).hard)
+
+
+@pytest.mark.parametrize("nps", [0.5, 12.0])
+def test_density_extremes_real_pipeline(models, tmp_path, nps):
+    audio = write_audio(tmp_path / "a.wav", seconds=60.0)
+    try:
+        res = _gen(models, audio, tmp_path / "out", nps=nps)
+    except GenerateError as e:
+        assert str(e)
+        return
+    notes = list(read_map(res.folder).difficulties[0].notes)
+    events, dropped = to_events(notes)
+    assert dropped == 0 and check(events, MASK).hard == ()
+    assert G.check_exact(notes, MASK).hard == ()

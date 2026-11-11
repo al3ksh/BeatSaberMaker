@@ -43,6 +43,7 @@ class SampleReport:
     n_skipped: int
     n_single_hand_fallback: int
     masked_mass_mean: float
+    n_frame_collisions: int = 0
 
 
 def window_gaps(kept_times: Sequence[float], cur_time: float, future_times: Sequence[float],
@@ -86,16 +87,22 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                  temperature: float = 0.9, top_p: float = 0.95) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
 
-    Event times are snapped to the mel frame grid first (that is what `to_events` does, so the
-    checker sees exactly these times); events landing on an already used frame count as skipped.
+    The model works on the mel frame grid; the mask must hold both on frame times (what `to_events`
+    and `check` see) and on the exact planned times (what the game plays), so two playability
+    states are kept and their masks are ANDed. Returned notes carry the exact planned times.
+    Events landing on an already used frame (first planned time wins) are counted as frame
+    collisions, not as skipped.
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
     planned_in = np.sort(np.asarray(event_times_s, dtype=np.float64))
     n_events = len(planned_in)
-    frames = np.unique(np.round(planned_in * FRAMES_PER_SECOND).astype(np.int64))
+    all_frames = np.round(planned_in * FRAMES_PER_SECOND).astype(np.int64)
+    frames, first = np.unique(all_frames, return_index=True)
     times = frames.astype(np.float64) / FRAMES_PER_SECOND
-    n_skipped = n_events - len(times)
+    exact = planned_in[first]
+    n_collisions = n_events - len(times)
+    n_skipped = 0
     n_fallback = 0
     masses: list[float] = []
     notes: list[Note] = []
@@ -111,6 +118,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     model = loaded.model
 
     state = initial_state()
+    state_x = initial_state()
     kept_idx: list[int] = []        # indices into `times` of kept events
     kept_tok: list[tuple[int, int]] = []
     with torch.inference_mode():
@@ -127,9 +135,12 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                              torch.from_numpy(gaps).unsqueeze(0).to(dev), prev_l, prev_r,
                              log_nps, sty)[:, -1]
             left_lg = model.left_logits(h)[0].float().cpu()
-            left = _pick(left_lg, allowed(state, t, 0, cfg), temperature, top_p, gen, masses)
+            te = float(exact[i])
+            mask_l = allowed(state, t, 0, cfg) & allowed(state_x, te, 0, cfg)
+            left = _pick(left_lg, mask_l, temperature, top_p, gen, masses)
             right_lg = model.right_logits(h, torch.tensor([left], device=dev))[0].float().cpu()
-            mask_r = allowed(state, t, 1, cfg, other_token=left)
+            mask_r = (allowed(state, t, 1, cfg, other_token=left)
+                      & allowed(state_x, te, 1, cfg, other_token=left))
             right = _pick(right_lg, mask_r, temperature, top_p, gen, masses)
             if left == NONE_TOKEN and right == NONE_TOKEN:
                 mask_r = mask_r.copy()
@@ -142,10 +153,11 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             for color, token in ((0, left), (1, right)):
                 if token != NONE_TOKEN:
                     x, y, d = decode_token(token)
-                    notes.append(Note(t, 0.0, x, y, color, d))
+                    notes.append(Note(te, 0.0, x, y, color, d))
             state = advance(state, t, left, right)
+            state_x = advance(state_x, te, left, right)
             kept_idx.append(i)
             kept_tok.append((left, right))
     report = SampleReport(n_events, n_skipped, n_fallback,
-                          float(np.mean(masses)) if masses else 0.0)
+                          float(np.mean(masses)) if masses else 0.0, n_collisions)
     return notes, report

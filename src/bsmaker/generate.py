@@ -10,14 +10,15 @@ import numpy as np
 
 from bsmaker.audio.beats import Grid, detect_grid, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
-from bsmaker.audio.mel import log_mel, time_to_frame
+from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
-from bsmaker.formats.events import to_events
+from bsmaker.formats.events import Event, to_events
+from bsmaker.formats.tokens import NONE_TOKEN, encode_token
 from bsmaker.formats.model import Note
 from bsmaker.formats.writer import write_map
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
 from bsmaker.models.timing.decode import LoadedTiming, predict_events
-from bsmaker.playability.checker import check
+from bsmaker.playability.checker import Report, check
 from bsmaker.playability.config import PlayabilityConfig
 
 MIN_AUDIO_S = 30.0
@@ -84,24 +85,20 @@ def _measured_nps(notes: Sequence[Note]) -> float:
     return len(notes) / span if span > 0 else 0.0
 
 
-def _to_planned_times(notes: list[Note], planned: np.ndarray) -> list[Note]:
-    """Put every sampled note back on its beat-grid time (the sampler works on mel frames)."""
-    by_frame: dict[int, float] = {}
-    for t in planned.tolist():
-        by_frame.setdefault(time_to_frame(t), t)
-    out = []
+def check_exact(notes: Sequence[Note], cfg: PlayabilityConfig) -> Report:
+    """Playability check on the exact note times: group identical times, no frame rounding."""
+    groups: dict[float, dict[int, int]] = {}
     for n in notes:
-        f = time_to_frame(n.time_s)
-        if f not in by_frame:
-            raise RuntimeError(f"sampled note at frame {f} has no planned event")
-        out.append(replace(n, time_s=by_frame[f]))
-    return out
+        groups.setdefault(n.time_s, {})[n.color] = encode_token(n.x, n.y, n.direction)
+    events = [Event(t, g.get(0, NONE_TOKEN), g.get(1, NONE_TOKEN)) for t, g in sorted(groups.items())]
+    return check(events, cfg)
 
 
 def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: int,
                  out_dir: Path, timing: LoadedTiming, pattern: LoadedPattern,
                  mask_cfg: PlayabilityConfig, stats: dict, device: str,
-                 overwrite: bool = False, title: str | None = None) -> GenerateResult:
+                 overwrite: bool = False, title: str | None = None,
+                 extra_warnings: Sequence[str] = ()) -> GenerateResult:
     audio_path = Path(audio_path)
     audio = decode_mono(audio_path)
     if len(audio) / SAMPLE_RATE < MIN_AUDIO_S:
@@ -137,18 +134,22 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
     if len(notes) < 2:
         raise GenerateError("no notes could be placed")
 
-    notes = _to_planned_times(notes, planned)
     notes = [replace(n, beat=float(to_beats(n.time_s, grid.bpm))) for n in notes]
     final_events, dropped = to_events(notes)
     if dropped or check(final_events, mask_cfg).hard:
-        raise RuntimeError("generated map breaks a hard playability rule (bug)")
+        raise RuntimeError("generated map breaks a hard playability rule on frame times (bug)")
+    if check_exact(notes, mask_cfg).hard:
+        raise RuntimeError("generated map breaks a hard playability rule on exact times (bug)")
     measured = _measured_nps(notes)
 
-    warnings: list[str] = []
+    warnings: list[str] = list(extra_warnings)
     if not grid.steady:
         warnings.append("no steady beat grid found; notes are not snapped to beats")
     if report.n_skipped:
         warnings.append(f"{report.n_skipped} events skipped by the playability mask")
+    if report.n_frame_collisions:
+        warnings.append(f"{report.n_frame_collisions} planned events dropped: "
+                        "two events fell into one mel frame")
     if early_stop:
         warnings.append(early_stop)
     if abs(measured / nps - 1.0) > DENSITY_TOLERANCE:

@@ -10,6 +10,7 @@ import numpy as np
 
 from bsmaker.data.events_cache import Entry, EventCache
 from bsmaker.formats.events import Event, to_events
+from bsmaker.generate import check_exact
 from bsmaker.formats.tokens import NONE_TOKEN, decode_token
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
 from bsmaker.models.timing.decode import LoadedTiming, make_timing_eval, predict_events
@@ -168,7 +169,7 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
     entries = _spaced(_one_per_song(cache.select(split)), n)
     gen_lists: list[list[Event]] = []
     hum_lists: list[list[Event]] = []
-    n_events = n_skipped = n_fallback = 0
+    n_events = n_skipped = n_fallback = n_collisions = 0
     masses: list[float] = []
     hits = 0
     for e in entries:
@@ -181,10 +182,14 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
         if check(events, mask_cfg).hard:
             raise RuntimeError(f"generated map for {e.map_key} breaks a hard rule "
                                f"({len(check(events, mask_cfg).hard)} violations; bug)")
+        if check_exact(notes, mask_cfg).hard:
+            raise RuntimeError(f"generated map for {e.map_key} breaks a hard rule on exact "
+                               "times (bug)")
         gen_lists.append(events)
         hum_lists.append(human_events(cache, e))
         n_events += rep.n_events
         n_skipped += rep.n_skipped
+        n_collisions += rep.n_frame_collisions
         n_fallback += rep.n_single_hand_fallback
         if rep.n_events:
             masses.append(rep.masked_mass_mean)
@@ -202,6 +207,7 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
         "hard_violations_generated": gen_hard,
         "hard_rate_human_per_1000": 1000.0 * hum_hard / hum_notes if hum_notes else 0.0,
         "skipped_rate": n_skipped / n_events if n_events else 0.0,
+        "frame_collision_rate": n_collisions / n_events if n_events else 0.0,
         "single_hand_fallback": n_fallback,
         "masked_mass_mean": float(np.mean(masses)) if masses else 0.0,
         "density_hit_share": hits / len(entries) if entries else 0.0,
@@ -224,7 +230,8 @@ def _summary(r: dict) -> list[str]:
         f"density within 10% after a single round: {100 * g['density_hit_share']:.0f}%",
         f"- Double share: generated {_f(g['generated']['double_share'])} vs "
         f"human {_f(g['human']['double_share'])}",
-        f"- Skipped-event rate: {100 * g['skipped_rate']:.1f}%",
+        f"- Skipped-event rate: {100 * g['skipped_rate']:.1f}% "
+        f"(frame collisions, counted separately: {100 * g['frame_collision_rate']:.1f}%)",
     ]
 
 
@@ -265,7 +272,9 @@ def render_eval_report(results: dict) -> str:
           f"- Hard violations in generated maps: {g['hard_violations_generated']} (must be 0)",
           f"- Hard violations in human maps under the mask profile (information): "
           f"{_f(g['hard_rate_human_per_1000'], 1)} per 1 000 notes",
-          f"- Skipped-event rate: {100 * g['skipped_rate']:.2f}%",
+          f"- Skipped-event rate (playability mask): {100 * g['skipped_rate']:.2f}%",
+          f"- Frame-collision rate (events sharing a mel frame, not mask skips): "
+          f"{100 * g['frame_collision_rate']:.2f}%",
           f"- Mean probability mass removed by the mask: {_f(g['masked_mass_mean'], 4)}",
           f"- Share of maps within 10% of the target nps after a single round: "
           f"{100 * g['density_hit_share']:.0f}%", ""]

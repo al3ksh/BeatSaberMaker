@@ -51,7 +51,7 @@ def test_close_events_stay_valid(loaded) -> None:
     events, dropped = to_events(notes)
     assert dropped == 0
     assert check(events, CFG).hard == ()
-    assert rep.n_skipped > 0
+    assert rep.n_skipped + rep.n_frame_collisions > 0
 
 
 def test_never_returns_masked_token(loaded, monkeypatch) -> None:
@@ -91,7 +91,7 @@ def test_no_event_with_both_hands_empty(loaded) -> None:
     notes, rep = _run(loaded, _times(200))
     events, _ = to_events(notes)
     assert all(e.left != NONE_TOKEN or e.right != NONE_TOKEN for e in events)
-    assert len(events) == rep.n_events - rep.n_skipped
+    assert len(events) == rep.n_events - rep.n_skipped - rep.n_frame_collisions
 
 
 def test_history_excludes_skipped_events() -> None:
@@ -127,3 +127,41 @@ def test_load_pattern_requires_stats(loaded, tmp_path) -> None:
         load_pattern(path, "cpu")
     torch.save({**payload, "stats": STATS}, path)
     assert load_pattern(path, "cpu").config == loaded.config
+
+
+def _first_allowed(logits, mask, temperature, top_p, gen, masses):
+    allowed_tokens = [i for i in np.flatnonzero(mask) if i != NONE_TOKEN]
+    return int(allowed_tokens[0]) if allowed_tokens else NONE_TOKEN
+
+
+def test_exact_time_gap_below_min_hand_gap_is_masked(loaded, monkeypatch) -> None:
+    # 3 sixteenths at 128 BPM = 87.9 ms (< min_hand_gap_s 0.09) but 8 frames = 92.9 ms.
+    monkeypatch.setattr(S, "_pick", _first_allowed)
+    t0 = 2.0
+    times = np.array([t0, t0 + 3 * 60 / 128 / 16])
+    notes, rep = _run(loaded, times)
+    assert {n.time_s for n in notes} == {t0}
+    assert rep.n_skipped == 1
+
+
+def test_exact_times_on_128_bpm_grid_have_no_hard_violations(loaded) -> None:
+    from bsmaker.generate import check_exact
+    step = 60 / 128 / 16
+    rng = np.random.default_rng(0)
+    times = 2.0 + np.cumsum(rng.choice([1, 1, 2, 3], size=400)) * step
+    hard = n_skipped = n_events = 0
+    for seed in range(4):
+        notes, rep = _run(loaded, times, seed=seed)
+        hard += len(check_exact(notes, CFG).hard)
+        n_skipped += rep.n_skipped
+        n_events += rep.n_events
+        assert {n.time_s for n in notes} <= set(times.tolist())
+    print(f"EXACT hard={hard} skipped={n_skipped}/{n_events}")
+    assert hard == 0
+
+
+def test_frame_collisions_are_not_skips(loaded) -> None:
+    t = 2.0 + np.arange(100) * 0.01   # many events per 11.6 ms frame
+    _, rep = _run(loaded, t)
+    assert rep.n_frame_collisions > 0
+    assert rep.n_frame_collisions + rep.n_skipped <= rep.n_events
