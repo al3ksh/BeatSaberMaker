@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import re
+import lzma
 import shutil
 import zipfile
+import zlib
 from pathlib import Path
 
 MAX_ENTRY_BYTES = 60 * 2**20
 MAX_TOTAL_BYTES = 150 * 2**20
+MAX_DAT_BYTES = 20 * 2**20
+MAX_ENTRIES = 200
 AUDIO_EXTS = (".egg", ".ogg", ".wav")
 _RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$", re.IGNORECASE)
 _CHUNK = 1 << 16
@@ -29,6 +33,10 @@ def _wanted_name(entry_name: str) -> str | None:
     return base
 
 
+def _limit(base: str) -> int:
+    return MAX_DAT_BYTES if base.lower().endswith(".dat") else MAX_ENTRY_BYTES
+
+
 def safe_extract(zip_path: Path, dest: Path) -> list[Path]:
     """Extract .dat and audio entries flat into `dest`; raise UnsafeArchiveError on any problem."""
     dest = Path(dest)
@@ -46,9 +54,11 @@ def safe_extract(zip_path: Path, dest: Path) -> list[Path]:
                 base = _wanted_name(info.filename)
                 if base is None or base.lower() in seen:
                     continue
-                if info.file_size > MAX_ENTRY_BYTES:
+                if info.file_size > _limit(base):
                     raise UnsafeArchiveError(f"entry {base!r} declares {info.file_size} bytes")
                 seen.add(base.lower())
+                if len(seen) > MAX_ENTRIES:
+                    raise UnsafeArchiveError(f"more than {MAX_ENTRIES} wanted entries")
                 plan.append((info, base))
             dest.mkdir(parents=True, exist_ok=True)
             total = 0
@@ -60,8 +70,8 @@ def safe_extract(zip_path: Path, dest: Path) -> list[Path]:
                     while chunk := src.read(_CHUNK):
                         size += len(chunk)
                         total += len(chunk)
-                        if size > MAX_ENTRY_BYTES:
-                            raise UnsafeArchiveError(f"entry {base!r} exceeds {MAX_ENTRY_BYTES} bytes")
+                        if size > _limit(base):
+                            raise UnsafeArchiveError(f"entry {base!r} exceeds {_limit(base)} bytes")
                         if total > MAX_TOTAL_BYTES:
                             raise UnsafeArchiveError(f"archive exceeds {MAX_TOTAL_BYTES} bytes")
                         out.write(chunk)
@@ -69,7 +79,7 @@ def safe_extract(zip_path: Path, dest: Path) -> list[Path]:
         _cleanup(dest, written, created_dest)
         raise
     except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError, RuntimeError,
-            NotImplementedError, ValueError) as exc:
+            NotImplementedError, ValueError, zlib.error, lzma.LZMAError) as exc:
         _cleanup(dest, written, created_dest)
         raise UnsafeArchiveError(f"cannot extract {zip_path}: {type(exc).__name__}: {exc}") from exc
     return written

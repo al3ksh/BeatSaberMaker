@@ -22,6 +22,9 @@ MIN_FREE_BYTES = 20 * 2**30
 MIN_SCORE = 0.85
 MIN_UPVOTES = 100
 _KEY_RE = re.compile(r"^[0-9a-f]{1,16}$")
+MAX_STALE_PAGES = 5
+MAX_INFO_BYTES = 2**20
+PROGRESS_EVERY = 100
 
 # (name, search filters, client-side predicate) in priority order
 _CATEGORIES: tuple[tuple[str, dict, Callable[[MapInfo], bool]], ...] = (
@@ -49,12 +52,17 @@ def select_candidates(client: BeatSaverClient, max_maps: int) -> Iterator[MapInf
         return
     for _name, filters, keep in _CATEGORIES:
         page = 0
-        while True:
+        stale = 0
+        while stale < MAX_STALE_PAGES:
             docs = client.search(page, **filters)
             if not docs:
                 break
+            n_before = len(seen)
             for m in docs:
                 k = m.key.lower()
+                if not _KEY_RE.match(k):
+                    seen.add(k)
+                    continue
                 if k in seen or m.automapper or not keep(m):
                     continue
                 seen.add(k)
@@ -62,6 +70,7 @@ def select_candidates(client: BeatSaverClient, max_maps: int) -> Iterator[MapInf
                 yielded += 1
                 if yielded >= max_maps:
                     return
+            stale = stale + 1 if len(seen) == n_before else 0
             page += 1
 
 
@@ -69,6 +78,8 @@ def _audio_name(folder: Path) -> str | None:
     info_path = _find_ci(folder, "Info.dat")
     if info_path is None:
         return None
+    if info_path.stat().st_size > MAX_INFO_BYTES:
+        raise BeatSaverError(f"Info file larger than {MAX_INFO_BYTES} bytes")
     info = _load(info_path)
     if not isinstance(info, dict):
         return None
@@ -130,46 +141,58 @@ def scrape(conn, client: BeatSaverClient, cfg: Config, *, max_maps: int = 20000,
         shutil.rmtree(p, ignore_errors=True)
     summary = ScrapeSummary()
     running: dict[Future, str] = {}
+    existing = {r["key"].lower(): r for r in conn.execute("SELECT key, source, download_state FROM maps")}
+    n_settled = 0
+
+    def progress() -> None:
+        print(f"  {summary.downloaded} downloaded, {summary.skipped_existing} skipped, "
+              f"{summary.failed} failed", flush=True)
 
     def settle(done: set[Future]) -> None:
+        nonlocal n_settled
         for fut in done:
             key = running.pop(fut)
             try:
                 fut.result()
             except Exception as exc:  # noqa: BLE001 - any failure of one map is just that map failing
-                print(f"  failed {key}: {type(exc).__name__}: {str(exc)[:120]}", flush=True)
+                print(f"  failed {key}: {type(exc).__name__}: {str(exc)[:120]!r}", flush=True)
                 summary.failed += 1
                 upsert_map(conn, {"key": key, "download_state": "failed"})
             else:
                 summary.downloaded += 1
                 upsert_map(conn, {"key": key, "download_state": "done"})
-            n = summary.downloaded + summary.failed
-            if n % 10 == 0:
-                print(f"  {n} processed ({summary.downloaded} ok, {summary.failed} failed)", flush=True)
+            n_settled += 1
+            if n_settled % PROGRESS_EVERY == 0:
+                progress()
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for info in select_candidates(client, max_maps):
-            key = info.key.lower()
-            row = conn.execute("SELECT source, download_state FROM maps WHERE lower(key) = ?",
-                               (key,)).fetchone()
-            if row is not None and (row["download_state"] == "done" or row["source"] == "local"):
-                summary.skipped_existing += 1
-                continue
-            while len(running) >= max(1, workers):
+        try:
+            for info in select_candidates(client, max_maps):
+                key = info.key.lower()
+                row = existing.get(key)
+                if row is not None and (row["download_state"] == "done" or row["source"] == "local"):
+                    summary.skipped_existing += 1
+                    continue
+                while len(running) >= max(1, workers):
+                    settle(wait(running, return_when=FIRST_COMPLETED).done)
+                if free_bytes(raw_dir) < MIN_FREE_BYTES:
+                    summary.stopped_low_disk = True
+                    break
+                upsert_map(conn, {
+                    "key": key, "source": "beatsaver", "title": info.title, "mapper": info.mapper,
+                    "bs_hash": info.hash, "bs_tags": json.dumps(list(info.tags)),
+                    "bs_score": info.score, "bs_upvotes": info.upvotes,
+                    "bs_ranked": int(info.ranked), "bs_bl_ranked": int(info.bl_ranked),
+                    "bs_curated": int(info.curated), "bs_automapper": int(info.automapper),
+                    "bs_fetched": 1, "download_state": "pending"})
+                existing[key] = {"source": "beatsaver", "download_state": "pending"}
+                running[pool.submit(download_one, client, info, raw_dir)] = key
+        except BeatSaverError as exc:
+            print(f"candidate search failed, ending run: {str(exc)[:200]!r}", flush=True)
+        finally:
+            while running:  # also runs on KeyboardInterrupt: finished work is recorded
                 settle(wait(running, return_when=FIRST_COMPLETED).done)
-            if free_bytes(raw_dir) < MIN_FREE_BYTES:
-                summary.stopped_low_disk = True
-                break
-            upsert_map(conn, {
-                "key": key, "source": "beatsaver", "title": info.title, "mapper": info.mapper,
-                "bs_hash": info.hash, "bs_tags": json.dumps(list(info.tags)),
-                "bs_score": info.score, "bs_upvotes": info.upvotes, "bs_ranked": int(info.ranked),
-                "bs_bl_ranked": int(info.bl_ranked), "bs_curated": int(info.curated),
-                "bs_automapper": int(info.automapper), "bs_fetched": 1,
-                "download_state": "pending"})
-            running[pool.submit(download_one, client, info, raw_dir)] = key
-        while running:
-            settle(wait(running, return_when=FIRST_COMPLETED).done)
+    progress()
 
     index_folder(conn, raw_dir, load_playability_config(cfg.playability_path), source="beatsaver")
     return summary

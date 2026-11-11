@@ -125,7 +125,8 @@ class BeatSaverClient:
             else:
                 if resp.status_code == 429 or resp.status_code >= 500:
                     if resp.status_code == 429:
-                        self.n_429 += 1
+                        with self._lock:
+                            self.n_429 += 1
                     last = f"HTTP {resp.status_code}"
                 elif resp.status_code != 200:
                     raise BeatSaverError(f"GET {path}: HTTP {resp.status_code}")

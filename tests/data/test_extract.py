@@ -44,6 +44,7 @@ def test_path_traversal_is_flattened(tmp_path):
 
 def test_oversize_entry_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(extract, "MAX_ENTRY_BYTES", 1000)
+    monkeypatch.setattr(extract, "MAX_DAT_BYTES", 1000)
     z = _zip(tmp_path / "a.zip", [("ok.dat", b"x"), ("big.dat", b"x" * 5000)])
     with pytest.raises(UnsafeArchiveError):
         safe_extract(z, tmp_path / "dest")
@@ -52,6 +53,7 @@ def test_oversize_entry_rejected(tmp_path, monkeypatch):
 
 def test_lying_header_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(extract, "MAX_ENTRY_BYTES", 1000)
+    monkeypatch.setattr(extract, "MAX_DAT_BYTES", 1000)
     z = _zip(tmp_path / "a.zip", [("big.dat", b"x" * 5000)])
     real = zipfile.ZipFile.infolist
 
@@ -68,6 +70,7 @@ def test_lying_header_rejected(tmp_path, monkeypatch):
 
 def test_total_size_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(extract, "MAX_ENTRY_BYTES", 1000)
+    monkeypatch.setattr(extract, "MAX_DAT_BYTES", 1000)
     monkeypatch.setattr(extract, "MAX_TOTAL_BYTES", 2500)
     z = _zip(tmp_path / "a.zip", [(f"{i}.dat", b"x" * 900) for i in range(4)])
     with pytest.raises(UnsafeArchiveError):
@@ -117,3 +120,34 @@ def test_empty_existing_dest_ok(tmp_path):
     z = _zip(tmp_path / "a.zip", [("Info.dat", b"{}")])
     (tmp_path / "dest").mkdir()
     assert len(safe_extract(z, tmp_path / "dest")) == 1
+
+
+def test_corrupt_deflate_stream_rejected_and_dest_empty(tmp_path):
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("ok.dat", b"{}" * 10)
+        zf.writestr("bad.dat", bytes(range(256)) * 200)
+    raw = bytearray(z.read_bytes())
+    idx = raw.index(b"bad.dat") + len(b"bad.dat")
+    for i in range(idx + 10, idx + 60):
+        raw[i] ^= 0xFF
+    z.write_bytes(bytes(raw))
+    with pytest.raises(UnsafeArchiveError):
+        safe_extract(z, tmp_path / "dest")
+    assert _empty_or_absent(tmp_path / "dest")
+
+
+def test_too_many_entries_rejected(tmp_path):
+    z = _zip(tmp_path / "a.zip", [(f"{i}.dat", b"x") for i in range(extract.MAX_ENTRIES + 1)])
+    with pytest.raises(UnsafeArchiveError):
+        safe_extract(z, tmp_path / "dest")
+    assert _empty_or_absent(tmp_path / "dest")
+
+
+def test_dat_cap_lower_than_audio_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(extract, "MAX_DAT_BYTES", 100)
+    z = _zip(tmp_path / "a.zip", [("big.dat", b"x" * 500)])
+    with pytest.raises(UnsafeArchiveError):
+        safe_extract(z, tmp_path / "dest")
+    z2 = _zip(tmp_path / "b.zip", [("big.egg", b"x" * 500)])
+    assert len(safe_extract(z2, tmp_path / "dest2")) == 1

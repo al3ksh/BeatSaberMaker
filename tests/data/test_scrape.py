@@ -94,9 +94,9 @@ def test_select_skips_automapper():
 
 
 def test_select_applies_score_and_upvote_floor():
-    c = FakeClient(rated=[info("lo", score=0.86, upvotes=99), info("ok", score=0.85, upvotes=100),
-                          info("low2", score=0.84, upvotes=500)])
-    assert [m.key for m in select_candidates(c, 100)] == ["ok"]
+    c = FakeClient(rated=[info("a0", score=0.86, upvotes=99), info("a1", score=0.85, upvotes=100),
+                          info("a2", score=0.84, upvotes=500)])
+    assert [m.key for m in select_candidates(c, 100)] == ["a1"]
 
 
 def test_select_is_lazy():
@@ -210,3 +210,62 @@ def test_workers_two_all_done(tmp_path):
     cfg, conn, s = _run(tmp_path, c, max_maps=6, workers=2)
     assert s.downloaded == 6
     assert conn.execute("SELECT COUNT(*) FROM maps WHERE download_state='done'").fetchone()[0] == 6
+
+
+def test_select_drops_non_hex_keys():
+    c = FakeClient(ranked=[info("zz\x1b[31m", ranked=True), info("../x", ranked=True),
+                           info("ab12", ranked=True)])
+    assert [m.key for m in select_candidates(c, 10)] == ["ab12"]
+
+
+def test_select_stops_on_repeating_pages():
+    class Loop(FakeClient):
+        def search(self, page, **f):
+            self.pages.append((self._cat(f), page))
+            return [info("ab", ranked=True)]
+    c = Loop()
+    assert [m.key for m in select_candidates(c, 10)] == ["ab"]
+    assert len(c.pages) < 40
+
+
+def test_oversize_info_refused(tmp_path):
+    class BigInfo(FakeClient):
+        def download(self, url, dest, max_bytes=0):
+            with zipfile.ZipFile(dest, "w") as z:
+                z.writestr("Info.dat", b" " * (2 * 2**20))
+                z.writestr("song.egg", b"x")
+    cfg = _cfg(tmp_path)
+    with pytest.raises(BeatSaverError):
+        download_one(BigInfo(), info("1a"), cfg.raw_dir)
+    assert not list(cfg.raw_dir.glob("*.partial"))
+
+
+def test_search_error_ends_run_cleanly_and_indexes(tmp_path, capsys):
+    class Dies(FakeClient):
+        def search(self, page, **f):
+            if page >= 1:
+                raise BeatSaverError("search down")
+            return super().search(page, **f)
+    c = Dies(ranked=[info("1a", ranked=True), info("2b", ranked=True)])
+    cfg, conn, s = _run(tmp_path, c, max_maps=10)
+    assert s.downloaded == 2
+    assert conn.execute("SELECT download_state FROM maps WHERE key='1a'").fetchone()[0] == "done"
+    assert conn.execute("SELECT COUNT(*) FROM difficulties").fetchone()[0] > 0
+    assert "search down" in capsys.readouterr().out
+
+
+def test_keyboard_interrupt_settles_finished(tmp_path):
+    class Intr(FakeClient):
+        def search(self, page, **f):
+            if page >= 1:
+                import time
+                time.sleep(0.5)
+                raise KeyboardInterrupt
+            return super().search(page, **f)
+    cfg = _cfg(tmp_path)
+    conn = open_manifest(cfg.manifest_path)
+    c = Intr(ranked=[info("1a", ranked=True), info("2b", ranked=True)])
+    with pytest.raises(KeyboardInterrupt):
+        scrape(conn, c, cfg, max_maps=10, free_bytes=lambda p: MIN_FREE_BYTES * 2)
+    states = {r[0]: r[1] for r in conn.execute("SELECT key, download_state FROM maps")}
+    assert states == {"1a": "done", "2b": "done"}
