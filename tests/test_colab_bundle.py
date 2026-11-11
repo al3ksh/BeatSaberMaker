@@ -60,6 +60,25 @@ def test_dirty_src_is_refused(repo: Path, tmp_path: Path) -> None:
     assert not out.exists()
 
 
+def test_dirty_other_bundled_path_is_refused(repo: Path, tmp_path: Path) -> None:
+    mod = _load_script()
+    (repo / "playability.toml").write_text("changed")
+    out = tmp_path / "bundle.zip"
+    with pytest.raises(RuntimeError, match="playability.toml"):
+        mod.build_bundle(repo, out)
+    assert not out.exists()
+
+
+def test_untracked_bundled_path_is_refused(repo: Path, tmp_path: Path) -> None:
+    mod = _load_script()
+    _git(repo, "rm", "-q", "dataset_stats.json")
+    _git(repo, "commit", "-q", "-m", "rm")
+    out = tmp_path / "bundle.zip"
+    with pytest.raises(RuntimeError, match="not tracked"):
+        mod.build_bundle(repo, out)
+    assert not out.exists() and not out.with_suffix(".tmp").exists()
+
+
 def _notebook() -> dict:
     return json.loads((ROOT / "notebooks" / "colab_train.ipynb").read_text("utf-8"))
 
@@ -76,3 +95,11 @@ def test_notebook_valid_and_clean() -> None:
         assert "F:\\" not in src
         assert not re.search(r"\S+@\S+", src)
     assert not re.search(r"\S+@\S+\.\S+", json.dumps(nb))
+
+
+def test_notebook_streams_output_and_marks_unpack() -> None:
+    srcs = ["".join(c["source"]) for c in _notebook()["cells"] if c["cell_type"] == "code"]
+    run_cell = next(s for s in srcs if "def run(" in s)
+    assert "Popen" in run_cell and "stderr=subprocess.STDOUT" in run_cell
+    assert any(".done" in s for s in srcs)
+    assert any("flush_and_unmount" in s for s in srcs)

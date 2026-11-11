@@ -24,7 +24,7 @@ path, size and commit. It refuses to run if `src/` has uncommitted changes.
 3. Runtime -> Run all. Parameters (steps, batch size, workers) are in the config cell near the top.
 
 After a disconnect, run all again: data unpacking is repeated (it needs about 45 GB of free local disk and is
-skipped if already present), and both trainings resume from `last.pt` in the Drive checkpoint folders.
+skipped only if the `.done` marker exists; an interrupted unpack is removed and redone), and both trainings resume from `last.pt` in the Drive checkpoint folders.
 
 ## Bringing the checkpoints back
 
@@ -32,6 +32,9 @@ Download from `MyDrive/BeatSaberMaker/checkpoints/` and place them at:
 
 - `F:\BeatSaberMakerData\checkpoints\timing\best.pt`
 - `F:\BeatSaberMakerData\checkpoints\pattern\best.pt`
+
+Before downloading checkpoints or closing the runtime, run the last cell (`drive.flush_and_unmount()`) so
+buffered writes reach Drive.
 
 ## Known limits
 
