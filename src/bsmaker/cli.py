@@ -437,9 +437,14 @@ def preview(folder: Path = typer.Argument(..., help="Map folder."),
             out: Path | None = typer.Option(None, "--out", help="Output WAV file.")) -> None:
     """Render the song with a click at every note, to check sync by ear."""
     from bsmaker.audio.decode import AudioDecodeError
-    from bsmaker.preview import render_preview
+    from bsmaker.preview import inside, render_preview
 
-    target = out if out is not None else Path.cwd() / f"preview - {folder.name}.wav"
+    if out is None:
+        if inside(Path.cwd(), folder):
+            _fail("preview output must not be inside the map folder; pass --out")
+        target = Path.cwd() / f"preview - {folder.resolve().name}.wav"
+    else:
+        target = out
     try:
         path = render_preview(folder, target, rank=rank)
     except (ValueError, OSError, AudioDecodeError, FfmpegMissingError) as e:

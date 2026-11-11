@@ -12,16 +12,16 @@ from bsmaker.preview import render_preview
 SR = SAMPLE_RATE
 
 
-def _song(path, secs=5.0):
+def _song(path, secs=5.0, amp=0.01, silent=False):
     rng = np.random.default_rng(0)
-    sf.write(str(path), (0.01 * rng.standard_normal(int(secs * SR))).astype(np.float32),
-             SR, subtype="PCM_16")
+    x = np.zeros(int(secs * SR)) if silent else amp * rng.standard_normal(int(secs * SR))
+    sf.write(str(path), np.clip(x, -1, 1).astype(np.float32), SR, subtype="PCM_16")
     return path
 
 
-def _map(tmp_path, notes, name="map"):
-    audio = _song(tmp_path / "src.wav")
-    return write_map(tmp_path / name, title="T", artist="A", bpm=120.0, rank="Expert",
+def _map(tmp_path, notes, name="map", rank="Expert", **song):
+    audio = _song(tmp_path / "src.wav", **song)
+    return write_map(tmp_path / name, title="T", artist="A", bpm=120.0, rank=rank,
                      njs=16.0, njs_offset=0.0, notes=notes, audio_src=audio)
 
 
@@ -57,18 +57,18 @@ def test_left_and_right_pitches_differ(tmp_path):
 
 
 def test_output_not_clipped(tmp_path):
-    folder = _map(tmp_path, [_n(1.0, 0), _n(1.005, 1), _n(2.0, 0)])
-    x, _ = sf.read(str(render_preview(folder, tmp_path / "o.wav")))
-    assert np.max(np.abs(x)) == pytest.approx(0.9, abs=0.01)
+    folder = _map(tmp_path, [_n(1.0, 0), _n(1.005, 1), _n(2.0, 0)], amp=1.0)
+    x, _ = sf.read(str(render_preview(folder, tmp_path / "o.wav")), dtype="int16")
+    assert np.max(np.abs(x.astype(int))) <= int(0.9 * 32767) + 50
+    assert np.max(np.abs(x.astype(int))) < 32767
 
 
 def test_missing_audio_raises(tmp_path):
     folder = _map(tmp_path, [_n(1.0, 0)])
-    (folder / "song.ogg").unlink(missing_ok=True)
     for f in folder.iterdir():
         if f.suffix in (".ogg", ".egg", ".wav", ".mp3"):
             f.unlink()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no audio"):
         render_preview(folder, tmp_path / "o.wav")
 
 
@@ -86,3 +86,84 @@ def test_default_output_outside_map_folder(tmp_path, monkeypatch):
 def test_bad_folder_exits_1(tmp_path):
     res = CliRunner().invoke(app, ["preview", str(tmp_path / "nope")])
     assert res.exit_code == 1
+
+
+def test_cwd_inside_map_folder_refused(tmp_path, monkeypatch):
+    folder = _map(tmp_path, [_n(1.0, 0)])
+    before = sorted(p.name for p in folder.iterdir())
+    monkeypatch.chdir(folder)
+    res = CliRunner().invoke(app, ["preview", "."])
+    assert res.exit_code == 1
+    assert sorted(p.name for p in folder.iterdir()) == before
+
+
+def test_explicit_out_inside_map_folder_refused(tmp_path):
+    folder = _map(tmp_path, [_n(1.0, 0)])
+    before = sorted(p.name for p in folder.iterdir())
+    res = CliRunner().invoke(app, ["preview", str(folder), "--out", str(folder / "x.wav")])
+    assert res.exit_code == 1
+    assert sorted(p.name for p in folder.iterdir()) == before
+    with pytest.raises(ValueError, match="inside the map folder"):
+        render_preview(folder, folder)
+
+
+def test_bad_out_paths(tmp_path):
+    folder = _map(tmp_path, [_n(1.0, 0)])
+    with pytest.raises(ValueError):
+        render_preview(folder, tmp_path / "nodir" / "o.wav")
+    (tmp_path / "d").mkdir()
+    with pytest.raises(ValueError):
+        render_preview(folder, tmp_path / "d")
+    res = CliRunner().invoke(app, ["preview", str(folder), "--out", str(tmp_path / "nodir" / "o.wav")])
+    assert res.exit_code == 1
+
+
+def test_no_temp_file_left(tmp_path):
+    folder = _map(tmp_path, [_n(1.0, 0)])
+    render_preview(folder, tmp_path / "o.wav")
+    assert not (tmp_path / "o.wav.tmp").exists()
+
+
+
+
+def test_rank_selection_unit():
+    from bsmaker.preview import _rank_key
+    assert _rank_key("Expert+") == _rank_key("expertplus") == _rank_key("ExpertPlus")
+    assert _rank_key("Easy") < _rank_key("Hard") < _rank_key("Expert") < _rank_key("ExpertPlus")
+    assert _rank_key("Weird") < _rank_key("Easy")
+
+
+def test_rank_explicit_and_unknown(tmp_path):
+    folder = _map(tmp_path, [_n(1.0, 0)], rank="ExpertPlus")
+    render_preview(folder, tmp_path / "a.wav", rank="Expert+")
+    render_preview(folder, tmp_path / "b.wav", rank="expertplus")
+    render_preview(folder, tmp_path / "c.wav")
+    with pytest.raises(ValueError):
+        render_preview(folder, tmp_path / "d.wav", rank="Easy")
+    with pytest.raises(ValueError):
+        render_preview(folder, tmp_path / "d.wav", rank="Bogus")
+
+
+def test_out_of_range_notes_ignored(tmp_path):
+    folder = _map(tmp_path, [_n(-1.0, 0), _n(1.0, 0), _n(99.0, 1)])
+    x, _ = sf.read(str(render_preview(folder, tmp_path / "o.wav")))
+    assert len(x) == 5 * SR
+    n = int(0.015 * SR)
+    assert _band(x, 1000, 1.0, n) > 10 * _band(x, 1000, 2.0, n)
+
+
+def test_simultaneous_left_right(tmp_path):
+    folder = _map(tmp_path, [_n(1.0, 0), _n(1.0, 1)])
+    x, _ = sf.read(str(render_preview(folder, tmp_path / "o.wav")))
+    n = int(0.015 * SR)
+    for f in (1000, 1500):
+        assert _band(x, f, 1.0, n) > 10 * _band(x, f, 3.0, n)
+
+
+def test_sample_accuracy(tmp_path):
+    t = 1.2345
+    folder = _map(tmp_path, [_n(t, 0)], silent=True)
+    x, _ = sf.read(str(render_preview(folder, tmp_path / "o.wav")), dtype="int16")
+    first = int(np.flatnonzero(x)[0])
+    # first sample of a linear fade-in is 0, so allow a couple of samples
+    assert abs(first - round(t * SR)) <= 2

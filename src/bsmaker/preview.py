@@ -1,4 +1,5 @@
 """Render a map's song with a click at every note, to check sync by ear."""
+import os
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,15 @@ PEAK = 0.9
 LEFT_HZ = 1000.0
 RIGHT_HZ = 1500.0
 _RANK_ORDER = {"easy": 0, "normal": 1, "hard": 2, "expert": 3, "expertplus": 4, "expert+": 4}
+
+
+OUT_INSIDE_MSG = "preview output must not be inside the map folder"
+
+
+def inside(path: Path, folder: Path) -> bool:
+    """True if path equals folder or lies inside it (after resolving)."""
+    p, f = Path(path).resolve(), Path(folder).resolve()
+    return p == f or f in p.parents
 
 
 def _rank_key(rank: str) -> int:
@@ -37,6 +47,13 @@ def render_preview(folder: Path, out_path: Path, characteristic: str = "Standard
     folder = Path(folder)
     if not folder.is_dir():
         raise ValueError(f"map folder not found: {folder}")
+    out_path = Path(out_path)
+    if inside(out_path, folder):
+        raise ValueError(OUT_INSIDE_MSG)
+    if out_path.is_dir():
+        raise ValueError(f"output path is a directory: {out_path}")
+    if not out_path.resolve().parent.is_dir():
+        raise ValueError(f"output folder does not exist: {out_path.resolve().parent}")
     bm = read_map(folder)
     if bm.audio_path is None:
         raise ValueError("map has no audio file")
@@ -51,7 +68,7 @@ def render_preview(folder: Path, out_path: Path, characteristic: str = "Standard
         if not match:
             raise ValueError(f"map has no {characteristic} {rank} difficulty")
         diff = match[0]
-    mix = decode_mono(bm.audio_path).astype(np.float32).copy()
+    mix = decode_mono(bm.audio_path).astype(np.float32)
     clicks = {0: _click(LEFT_HZ), 1: _click(RIGHT_HZ)}
     for note in diff.notes:
         start = int(round(note.time_s * SAMPLE_RATE))
@@ -62,6 +79,10 @@ def render_preview(folder: Path, out_path: Path, characteristic: str = "Standard
         mix[start:start + len(seg)] += seg
     peak = float(np.max(np.abs(mix))) if len(mix) else 0.0
     mix = mix * (PEAK / peak) if peak > 0 else np.zeros_like(mix)
-    out_path = Path(out_path)
-    sf.write(str(out_path), mix, SAMPLE_RATE, subtype="PCM_16")
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    try:
+        sf.write(str(tmp), mix, SAMPLE_RATE, subtype="PCM_16", format="WAV")
+        os.replace(tmp, out_path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out_path
