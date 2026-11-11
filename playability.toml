@@ -1,10 +1,25 @@
-strict_angle_deg = 90.0
+[mask]
+strict_angle_deg = 45.0
 lenient_angle_deg = 90.0
-slow_gap_s = 0.15
+slow_gap_s = 0.35
 reset_gap_s = 0.8
 min_hand_gap_s = 0.09
 min_hand_gap_per_cell_s = 0.02
 vision_gap_s = 0.12
+slider_gap_s = 0.0
 forbid_crossover = true
 rare_tokens_left = [75, 84, 88, 93, 97, 101, 102, 104, 106, 107]
 rare_tokens_right = [4, 8, 17, 20, 22, 24, 25, 26]
+
+[data]
+strict_angle_deg = 90.0
+lenient_angle_deg = 90.0
+slow_gap_s = 0.35
+reset_gap_s = 0.25
+min_hand_gap_s = 0.06
+min_hand_gap_per_cell_s = 0.0
+vision_gap_s = 0.12
+slider_gap_s = 0.12
+forbid_crossover = false
+rare_tokens_left = []
+rare_tokens_right = []
