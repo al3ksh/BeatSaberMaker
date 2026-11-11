@@ -310,3 +310,55 @@ def train_timing(
         timing_better,
         lambda m: print(m, flush=True), stats=stats)
     print(f"done at step {result['step']}, best {result['best']}")
+
+
+@train_app.command("pattern")
+def train_pattern(
+        max_steps: int = typer.Option(60000, "--max-steps", help="Optimizer steps to train for."),
+        batch_size: int = typer.Option(32, "--batch-size"),
+        num_workers: int = typer.Option(4, "--num-workers"),
+        device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
+        eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
+        save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
+        out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
+                                        "(default: <data_dir>/checkpoints/pattern).")) -> None:
+    """Train the pattern model on the event cache; resumes from the checkpoint folder."""
+    from dataclasses import asdict
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.data.stats import load_stats
+    from bsmaker.models.pattern.dataset import PatternSequences
+    from bsmaker.models.pattern.model import (
+        PatternConfig, PatternModel, pattern_better, pattern_eval, pattern_step)
+    from bsmaker.models.train_loop import TrainSettings, run_training
+
+    cfg = load_config()
+    stats_path = cfg.base_dir / "dataset_stats.json"
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    if not stats_path.is_file():
+        _fail(f"{stats_path} not found; run `bsmaker data build-events`")
+    if device == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    cache = EventCache.load(cfg.events_dir)
+    stats = load_stats(stats_path)
+    mcfg = PatternConfig()
+    train_entries = cache.select("train")
+    val_all = cache.select("val")
+    if not train_entries or not val_all:
+        _fail("event cache has no train or val entries")
+    stride = max(1, len(val_all) // 256)
+    val_entries = val_all[::stride][:256]
+    common = dict(features_dir=cfg.features_dir, stats=stats, context=mcfg.context,
+                  events_dir=cfg.events_dir)
+    train_ds = PatternSequences(cache, train_entries, seed=0, **common)
+    val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
+    settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
+                             device=device, eval_every=eval_every, save_every=save_every)
+    result = run_training(
+        PatternModel(mcfg), train_ds, val_ds, pattern_step, pattern_eval,
+        out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
+        pattern_better, lambda m: print(m, flush=True), stats=stats)
+    print(f"done at step {result['step']}, best {result['best']}")
