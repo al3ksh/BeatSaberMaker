@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,12 +100,51 @@ def test_silent_audio_rejected(models, tmp_path):
 
 
 def test_safe_title():
-    assert safe_title('a<b>c:d"e/f\\g|h?i*j') == "abcdefghij"
-    assert safe_title("  two   spaces\tand\nnewline ") == "two spaces and newline"
+    assert safe_title("a / b") == "a b"
+    assert safe_title("tab	inside") == "tab inside"
+    assert safe_title("AC/DC: Live?") == "AC DC Live"
+    assert safe_title("  two   spaces ") == "two spaces"
     assert safe_title("name... ") == "name"
     assert safe_title("x" * 200) == "x" * 80
+    assert safe_title("🎵 song") == "🎵 song"
     assert not safe_title(("a" * 79) + ". .").endswith((".", " "))
-    assert safe_title("???") == "untitled" and safe_title("\x01\x02") == "untitled"
+    assert safe_title("CON") == "CON"
+    assert safe_title("???") == "untitled" and safe_title("") == "untitled"
+
+
+def test_info_keeps_original_title(models, tmp_path):
+    audio = write_audio(tmp_path / "a.wav")
+    res = _gen(models, audio, tmp_path / "out", title="AC/DC: Live?")
+    assert res.folder.name == "BSM - AC DC Live [nps 3, tech]"
+    info = json.loads((res.folder / "Info.dat").read_text(encoding="utf-8"))
+    assert info["_songName"] == "AC/DC: Live?"
+
+
+def test_to_planned_times_maps_frames_and_rejects_unknown():
+    fps = 22050 / 256
+    planned = np.array([1.0, 1.0 + 0.5 / fps * 0.8, 2.0])  # 2nd shares frame with 1st
+    frames = [round(1.0 * fps), round(2.0 * fps)]
+    notes = [Note(f / fps, 0.0, 0, 0, 0, 1) for f in frames]
+    out = G._to_planned_times(notes, planned)
+    assert [n.time_s for n in out] == [1.0, 2.0]
+    with pytest.raises(RuntimeError):
+        G._to_planned_times([Note(5.0, 0.0, 0, 0, 0, 1)], planned)
+
+
+def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
+    calls = []
+
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+        calls.append(count_scale)
+        n = 240 if len(calls) == 1 else G.MIN_EVENTS - 2  # round 1 overshoots 2x
+        return 2.0 + np.arange(n) * (30.0 / n)
+
+    monkeypatch.setattr(G, "predict_events", fake_predict)
+    _stub_sampler(monkeypatch)
+    res = _gen(models, write_audio(tmp_path / "a.wav"), tmp_path / "out", nps=4.0)
+    assert len(calls) == 2 and res.density_rounds == 1 and res.n_notes == 240
+    assert any("stopped early" in w for w in res.warnings)
+    assert any("density" in w and "outside" in w for w in res.warnings)
 
 
 def test_existing_folder_needs_overwrite(models, tmp_path):
@@ -151,7 +191,7 @@ def test_density_warning_when_not_reached(models, tmp_path, monkeypatch):
     monkeypatch.setattr(G, "predict_events", fake_predict)
     _stub_sampler(monkeypatch)
     res = _gen(models, write_audio(tmp_path / "a.wav"), tmp_path / "out", nps=2.0)
-    assert len(calls) == G.MAX_DENSITY_ROUNDS
+    assert len(calls) == G.MAX_DENSITY_ROUNDS and res.density_rounds == len(calls)
     assert any("density" in w for w in res.warnings)
 
 

@@ -378,6 +378,9 @@ def generate_cmd(
     if not 0.5 <= nps <= 12:
         typer.echo("--nps must be between 0.5 and 12", err=True)
         raise typer.Exit(2)
+    if device not in (None, "cuda", "cpu"):
+        typer.echo("--device must be cuda or cpu", err=True)
+        raise typer.Exit(2)
     unknown = [s for s in style if s not in STYLES]
     if unknown:
         typer.echo(f"unknown style {unknown[0]!r}; expected one of {', '.join(STYLES)}", err=True)
@@ -414,8 +417,12 @@ def generate_cmd(
             out_dir=out if out is not None else cfg.custom_levels, timing=timing,
             pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
             overwrite=overwrite)
+    except KeyError as e:
+        _fail(f"checkpoint has no dataset stats ({e}); retrain or use a newer checkpoint")
     except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    except OSError as e:
+        _fail(f"cannot write the map: {e}".splitlines()[0])
     for w in result.warnings:
         typer.echo(f"warning: {w}")
     typer.echo(f"wrote {result.folder}")

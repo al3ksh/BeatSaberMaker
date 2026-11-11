@@ -66,3 +66,33 @@ def test_cli_generate_to_out_dir(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["generate", str(short), "--nps", "3", "--out", str(out),
                                  "--device", "cpu"])
     assert r.exit_code == 1 and "shorter" in r.output
+
+
+def test_cli_missing_audio_and_bad_device(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    r = CliRunner().invoke(app, ["generate", str(tmp_path / "nope.wav"), "--nps", "4",
+                                 "--device", "cpu"])
+    assert r.exit_code == 1 and "not found" in r.output
+    audio = write_audio(tmp_path / "a.wav")
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "4", "--device", "tpu"])
+    assert r.exit_code == 2
+
+
+def test_cli_checkpoint_without_stats_and_unwritable_out(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    audio = write_audio(tmp_path / "a.wav")
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--out",
+                                 str(blocker / "sub"), "--device", "cpu"])
+    assert r.exit_code == 1 and "Traceback" not in r.output
+    # pattern checkpoint stats are valid (needed to load); strip them from the timing one
+    t, _ = make_models()
+    save_checkpoint(tmp_path / "data" / "checkpoints" / "timing" / "best.pt", {
+        "model": t.model.state_dict(), "model_config": asdict(t.config),
+        "stats": {"coverage_median": 0.8, "nps_bins": [0.0, 100.0],
+                  "double_share_by_bin": [0.2], "mel_mean": 0.0, "mel_std": 1.0},
+        "step": 1, "best": {}})
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--out",
+                                 str(tmp_path / "o2"), "--device", "cpu"])
+    assert r.exit_code == 1 and "dataset stats" in r.output

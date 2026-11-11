@@ -47,8 +47,8 @@ class GenerateResult:
 
 def safe_title(text: str) -> str:
     """A title usable in a Windows folder name."""
-    t = re.sub(r"\s+", " ", text)
-    t = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "", t).strip()
+    t = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', " ", text)
+    t = re.sub(r"\s+", " ", t).strip()
     t = t[:80].rstrip(". ")
     return t or "untitled"
 
@@ -101,11 +101,17 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
 
     count_scale = 1.0
     best = None  # (relative error, notes, planned, report, rounds)
+    rounds = 0
+    early_stop = ""
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
         events = predict_events(timing, mel, nps, styles, device, count_scale)
         if len(events) < MIN_EVENTS:
-            raise GenerateError(f"only {len(events)} events found; the audio looks silent or "
-                                "has no usable rhythm")
+            if best is None:
+                raise GenerateError(f"only {len(events)} events found; the audio looks silent "
+                                    "or has no usable rhythm")
+            early_stop = f"density search stopped early: only {len(events)} events in round {rnd}"
+            break
+        rounds = rnd
         planned = snap_times(events, grid)
         notes, report = sample_notes(pattern, planned, mel, nps, styles, seed, mask_cfg, device)
         measured = _measured_nps(notes)
@@ -115,7 +121,7 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
         if err <= DENSITY_TOLERANCE:
             break
         count_scale *= nps / measured if measured > 0 else 2.0
-    err, notes, planned, report, rounds = best
+    _, notes, planned, report, _ = best
     if len(notes) < 2:
         raise GenerateError("no notes could be placed")
 
@@ -131,12 +137,15 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
         warnings.append("no steady beat grid found; notes are not snapped to beats")
     if report.n_skipped:
         warnings.append(f"{report.n_skipped} events skipped by the playability mask")
-    if err > DENSITY_TOLERANCE:
+    if early_stop:
+        warnings.append(early_stop)
+    if abs(measured / nps - 1.0) > DENSITY_TOLERANCE:
         warnings.append(f"density {measured:.2f} nps is outside 10% of the requested {nps:g}")
 
     rank = pick_rank(nps, stats)
     njs, njs_offset = pick_njs(nps, stats)
-    name = title or safe_title(audio_path.stem)
+    raw = title or audio_path.stem
+    name = re.sub(r"[\x00-\x1f\x7f]", "", raw).strip()[:120] or "untitled"
     style = "+".join(styles) or "unknown"
     folder = Path(out_dir) / f"BSM - {safe_title(name)} [nps {nps:g}, {style}]"
     write_map(folder, title=name, artist="Unknown", bpm=grid.bpm, rank=rank, njs=njs,
