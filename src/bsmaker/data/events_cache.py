@@ -79,9 +79,11 @@ def build_event_cache(conn: sqlite3.Connection, events_dir: Path, features_dir: 
             continue
         try:
             bm = read_map(Path(m["folder"]))
-            n_frames = int(np.load(feat, mmap_mode="r").shape[0])
-        except Exception:  # noqa: BLE001 - untrusted map data: skip and count
+            n_frames = int(np.load(feat, mmap_mode="r", allow_pickle=False).shape[0])
+        except Exception as exc:  # noqa: BLE001 - untrusted map data: skip and count
             unreadable += 1
+            if unreadable <= 5:
+                print(f"events: skipping unreadable map {key}: {type(exc).__name__}", flush=True)
             left_out += len(rows)
             continue
         styles = list(styles_from_tags(json.loads(m["bs_tags"] or "[]")))
@@ -144,8 +146,15 @@ class EventCache:
                          rank=r["rank"], split=r["split"], nps=r["nps"],
                          styles=tuple(r["styles"]), njs=r["njs"], njs_offset=r["njs_offset"],
                          n_frames=r["n_frames"]) for i, r in enumerate(raw)]
-        with np.load(events_dir / "events.npz") as z:
-            return cls(entries, z["time_s"], z["left"], z["right"], z["offsets"])
+        with np.load(events_dir / "events.npz", allow_pickle=False) as z:
+            t, left, right, offsets = z["time_s"], z["left"], z["right"], z["offsets"]
+        if (len(entries) != len(offsets) - 1 or int(offsets[-1]) != len(t)
+                or len(left) != len(t) or len(right) != len(t)):
+            raise ValueError(
+                f"event cache in {events_dir} is inconsistent: index has {len(entries)} entries, "
+                f"events.npz has {len(offsets) - 1} offsets-intervals and {len(t)}/{len(left)}/"
+                f"{len(right)} events; rebuild with `bsmaker data build-events`")
+        return cls(entries, t, left, right, offsets)
 
     def events(self, i: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         a, b = int(self._o[i]), int(self._o[i + 1])

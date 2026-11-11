@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from bsmaker.data import events_cache as ec
 from bsmaker.data.events_cache import EventCache, build_event_cache, training_events
@@ -59,13 +60,14 @@ def test_cache_roundtrip(tmp_path, monkeypatch):
 
 def test_slider_tails_dropped_in_cache(tmp_path, monkeypatch):
     notes = _notes(30, step=0.5)
-    # slider tail: same hand, same direction, 0.05 s after note 0 (color 0)
+    # slider tail: same hand, same direction, 0.1 s after note 0 (color 0)
     notes.append(Note(notes[0].time_s + 0.1, 0.2, 1, 1, 0, 1))
     conn, feats, out = _setup(tmp_path, monkeypatch, {"a": {("Standard", "Expert"): notes}})
     build_event_cache(conn, out, feats)
     cache = EventCache.load(out)
     t, left, right = cache.events(0)
     assert len(t) == 30
+    assert np.allclose(t, [1.0 + i * 0.5 for i in range(30)], atol=0.01)  # tail at 1.1 is gone
 
 
 def test_nps_uses_event_span(tmp_path, monkeypatch):
@@ -91,3 +93,13 @@ def test_select_by_split(tmp_path, monkeypatch):
     cache = EventCache.load(out)
     assert [e.map_key for e in cache.select("val")] == ["b"]
     assert [e.map_key for e in cache.select("train")] == ["a"]
+
+
+def test_load_rejects_mismatched_index(tmp_path, monkeypatch):
+    conn, feats, out = _setup(tmp_path, monkeypatch, {
+        "a": {("Standard", "Expert"): _notes(30)}, "b": {("Standard", "Hard"): _notes(25)}})
+    build_event_cache(conn, out, feats)
+    idx = json.loads((out / "index.json").read_text())
+    (out / "index.json").write_text(json.dumps(idx[:1]))
+    with pytest.raises(ValueError, match="inconsistent"):
+        EventCache.load(out)

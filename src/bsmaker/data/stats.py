@@ -39,6 +39,7 @@ def _median(v: list[float]) -> float | None:
 
 def compute_stats(cache: EventCache, features_dir: Path, sample_maps: int = 500,
                   seed: int = 0) -> dict:
+    """Train-split statistics. A rank with no train data is omitted from `rank_median_nps`."""
     train = cache.select("train")
     n_bins = len(NPS_BINS) - 1
     by_rank: dict[str, list[float]] = {r: [] for r in RANKS}
@@ -67,7 +68,7 @@ def compute_stats(cache: EventCache, features_dir: Path, sample_maps: int = 500,
     s = s2 = 0.0
     n = 0
     for k in keys:
-        arr = np.load(Path(features_dir) / f"{k}.npy").astype(np.float32)
+        arr = np.load(Path(features_dir) / f"{k}.npy", allow_pickle=False).astype(np.float32)
         s += float(arr.sum(dtype=np.float64))
         s2 += float(np.square(arr, dtype=np.float64).sum())
         n += arr.size
