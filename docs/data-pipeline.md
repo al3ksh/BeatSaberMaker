@@ -25,6 +25,9 @@ database aborts the command; it is never recorded as a verdict on a map (`unread
 `no_audio`). `features` also stops with a message when free space in the features folder drops
 below 10 GB.
 
+`features --workers N` (default `min(8, cpus - 2)`, at least 1) decodes in N worker processes.
+Workers only write `.npy` files; the main process alone reads and writes the manifest.
+
 `scrape` indexes only the maps it downloaded in that run plus maps marked `done` that have no
 difficulty rows (left unindexed by a crashed run); use `index-raw` to re-index everything
 in the raw folder.

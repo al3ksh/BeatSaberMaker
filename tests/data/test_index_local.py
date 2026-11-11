@@ -316,3 +316,65 @@ def test_probe_duration_permission_error_propagates_but_missing_input_is_none(tm
     with pytest.raises(PermissionError):
         index_local.probe_duration(existing)
     assert index_local.probe_duration(tmp_path / "gone.ogg") is None
+
+
+def _n_accepted(tmp_path, n=4, bad=None):
+    root = tmp_path / "levels"
+    root.mkdir()
+    for i in range(n):
+        shutil.copytree(FIX / "v2_basic", root / f"{i + 1}f00 (M{i})")
+    if bad is not None:
+        (root / f"{bad + 1}f00 (M{bad})" / "song.egg").write_bytes(b"this is not audio")
+    conn = open_manifest(tmp_path / "m.sqlite")
+    index_folder(conn, root, CFG)
+    conn.execute("UPDATE maps SET audio_ok=1")
+    conn.execute("UPDATE difficulties SET accepted=1, reject_reasons='[]'")
+    conn.commit()
+    return conn
+
+
+def _state(conn, feats):
+    maps = [tuple(r) for r in conn.execute("SELECT key, audio_ok FROM maps ORDER BY key")]
+    diffs = [tuple(r) for r in conn.execute(
+        "SELECT map_key, characteristic, rank, accepted, reject_reasons FROM difficulties "
+        "ORDER BY map_key, characteristic, rank")]
+    return sorted(p.name for p in feats.glob("*.npy")), maps, diffs
+
+
+def test_parallel_matches_sequential(tmp_path):
+    results = []
+    for name, workers in (("seq", 1), ("par", 2)):
+        d = tmp_path / name
+        d.mkdir()
+        conn = _n_accepted(d, n=5, bad=2)
+        feats = d / "features"
+        counts = build_features(conn, feats, free_bytes=lambda p: 1 << 40, workers=workers)
+        results.append((counts, _state(conn, feats)))
+    assert results[0] == results[1]
+    assert results[1][0] == (4, 1)
+
+
+def test_parallel_bad_audio_marks_no_audio_and_continues(tmp_path):
+    conn = _n_accepted(tmp_path, n=4, bad=0)
+    feats = tmp_path / "features"
+    assert build_features(conn, feats, free_bytes=lambda p: 1 << 40, workers=2) == (3, 1)
+    assert not (feats / "1f00.npy").exists()
+    assert conn.execute("SELECT audio_ok FROM maps WHERE key='1f00'").fetchone()[0] == 0
+    assert {p.name for p in feats.glob("*.npy")} == {"2f00.npy", "3f00.npy", "4f00.npy"}
+
+
+def test_parallel_low_disk_stops(tmp_path, capsys):
+    conn = _n_accepted(tmp_path, n=3)
+    feats = tmp_path / "features"
+    assert build_features(conn, feats, free_bytes=lambda p: 0, workers=2) == (0, 0)
+    assert "free space" in capsys.readouterr().out
+    assert not list(feats.glob("*.npy"))
+    assert conn.execute("SELECT COUNT(*) FROM difficulties WHERE accepted=0").fetchone()[0] == 0
+
+
+def test_cached_log_mel_leaves_no_temp_files(tmp_path):
+    from bsmaker.audio.mel import cached_log_mel
+    out = tmp_path / "f"
+    out.mkdir()
+    cached_log_mel(FIX / "v2_basic" / "song.egg", out / "k.npy")
+    assert sorted(p.name for p in out.iterdir()) == ["k.npy", "k.npy.json"]

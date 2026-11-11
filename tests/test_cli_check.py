@@ -127,3 +127,11 @@ def test_summarise_counts_only_the_indexed_source(tmp_path: Path) -> None:
     _summarise(conn, IndexSummary(), "r.txt", cfg, "beatsaver")
     text = (cfg.reports_dir / "r.txt").read_text("utf-8")
     assert "Expert: 1" in text and "Easy" not in text
+
+
+def test_cli_features_workers_option(tmp_path: Path, monkeypatch) -> None:
+    _project(tmp_path, monkeypatch)
+    assert CliRunner().invoke(app, ["data", "features", "--workers", "0"]).exit_code == 2
+    result = CliRunner().invoke(app, ["data", "features", "--workers", "2"])
+    assert result.exit_code == 0, result.output
+    assert "workers: 2" in result.output

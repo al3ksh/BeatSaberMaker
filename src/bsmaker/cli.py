@@ -1,5 +1,6 @@
 """Command line interface."""
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -84,12 +85,17 @@ def index_raw() -> None:
 
 
 @data_app.command("features")
-def features() -> None:
+def features(workers: int = typer.Option(
+        max(1, min(8, (os.cpu_count() or 2) - 2)), "--workers",
+        help="Worker processes for decoding (>= 1).")) -> None:
     """Compute log-mel features for every map with an accepted difficulty."""
+    if workers < 1:
+        raise typer.BadParameter("must be >= 1", param_hint="--workers")
     _require_ffmpeg()
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
-    computed, failed = build_features(conn, cfg.features_dir, progress_every=100)
+    print(f"workers: {workers}")
+    computed, failed = build_features(conn, cfg.features_dir, progress_every=100, workers=workers)
     print(f"computed: {computed}, failed: {failed}")
 
 

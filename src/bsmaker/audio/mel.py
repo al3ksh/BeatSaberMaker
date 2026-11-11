@@ -47,11 +47,11 @@ def cached_log_mel(audio_path: Path, cache_path: Path) -> np.ndarray:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     # Sidecar is removed first and written last, so a partial write is a miss.
     sidecar.unlink(missing_ok=True)
-    tmp_npy = cache_path.with_name(cache_path.name + ".tmp")
+    tmp_npy = cache_path.with_name(cache_path.name + f".{os.getpid()}.tmp")
     with open(tmp_npy, "wb") as f:
         np.save(f, mel)
     os.replace(tmp_npy, cache_path)
-    tmp_json = sidecar.with_name(sidecar.name + ".tmp")
+    tmp_json = sidecar.with_name(sidecar.name + f".{os.getpid()}.tmp")
     tmp_json.write_text(json.dumps(meta), "utf-8")
     os.replace(tmp_json, sidecar)
     return mel
