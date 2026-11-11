@@ -138,6 +138,7 @@ def predict_events(loaded: LoadedTiming, mel: np.ndarray, nps: float, styles: It
     """Event times in seconds (float64, sorted) at the density `nps`."""
     stats = loaded.stats
     probs = frame_probs(loaded.model, mel, nps, tuple(styles), stats, device)
+    probs[:int(round(MIN_FIRST_EVENT_S * FRAMES_PER_SECOND))] = 0.0  # lead-in: no events there
     duration = len(mel) / FRAMES_PER_SECOND
     target = (nps * duration * float(stats["coverage_median"])
               / (1.0 + lookup(stats, "double_share_by_bin", nps)) * count_scale)

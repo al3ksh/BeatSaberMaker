@@ -362,3 +362,63 @@ def train_pattern(
         out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
         pattern_better, lambda m: print(m, flush=True), stats=stats)
     print(f"done at step {result['step']}, best {result['best']}")
+
+
+@app.command("generate")
+def generate_cmd(
+        audio: Path = typer.Argument(..., help="Song file (mp3, ogg, wav, ...)."),
+        nps: float = typer.Option(..., "--nps", help="Target notes per second (0.5-12)."),
+        style: list[str] = typer.Option([], "--style", help="Style tag; repeat for several."),
+        seed: int = typer.Option(0, "--seed"),
+        out: Path | None = typer.Option(None, "--out", help="Output folder "
+                                        "(default: the CustomLevels folder)."),
+        overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing BSM map."),
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
+    """Generate a Beat Saber map folder from a song."""
+    if not 0.5 <= nps <= 12:
+        typer.echo("--nps must be between 0.5 and 12", err=True)
+        raise typer.Exit(2)
+    unknown = [s for s in style if s not in STYLES]
+    if unknown:
+        typer.echo(f"unknown style {unknown[0]!r}; expected one of {', '.join(STYLES)}", err=True)
+        raise typer.Exit(2)
+
+    import torch
+
+    from bsmaker.audio.decode import AudioDecodeError
+    from bsmaker.generate import GenerateError, generate_map
+    from bsmaker.models.pattern.sample import load_pattern
+    from bsmaker.models.timing.decode import load_timing
+
+    cfg = load_config()
+    if not audio.is_file():
+        _fail(f"audio file not found: {audio}")
+    try:
+        require_ffmpeg()
+    except FfmpegMissingError as e:
+        _fail(f"{e}; install ffmpeg and put it on PATH")
+    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    for ck in (timing_ck, pattern_ck):
+        if not ck.is_file():
+            _fail(f"checkpoint not found: {ck}; train the models first")
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dev == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    try:
+        timing = load_timing(timing_ck, dev)
+        pattern = load_pattern(pattern_ck, dev)
+        mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        result = generate_map(
+            audio, nps=nps, styles=tuple(style), seed=seed,
+            out_dir=out if out is not None else cfg.custom_levels, timing=timing,
+            pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
+            overwrite=overwrite)
+    except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    for w in result.warnings:
+        typer.echo(f"warning: {w}")
+    typer.echo(f"wrote {result.folder}")
+    typer.echo(f"{result.n_notes} notes, {result.nps:.2f} nps, {result.rank}, "
+               f"{result.bpm:.1f} bpm (grid {'steady' if result.grid_steady else 'not steady'}), "
+               f"{result.density_rounds} density round(s)")
