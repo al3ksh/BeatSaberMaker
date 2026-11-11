@@ -169,7 +169,7 @@ def test_map_key():
     assert map_key("1021b (Art Of The Devil - nitronik.exe)") == "1021b"
     k = map_key("My Local Map")
     assert k.startswith("local-") and len(k) == len("local-") + 10
-    assert map_key("deadbeef") .startswith("local-")
+    assert map_key("deadbeef") == "deadbeef"  # bare hex name is a key (scraped folders)
 
 
 def test_omitted_zero_fields_default_to_zero(tmp_path):
@@ -182,3 +182,43 @@ def test_omitted_zero_fields_default_to_zero(tmp_path):
           lambda d: d.update(colorNotes=[{"b": 1}], colorNotesData=[{"c": 1}]))
     n = read_map(folder).difficulties[0].notes[0]
     assert (n.x, n.y, n.color, n.direction) == (0, 0, 1, 0)
+
+
+def test_audio_fallback_to_audio_ogg(tmp_path):
+    folder = _copy("v2_basic", tmp_path)
+    (folder / "song.egg").rename(folder / "audio.ogg")
+    m = read_map(folder)
+    assert m.audio_path is not None and m.audio_path.name == "audio.ogg"
+
+
+def test_map_key_bare_and_prefixed():
+    assert map_key("2f3a") == "2f3a"
+    assert map_key("2f3a (Song - Mapper)") == "2f3a"
+    assert map_key("Song Name").startswith("local-")
+    assert map_key("xyz").startswith("local-")
+
+
+@pytest.mark.parametrize("bad", ["../song.egg", "sub/song.egg", "sub\\song.egg", "C:song.egg",
+                                 "C:\\song.egg", "/abs.egg", "..", "."])
+def test_unsafe_audio_name_treated_as_missing(tmp_path, bad):
+    folder = _copy("v2_basic", tmp_path)
+    (tmp_path / "song.egg").write_bytes(b"x")
+    (folder / "sub").mkdir()
+    (folder / "sub" / "song.egg").write_bytes(b"x")
+    _edit(folder / "Info.dat", lambda d: d.update(_songFilename=bad))
+    assert read_map(folder).audio_path is None
+
+
+@pytest.mark.parametrize("bad", ["../ExpertStandard.dat", "sub/ExpertStandard.dat",
+                                 "sub\\ExpertStandard.dat", "C:ExpertStandard.dat"])
+def test_unsafe_difficulty_name_treated_as_missing(tmp_path, bad):
+    folder = _copy("v2_basic", tmp_path)
+    (tmp_path / "ExpertStandard.dat").write_bytes((folder / EXPERT).read_bytes())
+    (folder / "sub").mkdir()
+    (folder / "sub" / "ExpertStandard.dat").write_bytes((folder / EXPERT).read_bytes())
+
+    def edit(d):
+        d["_difficultyBeatmapSets"][0]["_difficultyBeatmaps"][0]["_beatmapFilename"] = bad
+    _edit(folder / "Info.dat", edit)
+    m = read_map(folder)
+    assert m.difficulties == () and any("missing difficulty file" in p for p in m.problems)

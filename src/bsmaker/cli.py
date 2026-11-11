@@ -140,3 +140,21 @@ def check_map(folder: str) -> None:
               f"hard rate {report.hard_rate:.4f}, {per_rule}")
         for v in sorted(report.hard, key=lambda v: v.time_s)[:20]:
             print(f"  {_mmss(v.time_s)} {'left' if v.hand == 0 else 'right'} {v.rule}")
+
+
+@data_app.command("scrape")
+def scrape_cmd(max_maps: int = typer.Option(20000, "--max-maps", help="Maximum maps to consider.")) -> None:
+    """Download curated BeatSaver maps into the raw folder and index them; safe to repeat."""
+    import time
+
+    from bsmaker.data.scrape import scrape
+
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    t0 = time.monotonic()
+    with BeatSaverClient() as client:
+        s = scrape(conn, client, cfg, max_maps=max_maps)
+        n_req, n_429 = client.n_requests, client.n_429
+    print(f"downloaded: {s.downloaded}, skipped existing: {s.skipped_existing}, "
+          f"failed: {s.failed}, stopped for low disk: {s.stopped_low_disk}")
+    print(f"requests: {n_req}, HTTP 429: {n_429}, seconds: {time.monotonic() - t0:.0f}")

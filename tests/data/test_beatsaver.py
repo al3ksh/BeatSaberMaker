@@ -227,3 +227,22 @@ def test_by_ids_single_id_shapes():
 
 def test_by_ids_all_unknown_is_empty():
     assert _client(lambda r: httpx.Response(200, json={})).get_maps_by_ids(["x", "y"]) == {}
+
+
+def test_search_skips_malformed_documents():
+    docs = json.loads((FIX / "search_page.json").read_text(encoding="utf-8"))["docs"]
+    bad = {"id": "dead", "versions": [{"state": "Uploaded", "hash": "h", "downloadURL": "u"}]}
+    body = json.dumps({"docs": [docs[0], bad, "junk", docs[1]]})
+    res = _client(lambda req: httpx.Response(200, text=body)).search(0)
+    assert len(res) == 2
+
+
+def test_429_counter_and_thread_safe_throttle(no_sleep):
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(429 if len(calls) == 1 else 200, json={"docs": []})
+    c = _client(handler)
+    assert c.search(0) == []
+    assert c.n_429 == 1

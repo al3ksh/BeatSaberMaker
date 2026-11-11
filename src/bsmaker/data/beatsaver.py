@@ -1,6 +1,7 @@
 """Minimal BeatSaver API client. API responses are untrusted data: parsed, never executed."""
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -80,7 +81,9 @@ class BeatSaverClient:
         self._min_interval = min_interval_s
         self._max_retries = max_retries
         self._last = 0.0
+        self._lock = threading.Lock()
         self.n_requests = 0
+        self.n_429 = 0
         self._http = httpx.Client(base_url=base_url, headers={"User-Agent": USER_AGENT},
                                   transport=transport, timeout=30.0, follow_redirects=False)
 
@@ -94,11 +97,12 @@ class BeatSaverClient:
         self.close()
 
     def _throttle(self) -> None:
-        wait = self._min_interval - (time.monotonic() - self._last)
-        if self._last and wait > 0:
-            time.sleep(wait)
-        self._last = time.monotonic()
-        self.n_requests += 1
+        with self._lock:  # holding the lock while sleeping keeps the interval across threads
+            wait = self._min_interval - (time.monotonic() - self._last)
+            if self._last and wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+            self.n_requests += 1
 
     @staticmethod
     def _backoff(resp: httpx.Response | None, attempt: int) -> float:
@@ -120,6 +124,8 @@ class BeatSaverClient:
                 last = f"transport error: {exc}"
             else:
                 if resp.status_code == 429 or resp.status_code >= 500:
+                    if resp.status_code == 429:
+                        self.n_429 += 1
                     last = f"HTTP {resp.status_code}"
                 elif resp.status_code != 200:
                     raise BeatSaverError(f"GET {path}: HTTP {resp.status_code}")
@@ -155,7 +161,13 @@ class BeatSaverClient:
         docs = data.get("docs") if isinstance(data, dict) else None
         if not isinstance(docs, list):
             raise BeatSaverError("search response has no docs list")
-        return [parse_map_info(d) for d in docs]
+        out: list[MapInfo] = []
+        for d in docs:
+            try:
+                out.append(parse_map_info(d))
+            except BeatSaverError:
+                continue  # one unusable document must not abort the page
+        return out
 
     def download(self, url: str, dest: Path, max_bytes: int = 200 * 1024 * 1024) -> None:
         """Stream `url` (https, BeatSaver download host only) to `dest` atomically."""

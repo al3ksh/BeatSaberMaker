@@ -134,3 +134,25 @@ def test_build_features_and_decode_failure(tmp_path):
                         for r in rows)
     good = conn.execute("SELECT accepted FROM difficulties WHERE map_key='1f00'").fetchall()
     assert good and all(r["accepted"] == 1 for r in good)
+
+
+def test_one_bad_folder_does_not_stop_the_run(tmp_path, monkeypatch):
+    from bsmaker.data import index_local
+    root = tmp_path / "levels"
+    root.mkdir()
+    shutil.copytree(FIX / "v2_basic", root / "1f00 (A)")
+    shutil.copytree(FIX / "v2_basic", root / "2f00 (B)")
+    conn = open_manifest(tmp_path / "m.sqlite")
+    index_folder(conn, root, CFG)
+    real = index_local.probe_duration
+
+    def boom(path):
+        if path is not None and "1f00" in str(path):
+            raise RuntimeError("boom")
+        return real(path)
+    monkeypatch.setattr(index_local, "probe_duration", boom)
+    s = index_folder(conn, root, CFG)
+    assert s.reasons.get("unreadable", 0) == 1
+    rows = conn.execute("SELECT accepted, reject_reasons FROM difficulties WHERE map_key='1f00'").fetchall()
+    assert rows and all(r["accepted"] == 0 and "unreadable" in r["reject_reasons"] for r in rows)
+    assert conn.execute("SELECT COUNT(*) FROM difficulties WHERE map_key='2f00'").fetchone()[0] > 0

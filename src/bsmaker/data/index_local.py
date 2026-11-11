@@ -56,6 +56,52 @@ def _mark_unreadable(conn, key: str) -> None:
     conn.commit()
 
 
+def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
+               source: str) -> tuple[int, int, dict[str, int]]:
+    """Index one folder; returns (n_difficulties, n_accepted, reason counts). May raise."""
+    bm = read_map(folder)
+    current = [(d.characteristic, d.rank) for d in bm.difficulties]
+    for ch, rk in [(r["characteristic"], r["rank"]) for r in conn.execute(
+            "SELECT characteristic, rank FROM difficulties WHERE map_key = ?", (key,))]:
+        if (ch, rk) not in current:
+            conn.execute("DELETE FROM difficulties WHERE map_key = ? AND characteristic = ? "
+                         "AND rank = ?", (key, ch, rk))
+    conn.commit()
+    duration = probe_duration(bm.audio_path)
+    row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
+    automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
+    upsert_map(conn, {
+        "key": key, "source": source, "folder": str(folder), "title": bm.title,
+        "artist": bm.artist, "mapper": bm.mapper, "bpm": bm.bpm, "duration_s": duration,
+        "requirements": json.dumps(list(bm.requirements)),
+        "suggestions": json.dumps(list(bm.suggestions)),
+        "audio_ok": 0 if duration is None else 1,
+    })
+    split = assign_split(key)
+    n_d = n_acc = 0
+    counts: dict[str, int] = {}
+    for d in bm.difficulties:
+        events, merged = to_events(d.notes)
+        hard_rate = check(events, cfg).hard_rate
+        reasons = reject_reasons(bm, d, duration_s=duration, hard_rate=hard_rate,
+                                 automapper=automapper)
+        upsert_difficulty(conn, {
+            "map_key": key, "characteristic": d.characteristic, "rank": d.rank,
+            "schema": d.schema, "n_notes": len(d.notes), "n_events": len(events),
+            "merged_notes": merged, "nps": nps(d.notes), "njs": d.njs,
+            "njs_offset": d.njs_offset, "hard_rate": hard_rate,
+            "accepted": 0 if reasons else 1, "reject_reasons": json.dumps(reasons),
+            "split": split,
+        })
+        n_d += 1
+        if reasons:
+            for r in reasons:
+                counts[r] = counts.get(r, 0) + 1
+        else:
+            n_acc += 1
+    return n_d, n_acc, counts
+
+
 def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local",
                  progress_every: int = 0) -> IndexSummary:
     summary = IndexSummary()
@@ -71,46 +117,13 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
         seen.add(key)
         summary.n_maps += 1
         try:
-            bm = read_map(folder)
-        except Exception:  # noqa: BLE001 - one malformed map must never stop the run
+            n_d, n_acc, reasons = _index_one(conn, folder, key, cfg, source)
+        except Exception:  # noqa: BLE001 - one bad folder must never stop the run
             summary.reasons["unreadable"] = summary.reasons.get("unreadable", 0) + 1
             _mark_unreadable(conn, key)
             continue
-        current = [(d.characteristic, d.rank) for d in bm.difficulties]
-        for ch, rk in [(r["characteristic"], r["rank"]) for r in conn.execute(
-                "SELECT characteristic, rank FROM difficulties WHERE map_key = ?", (key,))]:
-            if (ch, rk) not in current:
-                conn.execute("DELETE FROM difficulties WHERE map_key = ? AND characteristic = ? "
-                             "AND rank = ?", (key, ch, rk))
-        conn.commit()
-        duration = probe_duration(bm.audio_path)
-        row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
-        automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
-        upsert_map(conn, {
-            "key": key, "source": source, "folder": str(folder), "title": bm.title,
-            "artist": bm.artist, "mapper": bm.mapper, "bpm": bm.bpm, "duration_s": duration,
-            "requirements": json.dumps(list(bm.requirements)),
-            "suggestions": json.dumps(list(bm.suggestions)),
-            "audio_ok": 0 if duration is None else 1,
-        })
-        split = assign_split(key)
-        for d in bm.difficulties:
-            events, merged = to_events(d.notes)
-            hard_rate = check(events, cfg).hard_rate
-            reasons = reject_reasons(bm, d, duration_s=duration, hard_rate=hard_rate,
-                                     automapper=automapper)
-            upsert_difficulty(conn, {
-                "map_key": key, "characteristic": d.characteristic, "rank": d.rank,
-                "schema": d.schema, "n_notes": len(d.notes), "n_events": len(events),
-                "merged_notes": merged, "nps": nps(d.notes), "njs": d.njs,
-                "njs_offset": d.njs_offset, "hard_rate": hard_rate,
-                "accepted": 0 if reasons else 1, "reject_reasons": json.dumps(reasons),
-                "split": split,
-            })
-            summary.n_difficulties += 1
-            if reasons:
-                for r in reasons:
-                    summary.reasons[r] = summary.reasons.get(r, 0) + 1
-            else:
-                summary.n_accepted += 1
+        summary.n_difficulties += n_d
+        summary.n_accepted += n_acc
+        for r, n in reasons.items():
+            summary.reasons[r] = summary.reasons.get(r, 0) + n
     return summary

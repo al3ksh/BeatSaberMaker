@@ -13,7 +13,7 @@ _RawNote = tuple[float, int, int, int, int, bool]  # beat, x, y, color, directio
 
 
 def map_key(folder_name: str) -> str:
-    m = re.match(r"^([0-9a-fA-F]+) ", folder_name)
+    m = re.match(r"^([0-9a-fA-F]+)(?: |$)", folder_name)
     if m:
         return m.group(1)
     return "local-" + hashlib.sha1(folder_name.encode("utf-8")).hexdigest()[:10]
@@ -33,6 +33,17 @@ def _find_ci(folder: Path, name: str) -> Path | None:
         if p.is_file() and p.name.lower() == low:
             return p
     return None
+
+
+def _is_plain_name(name: object) -> bool:
+    """True for a bare file name: no separators, drive or colon, not '.'/'..'."""
+    return (isinstance(name, str) and bool(name) and name not in (".", "..")
+            and not any(c in name for c in "/\\:\0"))
+
+
+def _find_safe(folder: Path, name: object) -> Path | None:
+    """_find_ci for a name taken from untrusted Info data; unsafe names count as missing."""
+    return _find_ci(folder, name) if _is_plain_name(name) else None
 
 
 def _detect_schema(data: dict) -> str:
@@ -186,7 +197,7 @@ def read_map(folder: Path) -> BeatMap:
 
     diffs: list[Difficulty] = []
     for ch, rank, fname, njs, off in specs:
-        p = _find_ci(folder, fname) if fname else None
+        p = _find_safe(folder, fname)
         if p is None:
             problems.append(f"missing difficulty file: {fname!r} ({ch} {rank})")
             continue
@@ -198,6 +209,8 @@ def read_map(folder: Path) -> BeatMap:
         except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             problems.append(f"cannot read {fname!r}: {type(e).__name__}: {e}")
 
-    audio_path = _find_ci(folder, audio_name) if isinstance(audio_name, str) and audio_name else None
+    audio_path = _find_safe(folder, audio_name)
+    if audio_path is None and (folder / "audio.ogg").is_file():
+        audio_path = folder / "audio.ogg"
     return BeatMap(folder, map_key(folder.name), title, artist, mapper, bpm, audio_path,
                    tuple(reqs), tuple(sugs), tuple(diffs), tuple(problems))
