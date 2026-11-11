@@ -127,6 +127,22 @@ def features(workers: int = typer.Option(
     print(f"computed: {computed}, failed: {failed}")
 
 
+@data_app.command("build-events")
+def build_events() -> None:
+    """Pack accepted maps into the event cache and write dataset_stats.json."""
+    from bsmaker.data.events_cache import EventCache, build_event_cache
+    from bsmaker.data.stats import compute_stats, write_stats
+
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    left_out = build_event_cache(conn, cfg.events_dir, cfg.features_dir, progress_every=500)
+    cache = EventCache.load(cfg.events_dir)
+    print(f"cached: {len(cache.entries)}, left out: {left_out}", flush=True)
+    stats = compute_stats(cache, cfg.features_dir)
+    write_stats(stats, cfg.base_dir / "dataset_stats.json")
+    print(f"wrote {cfg.base_dir / 'dataset_stats.json'}")
+
+
 @data_app.command("fetch-metadata")
 def fetch_metadata_cmd() -> None:
     """Fetch BeatSaver metadata (tags, ratings, flags) for indexed maps; safe to repeat."""
