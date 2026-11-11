@@ -422,3 +422,19 @@ def generate_cmd(
     typer.echo(f"{result.n_notes} notes, {result.nps:.2f} nps, {result.rank}, "
                f"{result.bpm:.1f} bpm (grid {'steady' if result.grid_steady else 'not steady'}), "
                f"{result.density_rounds} density round(s)")
+
+
+@app.command()
+def preview(folder: Path = typer.Argument(..., help="Map folder."),
+            rank: str | None = typer.Option(None, "--rank", help="Difficulty (default: highest)."),
+            out: Path | None = typer.Option(None, "--out", help="Output WAV file.")) -> None:
+    """Render the song with a click at every note, to check sync by ear."""
+    from bsmaker.audio.decode import AudioDecodeError
+    from bsmaker.preview import render_preview
+
+    target = out if out is not None else Path.cwd() / f"preview - {folder.name}.wav"
+    try:
+        path = render_preview(folder, target, rank=rank)
+    except (ValueError, OSError, AudioDecodeError, FfmpegMissingError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    typer.echo(f"wrote {path}")
