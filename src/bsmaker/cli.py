@@ -450,3 +450,72 @@ def preview(folder: Path = typer.Argument(..., help="Map folder."),
     except (ValueError, OSError, AudioDecodeError, FfmpegMissingError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     typer.echo(f"wrote {path}")
+
+
+@app.command("eval")
+def eval_cmd(
+        split: str = typer.Option("val", "--split", help="val or test."),
+        n: int = typer.Option(200, "--n", help="Difficulties for timing and pattern metrics."),
+        n_generated: int = typer.Option(10, "--n-generated", help="Difficulties to generate for."),
+        seed: int = typer.Option(0, "--seed"),
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
+    """Evaluate both models on held-out songs and write reports/eval-<split>.md."""
+    if split not in ("val", "test"):
+        typer.echo("--split must be val or test", err=True)
+        raise typer.Exit(2)
+    if device not in (None, "cuda", "cpu"):
+        typer.echo("--device must be cuda or cpu", err=True)
+        raise typer.Exit(2)
+
+    import tempfile
+    from datetime import date
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.evaluate import (
+        eval_generated, eval_pattern, eval_timing, render_eval_report, render_summary)
+    from bsmaker.models.common import load_checkpoint
+    from bsmaker.models.pattern.sample import load_pattern
+    from bsmaker.models.timing.decode import load_timing
+
+    cfg = load_config()
+    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    for ck in (timing_ck, pattern_ck):
+        if not ck.is_file():
+            _fail(f"checkpoint not found: {ck}; train the models first")
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dev == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    try:
+        cache = EventCache.load(cfg.events_dir)
+        if not cache.select(split):
+            _fail(f"no {split} difficulties in the event cache")
+        timing = load_timing(timing_ck, dev)
+        pattern = load_pattern(pattern_ck, dev)
+        mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        steps = {name: load_checkpoint(ck).get("step", "?")
+                 for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
+        results = {
+            "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev),
+            "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev),
+            "generated": eval_generated(timing, pattern, cache, cfg.features_dir, mask_cfg,
+                                        split, n_generated, seed, dev),
+            "setup": {"timing_checkpoint": str(timing_ck), "timing_step": steps["timing"],
+                      "pattern_checkpoint": str(pattern_ck), "pattern_step": steps["pattern"],
+                      "split": split, "n": n, "n_generated": n_generated, "seed": seed,
+                      "date": date.today().isoformat()},
+        }
+    except (KeyError, ValueError, OSError) as e:
+        _fail(f"evaluation failed: {e}".splitlines()[0])
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    target = cfg.reports_dir / f"eval-{split}.md"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=cfg.reports_dir,
+                                     suffix=".tmp", delete=False) as fh:
+        fh.write(render_eval_report(results))
+    os.replace(fh.name, target)
+    typer.echo(render_summary(results))
+    typer.echo(f"wrote {target}")
