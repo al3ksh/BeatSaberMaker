@@ -26,6 +26,13 @@ class LoadedPattern:
     stats: dict
 
 
+# Sampler defaults. Sharper settings (0.9 / 0.95) collapsed the output to up/down cuts: 93% of
+# notes versus 51% in human maps, diagonals 6% versus 38% (val, 20 songs, human event times).
+# With these values up/down is 64%, diagonals 25%, and soft-rule rates stay at the human level.
+DEFAULT_TEMPERATURE = 1.05
+DEFAULT_TOP_P = 0.99
+
+
 def load_pattern(path: Path, device: str) -> LoadedPattern:
     payload = load_checkpoint(path, map_location=device)
     if not payload.get("stats"):
@@ -84,7 +91,8 @@ def _pick(logits: torch.Tensor, mask: np.ndarray, temperature: float, top_p: flo
 
 def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarray, nps: float,
                  styles: Iterable[str], seed: int, cfg: PlayabilityConfig, device: str,
-                 temperature: float = 0.9, top_p: float = 0.95) -> tuple[list[Note], SampleReport]:
+                 temperature: float = DEFAULT_TEMPERATURE,
+                 top_p: float = DEFAULT_TOP_P) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
 
     The model works on the mel frame grid; the mask must hold both on frame times (what `to_events`
