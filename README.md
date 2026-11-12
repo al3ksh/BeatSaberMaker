@@ -4,7 +4,9 @@ Generates playable Beat Saber maps from a song. Two small models are trained on 
 
 ## Setup
 
-See `docs/environment.md` (Python venv, PyTorch with CUDA, ffmpeg).
+New here? Follow `docs/quickstart.md`: install, configure paths, get the model files, generate a map.
+
+Details of the reference machine are in `docs/environment.md` (Python venv, PyTorch with CUDA, ffmpeg).
 
 ## Data pipeline
 
