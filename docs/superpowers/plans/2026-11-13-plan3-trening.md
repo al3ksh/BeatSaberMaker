@@ -21,6 +21,7 @@
 - BPM trick limits: any tempo value `< 20` or `> 1000` BPM.
 - Alignment threshold: the 5th percentile of the score over 1 000 accepted train difficulties (seed 0).
 - Quality weight: `0.25 + 0.75 * clip((score - 0.80) / 0.15, 0, 1)`; missing score → `0.6`. Density weight: `(median bin count / bin count) ** 0.5` clipped to `[0.5, 3.0]`, bins from `stats["nps_bins"]`.
+- Excluded from training sampling (weight 0, still in the cache and in val/test): maps with `bs_score < 0.70` (256 train maps) and maps tagged `comedy-meme`, `challenge` or `ai` on BeatSaver (99 / 69 / 4 train maps).
 - Previous-token corruption default `p = 0.1`.
 - Size presets — pattern: `s` = 384/8/6, `m` = 512/12/8, `l` = 768/12/12 (d_model / n_layers / n_heads); timing: `s` = 256/6/4, `m` = 384/8/6.
 - Commits: `git -c user.name="Alex" -c user.email="alex.szotek@gmail.com" commit`; never push.
@@ -101,11 +102,12 @@
 **Interfaces:**
 - Produces:
   - `Entry` gains `score: float | None = None`, `upvotes: int | None = None` (from `maps.bs_score`, `maps.bs_upvotes`), written to and read from `index.json`; an index without them loads with `None`.
+  - `Entry` also gains `flags: tuple[str, ...] = ()` with `"low_score"` (score below 0.70) and `"joke_tag"` (raw `bs_tags` contain `comedy-meme`, `challenge` or `ai`), computed at cache build from the manifest; `entry_weights` returns exactly 0.0 for a flagged entry. `EXCLUDED_TAGS` and `MIN_TRAIN_SCORE` are module constants in `sampling.py`. The train commands log how many entries are excluded and fail if all are.
   - `entry_weights(entries: Sequence[Entry], stats: dict) -> np.ndarray` (float64, length `len(entries)`), per the Global Constraints formula; bins counted over the given entries with `np.searchsorted` on `stats["nps_bins"]`, values outside the range go to the nearest bin.
   - `run_training(..., sample_weights: np.ndarray | None = None)`: `None` keeps `shuffle=True`; otherwise a `WeightedRandomSampler(weights, num_samples=len(train_ds), replacement=True, generator=gen)` replaces shuffling.
   - CLI `--weighting [none|quality]` on `train timing` and `train pattern`, default `quality`; the choice is logged at start and stored in the checkpoint payload under `"train_options"` (a dict that Tasks 5 and 6 extend).
 
-- [ ] **Step 1: tests:** weight values for scores `None`, 0.5, 0.80, 0.875, 0.95, 0.99 (0.6, 0.25, 0.25, 0.625, 1.0, 1.0 before the density factor); density factor for a three-bin toy distribution, including the clips; old-format index loads; a run with weights `[1, 0, 0, …]` only ever yields index 0; `--weighting none` gives the same first batches as before the change.
+- [ ] **Step 1: tests:** weight values for scores `None`, 0.70, 0.80, 0.875, 0.95, 0.99 (0.6, 0.25, 0.25, 0.625, 1.0, 1.0 before the density factor); a `low_score` or `joke_tag` entry weighs 0 and is never drawn; flags are derived correctly from score 0.69 / 0.70 and from each excluded tag; density factor for a three-bin toy distribution, including the clips; old-format index loads; a run with weights `[1, 0, 0, …]` only ever yields index 0; `--weighting none` gives the same first batches as before the change.
 - [ ] **Step 2–4:** fail, implement, pass, full suite.
 - [ ] **Step 5:** commit `feat(models): quality and density weighted sampling`.
 

@@ -76,6 +76,12 @@ Dziś każda trudność jest losowana równie często. Nowa waga trudności to i
 
 Wagi trafiają do losowania z powtórzeniami w pętli treningowej. Walidacja nie jest ważona.
 
+**Mapy „dla jaj” i słabe.** Z losowania treningowego wypadają całkowicie (waga 0): mapy
+z oceną poniżej 0,70 (256 map treningowych) oraz mapy otagowane na BeatSaverze jako
+`comedy-meme` (99), `challenge` (69) lub `ai` (4). Tag `comedy-meme` opisuje często samą
+piosenkę, a nie mapę, ale strata 99 map jest tańsza niż ryzyko uczenia się żartów. Zostają
+w cache i w zbiorach walidacyjnym i testowym, żeby porównanie z generacją 1 było uczciwe.
+
 ### 3.5 Model wzorców odporny na własne błędy
 
 W treningu model widzi wyłącznie prawdziwe poprzednie nuty, a przy generowaniu własne.
@@ -126,6 +132,21 @@ przebiegu, a stan jednostek raportowany przed i po.
 - Trening z własnych próbek modelu (scheduled sampling) — tylko jeśli podmiana z 3.5 nie pomoże.
 - Mapy tylko z `BPMInfo.dat` / `AudioData.dat`.
 - Zmiany w generatorze poza wczytaniem nowych checkpointów.
+
+## 4a. Uwagi do Etapu 3 (bomby, ściany, łuki)
+
+Zgłoszone przez użytkownika 2026-11-13, do uwzględnienia w specyfikacji Etapu 3:
+
+- Ściany i bomby pełnią w mapach dwie różne role: **rozgrywkową** (ściana do uniku, bomba
+  na drodze zamachu) i **wizualną** (ściany ramujące po bokach, krótkie błyski, dekoracje
+  poza polem gry). Model nie może ich wrzucać do jednego worka: dekoracja nauczona jako
+  przeszkoda dałaby niegrywalne mapy, a przeszkoda nauczona jako dekoracja — nudne.
+- Etap 3 musi więc zacząć od pomiaru w danych: gdzie leżą ściany względem pola gry
+  (kolumny skrajne czy środkowe), jak długo trwają, czy wymagają ruchu głowy, i jak często
+  bomby leżą na torze ręki. Z tego wyjdzie podział na klasy i decyzja, czy to jeden model,
+  czy dwa (rozgrywka i dekoracja jako osobno sterowana opcja).
+- Mapy z rozszerzeniami (Noodle, Mapping Extensions) są już odrzucane, więc najdziksza
+  „sztuka ze ścian” nie trafia do zbioru.
 
 ## 5. Ryzyka
 
