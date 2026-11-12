@@ -142,3 +142,53 @@ def test_fit_grid_tolerates_missed_beat():
     g = fit_grid(np.delete(t, 20))
     assert g.steady
     assert abs(g.bpm - 120) < 0.5
+
+
+def _click_track(bpm, first_s, dur_s, seed=0):
+    n = int(dur_s * SAMPLE_RATE)
+    y = np.zeros(n, dtype=np.float32)
+    rng = np.random.default_rng(seed)
+    m = int(0.03 * SAMPLE_RATE)
+    burst = (rng.standard_normal(m) * np.exp(-np.arange(m) / (0.005 * SAMPLE_RATE))).astype(np.float32)
+    t = first_s
+    while t < dur_s - 0.05:
+        i = int(round(t * SAMPLE_RATE))
+        y[i:i + m] += burst[: n - i]
+        t += 60.0 / bpm
+    return y
+
+
+def _circ_err(a, b, period):
+    return abs((a - b + period / 2) % period - period / 2)
+
+
+@pytest.mark.parametrize("bpm", [128.0, 174.0, 95.5])
+def test_detect_grid_click_track_steady(bpm):
+    g = detect_grid(_click_track(bpm, 0.250, 60))
+    assert g.steady
+    ratios = [1.0, 0.5, 2.0]
+    assert any(abs(g.bpm / (bpm * r) - 1) < 0.003 for r in ratios)
+    if abs(g.bpm / bpm - 1) < 0.003:
+        half = 60.0 / g.bpm / 2
+        # the 30 ms envelope-lag correction is a median over real songs; a synthetic
+        # click is ~18-20 ms off with it (consistent), hence 25 ms instead of 15
+        assert _circ_err(g.offset_s, 0.250, half) < 0.025
+
+
+def test_detect_grid_white_noise_not_steady():
+    y = np.random.default_rng(1).standard_normal(60 * SAMPLE_RATE).astype(np.float32)
+    assert not detect_grid(y).steady
+
+
+def test_detect_grid_tempo_change_not_steady():
+    a = _click_track(120, 0.25, 30)
+    b = _click_track(150, 0.25, 30)
+    assert not detect_grid(np.concatenate([a, b])).steady
+
+
+def test_detect_grid_short_and_silent_not_steady():
+    g = detect_grid(_click_track(120, 0.25, 10))
+    assert not g.steady
+    s = detect_grid(np.zeros(60 * SAMPLE_RATE, dtype=np.float32))
+    assert not s.steady
+    assert np.isfinite(s.bpm) and np.isfinite(s.offset_s)

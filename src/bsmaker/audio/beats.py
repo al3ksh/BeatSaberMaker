@@ -10,6 +10,21 @@ from bsmaker.audio.decode import SAMPLE_RATE
 MIN_STEADY_BEATS = 16
 MAX_STEADY_RESIDUAL_S = 0.020
 
+ENV_HOP = 256
+ENV_FPS = SAMPLE_RATE / ENV_HOP
+MIN_AUDIO_S = 30.0
+BPM_SEARCH_REL = 0.03  # search seed tempo +-3%
+BPM_STEP_REL = 0.0001  # in steps of 0.01% of the seed
+COARSE_PHASE_S = 0.010
+FINE_PHASE_S = 0.001
+SEG_PHASE_S = 0.005
+N_SEGMENTS = 4
+MIN_CONTRAST = 1.5
+MAX_SEGMENT_DEV_S = 0.030
+# Lag of the onset-strength envelope behind the true beat: the median
+# measured on 80 validation songs.
+ENV_LAG_S = 0.030
+
 
 @dataclass(frozen=True)
 class Grid:
@@ -41,14 +56,77 @@ def fit_grid(beat_times_s: np.ndarray) -> Grid:
     return Grid(60.0 / float(slope), float(intercept % slope), True)
 
 
+def _comb_scores(env: np.ndarray, bpms: np.ndarray, phases: np.ndarray, n_frames: int) -> np.ndarray:
+    """Mean envelope at phase + k*P over the song, for one BPM, all phases. Shape (len(phases),)."""
+    period = 60.0 / bpms
+    return _comb_scores_ks(env, period, phases, np.arange(int(n_frames / ENV_FPS / period) - 1))
+
+
+def _comb_scores_ks(env: np.ndarray, period: float, phases: np.ndarray, ks: np.ndarray) -> np.ndarray:
+    if len(ks) == 0:
+        return np.full(len(phases), -np.inf)
+    pos = (phases[:, None] + ks[None, :] * period) * ENV_FPS
+    return np.interp(pos.ravel(), np.arange(len(env)), env).reshape(pos.shape).mean(axis=1)
+
+
+def _circ(d: float, period: float) -> float:
+    return (d + period / 2) % period - period / 2
+
+
+def _unsteady(bpm: float | None = None) -> Grid:
+    if bpm is None or not np.isfinite(bpm) or bpm <= 0:
+        return Grid(120.0, 0.0, False)
+    return Grid(float(bpm), 0.0, False)
+
+
 def detect_grid(audio: np.ndarray) -> Grid:
+    """Comb-filter fit of one constant BPM and phase to the onset envelope."""
     import librosa
 
-    _, beats = librosa.beat.beat_track(y=audio, sr=SAMPLE_RATE, units="time")
-    beats = np.asarray(beats, dtype=np.float64)
-    if len(beats) < 4:
-        return Grid(120.0, 0.0, False)
-    return fit_grid(beats)
+    audio = np.asarray(audio, dtype=np.float32)
+    if len(audio) < MIN_AUDIO_S * SAMPLE_RATE:
+        return _unsteady()
+    tempo, beats = librosa.beat.beat_track(y=audio, sr=SAMPLE_RATE, units="time")
+    seed = float(np.atleast_1d(tempo)[0])
+    if len(beats) < 4 or not (np.isfinite(seed) and seed > 0):
+        return _unsteady()
+    env = librosa.onset.onset_strength(y=audio, sr=SAMPLE_RATE, hop_length=ENV_HOP)
+    kernel = np.exp(-0.5 * (np.arange(-4, 5) / 1.0) ** 2)
+    env = np.convolve(env, kernel / kernel.sum(), mode="same")
+    env = env - env.min()
+    mean = float(env.mean())
+    if not mean > 1e-9:
+        return _unsteady(seed)
+
+    n = len(env)
+    rel = np.arange(-BPM_SEARCH_REL, BPM_SEARCH_REL + 1e-12, BPM_STEP_REL)
+    best_score, best_bpm = -np.inf, seed
+    for bpm in seed * (1 + rel):
+        period = 60.0 / bpm
+        ph = np.arange(0.0, period, COARSE_PHASE_S)
+        s = _comb_scores(env, bpm, ph, n).max()
+        if s > best_score:
+            best_score, best_bpm = float(s), float(bpm)
+    period = 60.0 / best_bpm
+    phases = np.arange(0.0, period, FINE_PHASE_S)
+    scores = _comb_scores(env, best_bpm, phases, n)
+    phase = float(phases[int(np.argmax(scores))])
+    contrast = float(scores.max()) / mean
+
+    ks_all = np.arange(int(n / ENV_FPS / period) - 1)
+    segdev = 0.0
+    seg_phases = np.arange(0.0, period, SEG_PHASE_S)
+    for q in range(N_SEGMENTS):
+        ks = ks_all[q * len(ks_all) // N_SEGMENTS:(q + 1) * len(ks_all) // N_SEGMENTS]
+        sp = float(seg_phases[int(np.argmax(_comb_scores_ks(env, period, seg_phases, ks)))])
+        segdev = max(segdev, abs(_circ(_circ(sp - phase, period), period / 2)))
+
+    offset = (phase - ENV_LAG_S) % period
+    if not all(np.isfinite([best_bpm, contrast, segdev, offset])):
+        return _unsteady(seed)
+    if contrast >= MIN_CONTRAST and segdev <= MAX_SEGMENT_DEV_S:
+        return Grid(best_bpm, float(offset), True)
+    return _unsteady(best_bpm)
 
 
 def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = 0.025) -> np.ndarray:
