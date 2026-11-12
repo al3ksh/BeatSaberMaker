@@ -27,6 +27,11 @@ SILENCE_PEAK = 1e-3
 DENSITY_TOLERANCE = 0.10
 MAX_DENSITY_ROUNDS = 3
 _RANKS = ("Easy", "Normal", "Hard", "Expert", "ExpertPlus")
+# Median reaction time (seconds from spawn to the hit) of human maps per nps bin: 30 576 accepted
+# train difficulties. 10th-90th percentile spans roughly 0.8x-1.4x of each value.
+REACTION_NPS_EDGES = (0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 7.0, 9.0, 12.0)
+REACTION_S_BY_BIN = (1.200, 1.043, 0.863, 0.714, 0.625, 0.580, 0.528, 0.483)
+MIN_HALF_JUMP_BEATS = 0.25  # the game's own lower limit
 
 
 class GenerateError(Exception):
@@ -76,6 +81,28 @@ def pick_rank(nps: float, stats: dict) -> str:
 
 def pick_njs(nps: float, stats: dict) -> tuple[float, float]:
     return lookup(stats, "njs_by_bin", nps), lookup(stats, "njs_offset_by_bin", nps)
+
+
+def base_half_jump_beats(bpm: float, njs: float) -> float:
+    """The game's half jump duration in beats before the start-beat offset is applied."""
+    beat = 60.0 / bpm
+    hjd = 4.0
+    while njs * beat * hjd > 17.999:
+        hjd /= 2.0
+    return hjd
+
+
+def reaction_offset(nps: float, njs: float, bpm: float) -> float:
+    """Start-beat offset giving the human-median reaction time for this density.
+
+    An offset in beats means a different time at every BPM, and the detected BPM is often half
+    the real one, so the offset is solved from a reaction time in seconds instead.
+    """
+    i = int(np.clip(np.searchsorted(REACTION_NPS_EDGES, nps, side="right") - 1,
+                    0, len(REACTION_S_BY_BIN) - 1))
+    wanted = REACTION_S_BY_BIN[i] / (60.0 / bpm)
+    base = base_half_jump_beats(bpm, njs)
+    return round(max(wanted, MIN_HALF_JUMP_BEATS) - base, 3)
 
 
 def _measured_nps(notes: Sequence[Note]) -> float:
@@ -157,7 +184,8 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
         warnings.append(f"density {measured:.2f} nps is outside 10% of the requested {nps:g}")
 
     rank = pick_rank(nps, stats)
-    njs, njs_offset = pick_njs(nps, stats)
+    njs, _ = pick_njs(nps, stats)
+    njs_offset = reaction_offset(nps, njs, grid.bpm)
     raw = title or audio_path.stem
     name = re.sub(r"[\x00-\x1f\x7f]", "", raw).strip()[:120] or "untitled"
     style = "+".join(styles) or "unknown"

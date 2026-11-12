@@ -11,7 +11,9 @@ from bsmaker import generate as G
 from bsmaker.formats.events import to_events
 from bsmaker.formats.model import Note
 from bsmaker.formats.reader import read_map
-from bsmaker.generate import GenerateError, generate_map, pick_njs, pick_rank, safe_title
+from bsmaker.generate import (
+    GenerateError, base_half_jump_beats, generate_map, pick_njs, pick_rank, reaction_offset,
+    safe_title)
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import LoadedPattern, SampleReport
 from bsmaker.models.timing.decode import LoadedTiming
@@ -245,3 +247,27 @@ def test_events_are_aligned_then_snapped_before_sampling(models, tmp_path, monke
     planned = seen[0]
     err = (planned - true_off + 0.0625) % 0.125 - 0.0625
     assert np.max(np.abs(err)) < 0.004
+
+
+def _reaction_s(bpm: float, njs: float, offset: float) -> float:
+    return max(base_half_jump_beats(bpm, njs) + offset, 0.25) * 60.0 / bpm
+
+
+def test_reaction_offset_gives_the_same_time_at_half_and_full_tempo():
+    # nps 6 -> 0.580 s whatever BPM the grid detection reports
+    for bpm in (110.0, 220.0, 174.0, 87.0):
+        assert _reaction_s(bpm, 18.0, reaction_offset(6.0, 18.0, bpm)) == pytest.approx(0.580, abs=0.002)
+
+
+def test_reaction_offset_follows_density():
+    slow = _reaction_s(128.0, 14.0, reaction_offset(3.0, 14.0, 128.0))
+    fast = _reaction_s(128.0, 19.0, reaction_offset(8.0, 19.0, 128.0))
+    assert slow == pytest.approx(0.863, abs=0.002) and fast == pytest.approx(0.528, abs=0.002)
+
+
+def test_reaction_offset_clamps_outside_the_bins_and_at_the_game_minimum():
+    assert reaction_offset(0.1, 10.0, 120.0) == reaction_offset(1.0, 10.0, 120.0)
+    assert reaction_offset(20.0, 21.0, 120.0) == reaction_offset(10.0, 21.0, 120.0)
+    # 30 BPM: 0.483 s is 0.24 beats, below the game's 0.25-beat floor
+    off = reaction_offset(10.0, 21.0, 30.0)
+    assert base_half_jump_beats(30.0, 21.0) + off == pytest.approx(0.25, abs=1e-3)
