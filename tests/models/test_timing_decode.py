@@ -136,3 +136,64 @@ def test_eval_fn_runs_on_cpu(tmp_path):
     out = fn(_model(), None)
     assert out["loss"] == 0.5
     assert all(0.0 <= out[k] <= 1.0 for k in ("precision", "recall", "f1"))
+
+
+def _two_level_curve(spacing=9, per_half=300):
+    """Loud half (peaks 0.9) then quiet but active half (peaks 0.3), floor 0.01."""
+    n = 2 * per_half * spacing + 400
+    p = np.full(n, 0.01, dtype=np.float32)
+    jit = np.random.default_rng(5).uniform(0.6, 1.4, 2 * per_half).astype(np.float32)
+    p[np.arange(per_half) * spacing + 200] = np.minimum(0.9 * jit[:per_half], 0.99)
+    p[(per_half + np.arange(per_half)) * spacing + 200] = 0.3 * jit[per_half:]
+    return p, per_half * spacing + 196
+
+
+def test_pick_events_covers_quiet_active_half():
+    from bsmaker.models.timing.decode import pick_events
+    p, mid = _two_level_curve()
+    want = 200
+    old = pick_peaks(p, threshold_for_count(p, want))
+    assert (old >= mid).sum() == 0  # the old global threshold leaves the quiet half empty
+    got = pick_events(p, want)
+    assert (got < mid).sum() > 30 and (got >= mid).sum() >= 3  # gamma < 1: a mild lift
+    assert abs(len(got) - want) <= max(2, 0.03 * want)
+
+
+def test_pick_events_silent_stretch_stays_empty():
+    from bsmaker.models.timing.decode import pick_events
+    rng = np.random.default_rng(0)
+    n = 6000
+    p = np.full(n, 0.01, dtype=np.float32) + rng.random(n).astype(np.float32) * 0.002
+    p[np.arange(150) * 9 + 100] = 0.9           # active first 1400 frames
+    p[np.arange(150) * 9 + 3000] = 0.3          # quiet but active middle
+    got = pick_events(p, 250)
+    assert ((got > 1600) & (got < 2900)).sum() == 0
+    assert (got >= 3000).sum() > 50
+    assert ((got > 4400)).sum() == 0            # silent tail
+
+
+def test_pick_events_invariants():
+    from bsmaker.models.timing.decode import pick_events
+    p, _ = _two_level_curve()
+    p[:int(round(MIN_FIRST_EVENT_S * FPS)) + 50] = 0.8  # noise inside the lead-in
+    got = pick_events(p, 300)
+    assert got.tolist() == sorted(set(got.tolist()))
+    assert (np.diff(got) >= 3).all()
+    assert abs(len(got) - 300) <= 9
+    assert (got >= int(round(MIN_FIRST_EVENT_S * FPS))).all()
+
+
+def test_pick_events_count_scale_monotonic():
+    from bsmaker.models.timing.decode import pick_events
+    p, _ = _two_level_curve()
+    assert len(pick_events(p, 360)) > len(pick_events(p, 300)) > len(pick_events(p, 240))
+
+
+def test_pick_events_degenerate_inputs():
+    from bsmaker.models.timing.decode import pick_events
+    assert len(pick_events(np.zeros(5000, dtype=np.float32), 100)) == 0
+    assert len(pick_events(np.zeros(0, dtype=np.float32), 10)) == 0
+    short = np.array([0, .5, 0], dtype=np.float32)
+    assert len(pick_events(short, 1)) == 0  # entirely inside the lead-in
+    assert len(pick_events(short, 0)) == 0
+

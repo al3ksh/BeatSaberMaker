@@ -19,6 +19,13 @@ from bsmaker.models.timing.model import TimingConfig, TimingModel
 
 MIN_FIRST_EVENT_S = 1.5
 BATCH = 16
+# Local normalisation (tuned on 80 val songs vs human maps; measured, baseline -> chosen):
+# windows that are human-active but <20% filled 0.92% -> 0.05%, false fill 0.025 -> 0.033,
+# onset F1@25 0.7741 -> 0.7729, event count unchanged.
+LOCAL_WINDOW_S = 8.0      # reference level = percentile of peak heights within +-this many seconds
+LOCAL_PERCENTILE = 95.0   # the same percentile song-wide is the global reference
+LOCAL_GAMMA = 0.75        # strength of the flattening (0 = off, 1 = full)
+LOCAL_FLOOR = 0.2         # local reference never below this share of the global one
 
 
 def frame_probs(model: TimingModel, mel: np.ndarray, nps: float, styles: Iterable[str],
@@ -117,6 +124,52 @@ def threshold_for_count(probs: np.ndarray, n_events: int, min_gap_frames: int = 
     return best_t
 
 
+def local_normalise(probs: np.ndarray, min_gap_frames: int = 3) -> np.ndarray:
+    """Probabilities divided by a local loudness reference, so quieter active sections compete.
+
+    The reference at each frame is the LOCAL_PERCENTILE of peak heights within +-LOCAL_WINDOW_S,
+    clipped below at LOCAL_FLOOR of the song-wide one (near-silent stretches are not amplified),
+    raised to LOCAL_GAMMA. The result is scaled to a maximum of 1; without peaks it is unchanged.
+    """
+    p = np.asarray(probs, dtype=np.float32)
+    peaks = np.sort(_greedy(len(p), _candidates(p), min_gap_frames))
+    if len(peaks) == 0:
+        return p
+    heights = p[peaks]
+    glob = float(np.percentile(heights, LOCAL_PERCENTILE))
+    if glob <= 0.0:
+        return p
+    step = max(1, int(FRAMES_PER_SECOND / 2))
+    centers = np.arange(0, len(p) + step, step)
+    half = LOCAL_WINDOW_S * FRAMES_PER_SECOND
+    lo = np.searchsorted(peaks, centers - half)
+    hi = np.searchsorted(peaks, centers + half)
+    ref = np.zeros(len(centers))
+    for i, (a, b) in enumerate(zip(lo, hi)):
+        if b > a:
+            ref[i] = np.percentile(heights[a:b], LOCAL_PERCENTILE)
+    ref = np.interp(np.arange(len(p)), centers, ref)
+    scale = (np.maximum(ref, LOCAL_FLOOR * glob) / glob) ** LOCAL_GAMMA
+    out = (p / scale).astype(np.float32)
+    top = float(out.max())
+    return out / top if top > 0 else out
+
+
+def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3) -> np.ndarray:
+    """Frame indices (sorted) of about `n_events` peaks spread over active sections.
+
+    The lead-in (MIN_FIRST_EVENT_S) is silenced, the curve is locally normalised, then the usual
+    global threshold for the count is applied to the normalised curve.
+    """
+    p = np.array(probs, dtype=np.float32)
+    p[:int(round(MIN_FIRST_EVENT_S * FRAMES_PER_SECOND))] = 0.0
+    if len(p) == 0:
+        return np.zeros(0, dtype=np.int64)
+    curve = local_normalise(p, min_gap_frames)
+    thr = threshold_for_count(curve, n_events, min_gap_frames)
+    return pick_peaks(curve, thr, min_gap_frames)
+
+
 @dataclass
 class LoadedTiming:
     model: TimingModel
@@ -138,12 +191,10 @@ def predict_events(loaded: LoadedTiming, mel: np.ndarray, nps: float, styles: It
     """Event times in seconds (float64, sorted) at the density `nps`."""
     stats = loaded.stats
     probs = frame_probs(loaded.model, mel, nps, tuple(styles), stats, device)
-    probs[:int(round(MIN_FIRST_EVENT_S * FRAMES_PER_SECOND))] = 0.0  # lead-in: no events there
     duration = len(mel) / FRAMES_PER_SECOND
     target = (nps * duration * float(stats["coverage_median"])
               / (1.0 + lookup(stats, "double_share_by_bin", nps)) * count_scale)
-    thr = threshold_for_count(probs, int(round(target)))
-    times = pick_peaks(probs, thr).astype(np.float64) * HOP / SAMPLE_RATE
+    times = pick_events(probs, int(round(target))).astype(np.float64) * HOP / SAMPLE_RATE
     return times[times >= MIN_FIRST_EVENT_S]
 
 
