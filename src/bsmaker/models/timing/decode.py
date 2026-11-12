@@ -26,6 +26,12 @@ LOCAL_WINDOW_S = 8.0      # reference level = percentile of peak heights within 
 LOCAL_PERCENTILE = 95.0   # the same percentile song-wide is the global reference
 LOCAL_GAMMA = 0.75        # strength of the flattening (0 = off, 1 = full)
 LOCAL_FLOOR = 0.2         # local reference never below this share of the global one
+# Stray lead-in (80 val songs; share of songs, human maps 1724 val difficulties vs generated,
+# K=8 / G=6 s: human 1.9%, generated 6.2%; K=8 / G=4 s: 3.6% vs 10.0%): a leading group of at most
+# STRAY_MAX_EVENTS events followed by a gap of STRAY_GAP_S within the first STRAY_WINDOW_S is dropped.
+STRAY_MAX_EVENTS = 8
+STRAY_GAP_S = 6.0
+STRAY_WINDOW_S = 30.0
 
 
 def frame_probs(model: TimingModel, mel: np.ndarray, nps: float, styles: Iterable[str],
@@ -155,11 +161,25 @@ def local_normalise(probs: np.ndarray, min_gap_frames: int = 3) -> np.ndarray:
     return out / top if top > 0 else out
 
 
+def trim_stray_lead_in(frames: np.ndarray) -> np.ndarray:
+    """Drop a leading group of at most STRAY_MAX_EVENTS events that ends in the first
+    STRAY_WINDOW_S and is followed by a gap of at least STRAY_GAP_S (not replaced)."""
+    f = np.asarray(frames)
+    t = f.astype(np.float64) / FRAMES_PER_SECOND
+    for k in range(1, min(STRAY_MAX_EVENTS, len(t) - 1) + 1):
+        if t[k - 1] > STRAY_WINDOW_S:
+            break
+        if t[k] - t[k - 1] >= STRAY_GAP_S:
+            return f[k:]
+    return f
+
+
 def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3) -> np.ndarray:
     """Frame indices (sorted) of about `n_events` peaks spread over active sections.
 
     The lead-in (MIN_FIRST_EVENT_S) is silenced, the curve is locally normalised, then the usual
-    global threshold for the count is applied to the normalised curve.
+    global threshold for the count is applied to the normalised curve; finally a stray group of
+    events before a long gap at the start is dropped.
     """
     p = np.array(probs, dtype=np.float32)
     p[:int(round(MIN_FIRST_EVENT_S * FRAMES_PER_SECOND))] = 0.0
@@ -167,7 +187,7 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3) -> np
         return np.zeros(0, dtype=np.int64)
     curve = local_normalise(p, min_gap_frames)
     thr = threshold_for_count(curve, n_events, min_gap_frames)
-    return pick_peaks(curve, thr, min_gap_frames)
+    return trim_stray_lead_in(pick_peaks(curve, thr, min_gap_frames))
 
 
 @dataclass

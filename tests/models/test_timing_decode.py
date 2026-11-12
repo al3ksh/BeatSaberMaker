@@ -197,3 +197,57 @@ def test_pick_events_degenerate_inputs():
     assert len(pick_events(short, 1)) == 0  # entirely inside the lead-in
     assert len(pick_events(short, 0)) == 0
 
+
+
+def _at_seconds(times_s, total_s=120.0):
+    p = np.full(int(total_s * FPS), 0.01, dtype=np.float32)
+    for t in times_s:
+        p[int(round(t * FPS))] = 0.9
+    return p
+
+
+def _stray_times(first_group, gap_after, rest_from=None, rest_n=60, step=0.5):
+    last = first_group[-1]
+    start = rest_from if rest_from is not None else last + gap_after
+    return list(first_group) + [start + k * step for k in range(rest_n)]
+
+
+def test_pick_events_drops_stray_lead_in_before_long_gap():
+    from bsmaker.models.timing.decode import pick_events
+    times = _stray_times([2.3, 2.8, 3.4, 4.0], 8.3)
+    got = pick_events(_at_seconds(times), len(times)) / FPS
+    assert got[0] > 12.0 and len(got) == 60
+
+
+def test_pick_events_keeps_normal_start():
+    from bsmaker.models.timing.decode import pick_events
+    times = [2.0 + 0.5 * k for k in range(60)]
+    got = pick_events(_at_seconds(times), len(times)) / FPS
+    assert len(got) == 60 and abs(got[0] - 2.0) < 0.1
+
+
+def test_pick_events_keeps_group_larger_than_k():
+    from bsmaker.models.timing.decode import STRAY_MAX_EVENTS, pick_events
+    group = [2.0 + 0.5 * k for k in range(STRAY_MAX_EVENTS + 1)]
+    times = _stray_times(group, 9.0)
+    got = pick_events(_at_seconds(times), len(times)) / FPS
+    assert len(got) == len(times) and abs(got[0] - 2.0) < 0.1
+
+
+def test_pick_events_long_gap_after_30s_does_not_trigger():
+    from bsmaker.models.timing.decode import pick_events
+    times = [2.0 + 0.5 * k for k in range(70)]            # dense until 36.5 s
+    times += [36.5 + 9.0 + 0.5 * k for k in range(30)]
+    got = pick_events(_at_seconds(times, 150.0), len(times)) / FPS
+    assert len(got) == len(times) and abs(got[0] - 2.0) < 0.1
+    # a small group that itself ends after 30 s is not a lead-in either
+    t2 = [29.0, 30.5, 31.0] + [31.0 + 9.0 + 0.5 * k for k in range(60)]
+    got2 = pick_events(_at_seconds(t2, 150.0), len(t2)) / FPS
+    assert abs(got2[0] - 29.0) < 0.1
+
+
+def test_trim_stray_lead_in_edge_cases():
+    from bsmaker.models.timing.decode import trim_stray_lead_in
+    for n in (0, 1, 2):
+        assert len(trim_stray_lead_in(np.arange(n) * 10)) == n  # no gap after the group: kept
+    assert len(trim_stray_lead_in(np.zeros(0, dtype=np.int64))) == 0
