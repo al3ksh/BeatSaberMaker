@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from bsmaker.audio.beats import Grid, detect_grid, snap_times, to_beats
+from bsmaker.audio.beats import Grid, align_grid, detect_grid, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
@@ -109,7 +109,7 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
     grid: Grid = detect_grid(audio)
 
     count_scale = 1.0
-    best = None  # (relative error, notes, planned, report)
+    best = None  # (relative error, notes, planned, report, aligned grid)
     rounds = 0
     early_stop = ""
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
@@ -121,16 +121,17 @@ def generate_map(audio_path: Path, *, nps: float, styles: Sequence[str], seed: i
                                     "or has no usable rhythm")
             early_stop = f"density search stopped early: only {len(events)} events in round {rnd}"
             break
-        planned = snap_times(events, grid)
+        round_grid = align_grid(grid, events)
+        planned = snap_times(events, round_grid)
         notes, report = sample_notes(pattern, planned, mel, nps, styles, seed, mask_cfg, device)
         measured = _measured_nps(notes)
         err = abs(measured / nps - 1.0) if measured > 0 else float("inf")
         if best is None or err < best[0]:
-            best = (err, notes, planned, report)
+            best = (err, notes, planned, report, round_grid)
         if err <= DENSITY_TOLERANCE:
             break
         count_scale *= nps / measured if measured > 0 else 2.0
-    _, notes, planned, report = best
+    _, notes, planned, report, grid = best  # the grid aligned in the kept round
     if len(notes) < 2:
         raise GenerateError("no notes could be placed")
 

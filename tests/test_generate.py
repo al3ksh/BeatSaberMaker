@@ -220,3 +220,28 @@ def test_density_extremes_real_pipeline(models, tmp_path, nps):
     events, dropped = to_events(notes)
     assert dropped == 0 and check(events, MASK).hard == ()
     assert G.check_exact(notes, MASK).hard == ()
+
+
+def test_events_are_aligned_then_snapped_before_sampling(models, tmp_path, monkeypatch):
+    from bsmaker.audio.beats import Grid
+
+    true_off, bpm = 0.2, 120.0  # beat 0.5 s, 1/4 beat 125 ms
+    rng = np.random.default_rng(4)
+    k = np.unique(rng.integers(20, 300, 200))
+    raw = true_off + k * 0.125 + rng.uniform(-0.015, 0.015, len(k))
+    # detect_grid is 60 ms off: only aligning to the events can bring the snap back on the grid
+    monkeypatch.setattr(G, "detect_grid", lambda audio: Grid(bpm, true_off + 0.06, True))
+    monkeypatch.setattr(G, "predict_events", lambda *a, **k: raw)
+    seen = []
+
+    def fake_sample(loaded, times, mel, nps, styles, seed, cfg, device, **kw):
+        seen.append(np.asarray(times))
+        notes = [Note(round(t * 22050 / 256) * 256 / 22050, 0.0, 0, 0, 0, 1) for t in times]
+        return notes, SampleReport(len(times), 0, 0, 0.0)
+
+    monkeypatch.setattr(G, "sample_notes", fake_sample)
+    monkeypatch.setattr(G, "check", lambda events, cfg: SimpleNamespace(hard=()))
+    _gen(models, write_audio(tmp_path / "a.wav"), tmp_path / "out", nps=5.0)
+    planned = seen[0]
+    err = (planned - true_off + 0.0625) % 0.125 - 0.0625
+    assert np.max(np.abs(err)) < 0.004

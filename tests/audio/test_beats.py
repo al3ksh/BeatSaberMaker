@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from bsmaker.audio.beats import Grid, detect_grid, fit_grid, snap_times, to_beats
+from bsmaker.audio.beats import Grid, align_grid, detect_grid, fit_grid, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE
 
 
@@ -69,6 +69,10 @@ def test_detect_grid_on_silence():
 GRID = Grid(120.0, 0.1, True)  # beat 0.5 s, 1/16 = 31.25 ms, 1/12 = 41.67 ms
 
 
+def _circ(d, p):
+    return (d + p / 2) % p - p / 2
+
+
 def test_snap_moves_within_limit_only():
     out = snap_times(np.array([0.1 + 0.5 + 0.004, 0.1 + 1.0 + 0.0156]), GRID, 0.025)
     assert out[0] == pytest.approx(0.6)
@@ -77,12 +81,34 @@ def test_snap_moves_within_limit_only():
     assert far[0] == pytest.approx(0.6156)
 
 
-def test_snap_prefers_nearest_of_sixteenth_and_triplet():
-    step12 = 0.5 / 12
-    t = 0.1 + 5 * step12 + 0.002  # on a triplet position, 1/16 grid is further away
-    assert snap_times(np.array([t]), GRID)[0] == pytest.approx(0.1 + 5 * step12)
-    t2 = 0.1 + 3 * 0.5 / 16 + 0.002
-    assert snap_times(np.array([t2]), GRID)[0] == pytest.approx(0.1 + 3 * 0.5 / 16)
+def test_snap_pulls_jittered_events_back_to_quarter_beat_grid():
+    rng = np.random.default_rng(3)
+    g = Grid(150.0, 0.07, True)  # beat 0.4 s, 1/4 beat = 100 ms
+    k = np.unique(rng.integers(5, 400, 150))
+    t = g.offset_s + k * 0.1
+    out = snap_times(t + rng.uniform(-0.015, 0.015, len(t)), g)
+    assert np.max(np.abs(out - t)) < 0.001
+
+
+def test_snap_keeps_triplets_off_the_quarter_grid():
+    step3 = 0.5 / 3
+    t = 0.1 + np.array([4, 5, 7, 8]) * step3 + np.array([0.004, -0.005, 0.006, -0.003])
+    out = snap_times(t, GRID)
+    np.testing.assert_allclose(out, 0.1 + np.array([4, 5, 7, 8]) * step3, atol=1e-9)
+
+
+def test_snap_leaves_events_far_from_any_position_alone():
+    # 1/4 beat = 125 ms: half a step (62.5 ms) from the 1/4 points, farther than 45 ms
+    t = np.array([0.1 + 0.0625, 0.1 + 1.0 + 0.0625])
+    np.testing.assert_array_equal(snap_times(t, GRID), t)
+
+
+def test_snap_two_events_competing_for_one_position_stay_ordered():
+    t = np.array([0.6 - 0.010, 0.6 + 0.012])
+    out = snap_times(t, GRID)
+    assert np.all(np.diff(out) > 0)
+    assert out[0] == pytest.approx(0.6)
+    assert out[1] == t[1]
 
 
 def test_snap_keeps_times_strictly_increasing():
@@ -125,14 +151,15 @@ def test_snap_random_property():
         t = rng.uniform(0, 5) + np.cumsum(rng.uniform(0.012, 2.0, rng.integers(2, 41)))
         out = snap_times(t, g)
         assert np.all(np.diff(out) > 0)
-        assert np.all(np.abs(out - t) <= 0.025 + 1e-9)
+        assert np.all(np.abs(out - t) <= 0.045 + 1e-9)
+        assert np.all(np.abs(out - t) <= 0.45 * 60 / bpm / 3 + 1e-9)
         beat = 60 / bpm
         for o, orig in zip(out, t):
             if o == orig:
                 continue
             ok = any(
                 abs((o - g.offset_s) / (beat / d) - round((o - g.offset_s) / (beat / d))) * (beat / d) < 1e-6
-                for d in (16, 12)
+                for d in (4, 3)
             )
             assert ok
 
@@ -192,3 +219,37 @@ def test_detect_grid_short_and_silent_not_steady():
     s = detect_grid(np.zeros(60 * SAMPLE_RATE, dtype=np.float32))
     assert not s.steady
     assert np.isfinite(s.bpm) and np.isfinite(s.offset_s)
+
+
+def _jittered_quarter_events(g, n=200, seed=5, jitter=0.015):
+    rng = np.random.default_rng(seed)
+    k = np.unique(rng.integers(8, 1500, n))
+    return g.offset_s + k * 60 / g.bpm / 4 + rng.uniform(-jitter, jitter, len(k)), k
+
+
+def test_align_grid_recovers_offset_from_wrong_input_grid():
+    true = Grid(128.0, 0.2, True)
+    t, _ = _jittered_quarter_events(true)
+    wrong = Grid(128.0, 0.2 + 0.060, True)
+    out = align_grid(wrong, t)
+    assert out.bpm == 128.0 and out.steady
+    assert abs(_circ(out.offset_s - true.offset_s, 60 / 128.0 / 4)) < 0.003
+
+
+def test_align_grid_picks_beat_origin_from_triplets():
+    true = Grid(120.0, 0.13, True)  # beat 0.5 s
+    rng = np.random.default_rng(9)
+    m = np.arange(8, 120)[:, None]
+    t = np.sort((true.offset_s + m * 0.5 + np.array([0.0, 0.5 / 3, 1.0 / 3, 0.25])).ravel())
+    t = t[rng.random(len(t)) < 0.6]
+    t = t + rng.uniform(-0.01, 0.01, len(t))
+    t = np.sort(t)
+    out = align_grid(Grid(120.0, 0.13 + 0.125, True), t)
+    assert abs(_circ(out.offset_s - true.offset_s, 0.5)) < 0.004
+
+
+def test_align_grid_leaves_unsteady_grid_and_empty_input_alone():
+    g = Grid(120.0, 0.0, False)
+    assert align_grid(g, np.array([1.0, 1.2, 1.4] * 10)) == g
+    s = Grid(120.0, 0.1, True)
+    assert align_grid(s, np.array([])) == s

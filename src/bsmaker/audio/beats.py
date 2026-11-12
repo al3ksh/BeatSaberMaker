@@ -25,6 +25,15 @@ MAX_SEGMENT_DEV_S = 0.030
 # measured on 80 validation songs.
 ENV_LAG_S = 0.030
 
+# Snapping of predicted events (tuned on 80 val songs: F1@10 ms 0.458 -> 0.629, F1@25 ms -0.003).
+SNAP_DIVISIONS = (4, 3)  # per beat, coarse first; human notes: 71-82% on 1/4, ~2-3% on 1/3
+SNAP_MAX_SHIFT_S = 0.045
+SNAP_MAX_STEP_FRACTION = 0.45  # never move more than this share of the smallest step
+SNAP_FINER_MARGIN_S = 0.008  # the 1/3 point must be this much closer than the 1/4 point
+ALIGN_SIGMA_S = 0.015  # width of the event-to-grid score
+ALIGN_STEP_S = 0.001
+ALIGN_MIN_EVENTS = 8
+
 
 @dataclass(frozen=True)
 class Grid:
@@ -129,26 +138,55 @@ def detect_grid(audio: np.ndarray) -> Grid:
     return _unsteady(best_bpm)
 
 
-def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = 0.025) -> np.ndarray:
+def align_grid(grid: Grid, event_times_s: np.ndarray) -> Grid:
+    """Same BPM, offset re-fitted to where the events sit.
+
+    The offset (mod 1/4 beat) maximises the summed Gaussian closeness of the events to the
+    1/4-beat points; of the four beat origins that leave, the one with most events near
+    1/3-beat points is kept. Unsteady grids and fewer than `ALIGN_MIN_EVENTS` events: unchanged.
+    """
+    t = np.asarray(event_times_s, dtype=np.float64).ravel()
+    if not grid.steady or len(t) < ALIGN_MIN_EVENTS:
+        return grid
+    beat = 60.0 / grid.bpm
+    quarter = beat / 4
+    cand = np.arange(0.0, quarter, ALIGN_STEP_S)
+    d = (t[None, :] - cand[:, None] + quarter / 2) % quarter - quarter / 2
+    o4 = float(cand[int(np.argmax(np.exp(-d ** 2 / (2 * ALIGN_SIGMA_S ** 2)).sum(axis=1)))])
+    origins = o4 + quarter * np.arange(4)
+    third = beat / 3
+    d3 = (t[None, :] - origins[:, None] + third / 2) % third - third / 2
+    best = float(origins[int(np.argmax(np.exp(-d3 ** 2 / (2 * ALIGN_SIGMA_S ** 2)).sum(axis=1)))])
+    return Grid(grid.bpm, best % beat, True)
+
+
+def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = SNAP_MAX_SHIFT_S) -> np.ndarray:
+    """Snap to the 1/4- or 1/3-beat grid points; the 1/4 point unless the 1/3 one is clearly closer.
+
+    Strictly increasing input in, strictly increasing output out: a snap is taken only if it
+    lands between the previous output and the next original time.
+    """
     times = np.asarray(times_s, dtype=np.float64)
     if len(times) > 1 and np.any(np.diff(times) <= 0):
         raise ValueError("times_s must be strictly increasing")
     if not grid.steady or len(times) == 0:
         return times.copy()
     beat = 60.0 / grid.bpm
+    cap = min(max_shift_s, SNAP_MAX_STEP_FRACTION * beat / max(SNAP_DIVISIONS))
     out = times.copy()
     prev = -np.inf
     n = len(times)
     for i, t in enumerate(times):
         best = t
         best_shift = np.inf
-        for div in (16, 12):
+        for div in SNAP_DIVISIONS:  # coarse first
             step = beat / div
             cand = grid.offset_s + np.round((t - grid.offset_s) / step) * step
-            if abs(cand - t) < best_shift:
-                best, best_shift = cand, abs(cand - t)
+            shift = abs(cand - t)
+            if best_shift == np.inf or shift + SNAP_FINER_MARGIN_S < best_shift:
+                best, best_shift = cand, shift
         upper = times[i + 1] if i + 1 < n else np.inf
-        if best_shift <= max_shift_s and prev < best < upper:
+        if best_shift <= cap and prev < best < upper:
             out[i] = best
         prev = out[i]
     return out
