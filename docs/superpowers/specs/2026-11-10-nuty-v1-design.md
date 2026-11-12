@@ -204,8 +204,11 @@ w manifeście.
 
 ### Podział na zbiory
 
-Po kluczu mapy (wszystkie trudności jednej mapy w tym samym zbiorze), deterministycznie
-z hasha klucza: 90% trening, 5% walidacja, 5% test.
+Po utworze (`song_id`): mapy tego samego utworu (ten sam znormalizowany tytuł i artysta albo
+ten sam tytuł i czas różniący się o ≤ 2 s) trafiają do jednego zbioru, więc wszystkie trudności
+wszystkich takich map są razem. Deterministycznie z hasha `song_id`: 90% trening, 5% walidacja,
+5% test. Filtr grywalności przy budowie danych używa profilu `data`, a generowanie (maska) profilu
+`mask`.
 
 ### Style
 

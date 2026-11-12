@@ -23,6 +23,7 @@ from bsmaker.data.features import build_features
 from bsmaker.data.fetch_metadata import fetch_metadata
 from bsmaker.data.index_local import index_folder
 from bsmaker.data.manifest import open_manifest
+from bsmaker.data.songs import resplit
 from bsmaker.data.styles import STYLES, styles_from_tags
 from bsmaker.playability.config import PROFILES, load_playability_config
 
@@ -84,6 +85,39 @@ def index_raw() -> None:
     _summarise(conn, s, "index-raw.txt", cfg, "beatsaver")
 
 
+@data_app.command("resplit")
+def resplit_cmd() -> None:
+    """Group maps into songs and re-assign train/val/test by song (safe to repeat)."""
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    before = {r[0]: r[1] for r in conn.execute(
+        "SELECT split, COUNT(*) FROM difficulties GROUP BY split")}
+    rows_before = {r[0]: r[1] for r in conn.execute("SELECT rowid, split FROM difficulties")}
+    after = resplit(conn)
+    rows_after = {r[0]: r[1] for r in conn.execute("SELECT rowid, split FROM difficulties")}
+    changed = sum(1 for k, v in rows_after.items() if rows_before.get(k) != v)
+    n_maps, n_songs = conn.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT song_id) FROM maps").fetchone()
+    lines = [f"difficulties per split before: {dict(sorted(before.items(), key=str))}",
+             f"difficulties per split after: {after}",
+             f"maps: {n_maps}, songs: {n_songs}"]
+    big = conn.execute(
+        "SELECT song_id, COUNT(*) AS n FROM maps GROUP BY song_id ORDER BY n DESC, song_id "
+        "LIMIT 5").fetchall()
+    lines.append("largest groups:")
+    for r in big:
+        titles = [t[0] for t in conn.execute(
+            "SELECT DISTINCT title FROM maps WHERE song_id = ? LIMIT 3", (r["song_id"],))]
+        lines.append(f"  {r['song_id']}: {r['n']} maps, titles {titles}")
+    text = "\n".join(lines)
+    print(text)
+    if changed:
+        print(f"WARNING: {changed} difficulties changed split; the event cache still holds the "
+              "old splits. Rebuild it with `data build-events` and retrain the models.")
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.reports_dir / "resplit.txt").write_text(text + "\n", encoding="utf-8")
+
+
 @data_app.command("features")
 def features(workers: int = typer.Option(
         max(1, min(8, (os.cpu_count() or 2) - 2)), "--workers",
@@ -97,6 +131,22 @@ def features(workers: int = typer.Option(
     print(f"workers: {workers}")
     computed, failed = build_features(conn, cfg.features_dir, progress_every=100, workers=workers)
     print(f"computed: {computed}, failed: {failed}")
+
+
+@data_app.command("build-events")
+def build_events() -> None:
+    """Pack accepted maps into the event cache and write dataset_stats.json."""
+    from bsmaker.data.events_cache import EventCache, build_event_cache
+    from bsmaker.data.stats import compute_stats, write_stats
+
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    left_out = build_event_cache(conn, cfg.events_dir, cfg.features_dir, progress_every=500)
+    cache = EventCache.load(cfg.events_dir)
+    print(f"cached: {len(cache.entries)}, left out: {left_out}", flush=True)
+    stats = compute_stats(cache, cfg.features_dir)
+    write_stats(stats, cfg.base_dir / "dataset_stats.json")
+    print(f"wrote {cfg.base_dir / 'dataset_stats.json'}")
 
 
 @data_app.command("fetch-metadata")
@@ -202,3 +252,298 @@ def scrape_cmd(max_maps: int = typer.Option(20000, "--max-maps", help="Maximum m
     print(f"downloaded: {s.downloaded}, skipped existing: {s.skipped_existing}, "
           f"failed: {s.failed}, stopped for low disk: {s.stopped_low_disk}")
     print(f"requests: {n_req}, HTTP 429: {n_429}, seconds: {time.monotonic() - t0:.0f}")
+
+
+train_app = typer.Typer(help="Model training commands.", no_args_is_help=True)
+app.add_typer(train_app, name="train")
+
+
+_NO_PLAYABILITY_WARNING = ("playability.toml not found next to bsmaker.toml; "
+                           "using built-in mask defaults")
+
+
+def _fail(message: str) -> None:
+    typer.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+@train_app.command("timing")
+def train_timing(
+        max_steps: int = typer.Option(40000, "--max-steps", help="Optimizer steps to train for."),
+        batch_size: int = typer.Option(32, "--batch-size"),
+        num_workers: int = typer.Option(4, "--num-workers"),
+        device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
+        eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
+        save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
+        out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
+                                        "(default: <data_dir>/checkpoints/timing).")) -> None:
+    """Train the timing model on the event cache; resumes from the checkpoint folder."""
+    from dataclasses import asdict
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.data.stats import load_stats
+    from bsmaker.models.timing.dataset import TimingWindows
+    from bsmaker.models.timing.decode import make_timing_eval, timing_better
+    from bsmaker.models.timing.model import (
+        TimingConfig, TimingModel, timing_eval, timing_step)
+    from bsmaker.models.train_loop import TrainSettings, run_training
+
+    cfg = load_config()
+    stats_path = cfg.base_dir / "dataset_stats.json"
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    if not stats_path.is_file():
+        _fail(f"{stats_path} not found; run `bsmaker data build-events`")
+    if device == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    cache = EventCache.load(cfg.events_dir)
+    stats = load_stats(stats_path)
+    mcfg = TimingConfig()
+    train_entries = cache.select("train")
+    val_all = cache.select("val")
+    if not train_entries or not val_all:
+        _fail("event cache has no train or val entries")
+    step = max(1, len(val_all) // 512)
+    val_entries = val_all[::step][:512]
+    common = dict(features_dir=cfg.features_dir, stats=stats, window=mcfg.window,
+                  events_dir=cfg.events_dir)
+    train_ds = TimingWindows(cache, train_entries, seed=0, **common)
+    val_ds = TimingWindows(cache, val_entries, seed=1, fixed=True, **common)
+    settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
+                             device=device, eval_every=eval_every, save_every=save_every)
+    result = run_training(
+        TimingModel(mcfg), train_ds, val_ds, timing_step,
+        make_timing_eval(cache, val_all, cfg.features_dir, stats, timing_eval),
+        out if out is not None else cfg.checkpoints_dir / "timing", settings, asdict(mcfg),
+        timing_better,
+        lambda m: print(m, flush=True), stats=stats)
+    print(f"done at step {result['step']}, best {result['best']}")
+
+
+@train_app.command("pattern")
+def train_pattern(
+        max_steps: int = typer.Option(60000, "--max-steps", help="Optimizer steps to train for."),
+        batch_size: int = typer.Option(32, "--batch-size"),
+        num_workers: int = typer.Option(4, "--num-workers"),
+        device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
+        eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
+        save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
+        out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
+                                        "(default: <data_dir>/checkpoints/pattern).")) -> None:
+    """Train the pattern model on the event cache; resumes from the checkpoint folder."""
+    from dataclasses import asdict
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.data.stats import load_stats
+    from bsmaker.models.pattern.dataset import PatternSequences
+    from bsmaker.models.pattern.model import (
+        PatternConfig, PatternModel, pattern_better, pattern_eval, pattern_step)
+    from bsmaker.models.train_loop import TrainSettings, run_training
+
+    cfg = load_config()
+    stats_path = cfg.base_dir / "dataset_stats.json"
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    if not stats_path.is_file():
+        _fail(f"{stats_path} not found; run `bsmaker data build-events`")
+    if device == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    cache = EventCache.load(cfg.events_dir)
+    stats = load_stats(stats_path)
+    mcfg = PatternConfig()
+    train_entries = cache.select("train")
+    val_all = cache.select("val")
+    if not train_entries or not val_all:
+        _fail("event cache has no train or val entries")
+    stride = max(1, len(val_all) // 256)
+    val_entries = val_all[::stride][:256]
+    common = dict(features_dir=cfg.features_dir, stats=stats, context=mcfg.context,
+                  events_dir=cfg.events_dir)
+    train_ds = PatternSequences(cache, train_entries, seed=0, **common)
+    val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
+    settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
+                             device=device, eval_every=eval_every, save_every=save_every)
+    result = run_training(
+        PatternModel(mcfg), train_ds, val_ds, pattern_step, pattern_eval,
+        out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
+        pattern_better, lambda m: print(m, flush=True), stats=stats)
+    print(f"done at step {result['step']}, best {result['best']}")
+
+
+@app.command("generate")
+def generate_cmd(
+        audio: Path = typer.Argument(..., help="Song file (mp3, ogg, wav, ...)."),
+        nps: float = typer.Option(..., "--nps", help="Target notes per second (0.5-12)."),
+        style: list[str] = typer.Option([], "--style", help="Style tag; repeat for several."),
+        seed: int = typer.Option(0, "--seed"),
+        out: Path | None = typer.Option(None, "--out", help="Output folder "
+                                        "(default: the CustomLevels folder)."),
+        overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing BSM map."),
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
+    """Generate a Beat Saber map folder from a song."""
+    if not 0.5 <= nps <= 12:
+        typer.echo("--nps must be between 0.5 and 12", err=True)
+        raise typer.Exit(2)
+    if device not in (None, "cuda", "cpu"):
+        typer.echo("--device must be cuda or cpu", err=True)
+        raise typer.Exit(2)
+    unknown = [s for s in style if s not in STYLES]
+    if unknown:
+        typer.echo(f"unknown style {unknown[0]!r}; expected one of {', '.join(STYLES)}", err=True)
+        raise typer.Exit(2)
+
+    import torch
+
+    from bsmaker.audio.decode import AudioDecodeError
+    from bsmaker.generate import GenerateError, generate_map, require_stats
+    from bsmaker.models.pattern.sample import load_pattern
+    from bsmaker.models.timing.decode import load_timing
+
+    cfg = load_config()
+    if not audio.is_file():
+        _fail(f"audio file not found: {audio}")
+    try:
+        require_ffmpeg()
+    except FfmpegMissingError as e:
+        _fail(f"{e}; install ffmpeg and put it on PATH")
+    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    for ck in (timing_ck, pattern_ck):
+        if not ck.is_file():
+            _fail(f"checkpoint not found: {ck}; train the models first")
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dev == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    try:
+        timing = load_timing(timing_ck, dev)
+        pattern = load_pattern(pattern_ck, dev)
+        mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        require_stats(timing.stats)
+        require_stats(pattern.stats, ("mel_mean", "mel_std"))
+        extra = ()
+        if cfg.playability_path is None:
+            extra = (_NO_PLAYABILITY_WARNING,)
+            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
+        result = generate_map(
+            audio, nps=nps, styles=tuple(style), seed=seed,
+            out_dir=out if out is not None else cfg.custom_levels, timing=timing,
+            pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
+            overwrite=overwrite, extra_warnings=extra)
+    except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    for w in result.warnings:
+        typer.echo(f"warning: {w}")
+    typer.echo(f"wrote {result.folder}")
+    typer.echo(f"{result.n_notes} notes, {result.nps:.2f} nps, {result.rank}, "
+               f"{result.bpm:.1f} bpm (grid {'steady' if result.grid_steady else 'not steady'}), "
+               f"{result.density_rounds} density round(s)")
+
+
+@app.command()
+def preview(folder: Path = typer.Argument(..., help="Map folder."),
+            rank: str | None = typer.Option(None, "--rank", help="Difficulty (default: highest)."),
+            out: Path | None = typer.Option(None, "--out", help="Output WAV file.")) -> None:
+    """Render the song with a click at every note, to check sync by ear."""
+    from bsmaker.audio.decode import AudioDecodeError
+    from bsmaker.preview import inside, render_preview
+
+    if out is None:
+        if inside(Path.cwd(), folder):
+            _fail("preview output must not be inside the map folder; pass --out")
+        target = Path.cwd() / f"preview - {folder.resolve().name}.wav"
+    else:
+        target = out
+    try:
+        levels = load_config().custom_levels
+    except Exception:  # noqa: BLE001 - no usable config: nothing to guard
+        levels = None
+    if levels is not None and inside(target, levels):
+        _fail("preview output must not be inside the CustomLevels folder; pass --out elsewhere")
+    try:
+        path = render_preview(folder, target, rank=rank)
+    except (ValueError, OSError, AudioDecodeError, FfmpegMissingError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    typer.echo(f"wrote {path}")
+
+
+@app.command("eval")
+def eval_cmd(
+        split: str = typer.Option("val", "--split", help="val or test."),
+        n: int = typer.Option(200, "--n", help="Difficulties for timing and pattern metrics."),
+        n_generated: int = typer.Option(10, "--n-generated", help="Difficulties to generate for."),
+        seed: int = typer.Option(0, "--seed"),
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
+    """Evaluate both models on held-out songs and write reports/eval-<split>.md."""
+    if split not in ("val", "test"):
+        typer.echo("--split must be val or test", err=True)
+        raise typer.Exit(2)
+    if device not in (None, "cuda", "cpu"):
+        typer.echo("--device must be cuda or cpu", err=True)
+        raise typer.Exit(2)
+
+    import tempfile
+
+    from bsmaker.generate import GenerateError, require_stats
+    from datetime import date
+
+    import torch
+
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.evaluate import (
+        eval_generated, eval_pattern, eval_timing, render_eval_report, render_summary)
+    from bsmaker.models.common import load_checkpoint
+    from bsmaker.models.pattern.sample import load_pattern
+    from bsmaker.models.timing.decode import load_timing
+
+    cfg = load_config()
+    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    for ck in (timing_ck, pattern_ck):
+        if not ck.is_file():
+            _fail(f"checkpoint not found: {ck}; train the models first")
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dev == "cuda" and not torch.cuda.is_available():
+        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    try:
+        cache = EventCache.load(cfg.events_dir)
+        if not cache.select(split):
+            _fail(f"no {split} difficulties in the event cache")
+        timing = load_timing(timing_ck, dev)
+        pattern = load_pattern(pattern_ck, dev)
+        require_stats(timing.stats)
+        require_stats(pattern.stats, ("mel_mean", "mel_std"))
+        mask_cfg = load_playability_config(cfg.playability_path, "mask")
+        if cfg.playability_path is None:
+            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
+    except (GenerateError, ValueError, KeyError) as e:
+        _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
+    steps = {name: load_checkpoint(ck).get("step", "?")
+             for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
+    results = {
+        "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev),
+        "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev),
+        "generated": eval_generated(timing, pattern, cache, cfg.features_dir, mask_cfg,
+                                    split, n_generated, seed, dev),
+        "setup": {"timing_checkpoint": str(timing_ck), "timing_step": steps["timing"],
+                  "pattern_checkpoint": str(pattern_ck), "pattern_step": steps["pattern"],
+                  "split": split, "n": n, "n_generated": n_generated, "seed": seed,
+                  "date": date.today().isoformat()},
+    }
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    target = cfg.reports_dir / f"eval-{split}.md"
+    fd, tmp_name = tempfile.mkstemp(dir=cfg.reports_dir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(render_eval_report(results))
+        os.replace(tmp_name, target)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    typer.echo(render_summary(results))
+    typer.echo(f"wrote {target}")

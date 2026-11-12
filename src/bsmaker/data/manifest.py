@@ -5,6 +5,8 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
+SCHEMA_VERSION = 2
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS maps (
     key TEXT PRIMARY KEY, source TEXT, folder TEXT, title TEXT, artist TEXT, mapper TEXT,
@@ -27,10 +29,19 @@ def open_manifest(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=120)
     conn.row_factory = sqlite3.Row
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(f"manifest {path} has schema version {version}, "
+                           f"this code supports {SCHEMA_VERSION}")
     # WAL: readers never block the writer and the writer never blocks readers.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
+    if version < SCHEMA_VERSION:
+        if "song_id" not in _columns(conn, "maps"):
+            conn.execute("ALTER TABLE maps ADD COLUMN song_id TEXT")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return conn
 

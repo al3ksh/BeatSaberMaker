@@ -378,3 +378,13 @@ def test_cached_log_mel_leaves_no_temp_files(tmp_path):
     out.mkdir()
     cached_log_mel(FIX / "v2_basic" / "song.egg", out / "k.npy")
     assert sorted(p.name for p in out.iterdir()) == ["k.npy", "k.npy.json"]
+
+
+def test_reindex_keeps_split(tmp_path):
+    root = _one(tmp_path)
+    conn = open_manifest(tmp_path / "m.sqlite")
+    index_folder(conn, root, CFG)
+    conn.execute("UPDATE difficulties SET split = 'test'")
+    conn.commit()
+    index_folder(conn, root, CFG)
+    assert {r[0] for r in conn.execute("SELECT split FROM difficulties")} == {"test"}

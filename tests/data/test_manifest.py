@@ -71,3 +71,28 @@ def test_upsert_without_commit_can_be_rolled_back(tmp_path):
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) FROM maps").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM difficulties").fetchone()[0] == 0
+
+
+def test_migration_adds_song_id_and_sets_version(tmp_path):
+    p = tmp_path / "old.sqlite"
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE maps (key TEXT PRIMARY KEY, title TEXT)")
+    c.execute("INSERT INTO maps VALUES ('a', 'T')")
+    c.commit()
+    c.close()
+    conn = open_manifest(p)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert "song_id" in {r[1] for r in conn.execute("PRAGMA table_info(maps)")}
+    assert conn.execute("SELECT title FROM maps").fetchone()[0] == "T"
+    conn.close()
+    assert open_manifest(p).execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_newer_schema_refused(tmp_path):
+    import pytest
+    p = tmp_path / "new.sqlite"
+    c = sqlite3.connect(p)
+    c.execute("PRAGMA user_version = 3")
+    c.close()
+    with pytest.raises(RuntimeError, match="3.*2"):
+        open_manifest(p)
