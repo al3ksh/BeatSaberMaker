@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from datetime import date
+import json
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,9 @@ from bsmaker.formats.events import Event, to_events
 from bsmaker.generate import check_exact
 from bsmaker.formats.tokens import NONE_TOKEN, decode_token
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
-from bsmaker.models.timing.decode import LoadedTiming, make_timing_eval, predict_events
+from bsmaker.models.timing.decode import (
+    HOP, SAMPLE_RATE, LoadedTiming, frame_probs, pick_peaks, predict_events, threshold_for_count)
+from bsmaker.models.timing.metrics import onset_f1
 from bsmaker.playability.checker import check
 from bsmaker.playability.config import PlayabilityConfig
 
@@ -36,6 +39,26 @@ def _spaced(entries: Sequence[Entry], n: int) -> list[Entry]:
     if n >= len(entries):
         return entries
     return [entries[i] for i in np.unique(np.linspace(0, len(entries) - 1, n).astype(int))]
+
+
+def load_entry_keys(path: Path) -> set[tuple[str, str, str]]:
+    """(map_key, characteristic, rank) of every record of an event-cache index.json."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError(f"{path} is not an index.json (a JSON list of records)")
+    try:
+        return {(r["map_key"], r["characteristic"], r["rank"]) for r in raw}
+    except (KeyError, TypeError) as e:
+        raise ValueError(f"{path} has records without map_key/characteristic/rank") from e
+
+
+def select_entries(cache: EventCache, split: str,
+                   keys: set[tuple[str, str, str]] | None = None) -> list[Entry]:
+    """Difficulties of the split, restricted to `keys` when given (before any subsampling)."""
+    entries = cache.select(split)
+    if keys is None:
+        return entries
+    return [e for e in entries if (e.map_key, e.characteristic, e.rank) in keys]
 
 
 def _measured_nps(notes) -> float:
@@ -73,42 +96,48 @@ def _bin_label(edges: Sequence[float], nps: float) -> str:
 
 
 def eval_timing(loaded: LoadedTiming, cache: EventCache, features_dir: Path, split: str,
-                n: int, device: str) -> dict:
-    """Mean onset P/R/F1 at the human event count, overall and by nps bin."""
-    entries = _spaced(cache.select(split), n)
+                n: int, device: str, entries: Sequence[Entry] | None = None) -> dict:
+    """Mean onset P/R/F1 at the human event count (25 ms and 10 ms), overall and by nps bin."""
+    pool = cache.select(split) if entries is None else list(entries)
+    entries = _spaced(pool, n)
     edges = list(loaded.stats.get("nps_bins", []))
-    scores: list[tuple[float, float, float]] = []
+    scores: list[tuple[float, float, float, float]] = []
     labels: list[str] = []
     order: dict[str, int] = {}
     for e in entries:
-        # the training-time whole-song eval, run on one song at a time
-        fn = make_timing_eval(cache, [e], features_dir, loaded.stats, lambda m, loader: {},
-                              n_songs=1)
-        m = fn(loaded.model, None)
-        scores.append((m["precision"], m["recall"], m["f1"]))
+        # same decode as the training-time whole-song eval; the predictions are scored twice
+        mel = _mel(features_dir, e)
+        true = np.asarray(cache.events(e.i)[0], dtype=np.float64)
+        probs = frame_probs(loaded.model, mel, e.nps, e.styles, loaded.stats, device)
+        pred = pick_peaks(probs, threshold_for_count(probs, len(true))).astype(np.float64) \
+            * HOP / SAMPLE_RATE
+        pr, rc, f1 = onset_f1(pred, true)
+        scores.append((pr, rc, f1, onset_f1(pred, true, tol_s=0.010)[2]))
         lab = _bin_label(edges, e.nps) if len(edges) >= 2 else "all"
         order.setdefault(lab, len(edges) and int(np.searchsorted(edges, e.nps, side="right")))
         labels.append(lab)
-    arr = np.asarray(scores, dtype=np.float64).reshape(-1, 3)
+    arr = np.asarray(scores, dtype=np.float64).reshape(-1, 4)
     by_bin: dict[str, dict] = {}
     for lab in sorted(set(labels), key=lambda k: order[k]):
         sel = np.asarray([x == lab for x in labels])
-        by_bin[lab] = {"n": int(sel.sum()), "f1": float(arr[sel, 2].mean())}
+        by_bin[lab] = {"n": int(sel.sum()), "f1": float(arr[sel, 2].mean()),
+                       "f1_10": float(arr[sel, 3].mean())}
     nan = float("nan")
     return {"n": len(entries), "precision": float(arr[:, 0].mean()) if len(arr) else nan,
             "recall": float(arr[:, 1].mean()) if len(arr) else nan,
-            "f1": float(arr[:, 2].mean()) if len(arr) else nan, "f1_by_nps_bin": by_bin}
+            "f1": float(arr[:, 2].mean()) if len(arr) else nan,
+            "f1_10": float(arr[:, 3].mean()) if len(arr) else nan, "f1_by_nps_bin": by_bin}
 
 
 def eval_pattern(loaded: LoadedPattern, cache: EventCache, features_dir: Path, split: str,
-                 n: int, device: str) -> dict:
+                 n: int, device: str, entries: Sequence[Entry] | None = None) -> dict:
     """Cross-entropy on one fixed run per difficulty (same construction as validation)."""
     from torch.utils.data import DataLoader
 
     from bsmaker.models.pattern.dataset import PatternSequences
     from bsmaker.models.pattern.model import pattern_eval
 
-    entries = _spaced(cache.select(split), n)
+    entries = _spaced(cache.select(split) if entries is None else list(entries), n)
     ds = PatternSequences(cache, entries, features_dir=features_dir, stats=loaded.stats,
                           context=loaded.config.context, seed=1, fixed=True)
     m = pattern_eval(loaded.model, DataLoader(ds, batch_size=16, num_workers=0))
@@ -160,13 +189,14 @@ def _soft_rates(event_lists: Sequence[Sequence[Event]], cfg: PlayabilityConfig) 
 
 def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCache,
                    features_dir: Path, mask_cfg: PlayabilityConfig, split: str, n: int,
-                   seed: int, device: str) -> dict:
+                   seed: int, device: str, entries: Sequence[Entry] | None = None) -> dict:
     """Generate for `n` test difficulties (one per song) and compare with the human maps.
 
     No audio is decoded: the cached mel is used, there is no beat grid and no snapping, and
     there is a single density round.
     """
-    entries = _spaced(_one_per_song(cache.select(split)), n)
+    pool = cache.select(split) if entries is None else list(entries)
+    entries = _spaced(_one_per_song(pool), n)
     gen_lists: list[list[Event]] = []
     hum_lists: list[list[Event]] = []
     n_events = n_skipped = n_fallback = n_collisions = 0
@@ -214,15 +244,94 @@ def eval_generated(timing: LoadedTiming, pattern: LoadedPattern, cache: EventCac
     }
 
 
+UP_DIRS = (0, 4, 5)
+DOWN_DIRS = (1, 6, 7)
+DIR_NAMES = AXIS_LABELS["direction"]
+
+
+def row_dir_shares(event_lists: Sequence[Sequence[Event]]) -> tuple[list[list[float]], int]:
+    """Joint share table [row][direction] over all notes of both hands, and the note count."""
+    counts = np.zeros((3, 9))
+    for events in event_lists:
+        for e in events:
+            for tok in (e.left, e.right):
+                if tok != NONE_TOKEN:
+                    _, y, d = decode_token(tok)
+                    counts[y, d] += 1
+    total = counts.sum()
+    return (counts / total if total else counts).tolist(), int(total)
+
+
+def eval_pattern_sampled(pattern: LoadedPattern, cache: EventCache, features_dir: Path,
+                         mask_cfg: PlayabilityConfig, split: str, n: int, seed: int, device: str,
+                         entries: Sequence[Entry] | None = None) -> dict:
+    """Sample notes on the human event times of `n` difficulties and compare row x direction."""
+    pool = cache.select(split) if entries is None else list(entries)
+    chosen = _spaced(_one_per_song(pool), n)
+    gen_lists: list[list[Event]] = []
+    hum_lists: list[list[Event]] = []
+    for e in chosen:
+        human = human_events(cache, e)
+        mel = _mel(features_dir, e)
+        times = np.asarray([ev.time_s for ev in human], dtype=np.float64)
+        notes, _ = sample_notes(pattern, times, mel, e.nps, e.styles, seed, mask_cfg, device)
+        events, dropped = to_events(notes)
+        if dropped:
+            raise RuntimeError(f"{dropped} sampled notes dropped by to_events in {e.map_key} (bug)")
+        hard = check(events, mask_cfg).hard
+        if hard:
+            raise RuntimeError(f"sampled map for {e.map_key} breaks a hard rule "
+                               f"({len(hard)} violations; bug)")
+        gen_lists.append(events)
+        hum_lists.append(human)
+    gen, n_gen = row_dir_shares(gen_lists)
+    hum, n_hum = row_dir_shares(hum_lists)
+
+    def share(table: list[list[float]], row: int, dirs: tuple[int, ...]) -> float:
+        return float(sum(table[row][d] for d in dirs))
+
+    return {
+        "n": len(chosen), "generated": gen, "human": hum,
+        "n_notes_generated": n_gen, "n_notes_human": n_hum,
+        "tv_row_dir": tv_distance(np.ravel(gen), np.ravel(hum)),
+        "up_share_bottom_row": {"generated": share(gen, 0, UP_DIRS), "human": share(hum, 0, UP_DIRS)},
+        "down_share_top_row": {"generated": share(gen, 2, DOWN_DIRS), "human": share(hum, 2, DOWN_DIRS)},
+        "hard_violations": 0,
+    }
+
+
+def json_safe(x):
+    """Recursively convert to JSON-serialisable values (NaN and inf become None)."""
+    if isinstance(x, dict):
+        return {str(k): json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [json_safe(v) for v in x]
+    if isinstance(x, np.ndarray):
+        return json_safe(x.tolist())
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        x = float(x)
+        return x if np.isfinite(x) else None
+    return x
+
+
 def _f(x: float, nd: int = 3) -> str:
     return "n/a" if x != x else f"{x:.{nd}f}"
 
 
 def _summary(r: dict) -> list[str]:
     t, p, g = r["timing"], r["pattern"], r["generated"]
+    sp = r.get("pattern_sampled")
+    extra = [f"- Timing onset F1 at 10 ms tolerance: {_f(t['f1_10'])}"]
+    if sp:
+        a, h = sp["up_share_bottom_row"]["generated"], sp["up_share_bottom_row"]["human"]
+        extra.append(f"- Pattern on human event times ({sp['n']} difficulties): tv_row_dir "
+                     f"{_f(sp['tv_row_dir'])}, upward cuts in the bottom row: generated "
+                     f"{_f(a)} vs human {_f(h)}")
     return [
         "## Summary", "",
-        f"- Timing onset F1 ({t['n']} songs, human event count): {_f(t['f1'])} "
+        f"- Timing onset F1 at 25 ms ({t['n']} songs, human event count): {_f(t['f1'])} "
         f"(precision {_f(t['precision'])}, recall {_f(t['recall'])})",
         f"- Pattern cross-entropy, both hands (joint, per event): {_f(p['ce'])} "
         f"(left hand {_f(p['ce_left'])}, right hand given left {_f(p['ce_right'])})",
@@ -232,7 +341,7 @@ def _summary(r: dict) -> list[str]:
         f"human {_f(g['human']['double_share'])}",
         f"- Skipped-event rate: {100 * g['skipped_rate']:.1f}% "
         f"(frame collisions, counted separately: {100 * g['frame_collision_rate']:.1f}%)",
-    ]
+    ] + extra
 
 
 def render_summary(results: dict) -> str:
@@ -244,9 +353,11 @@ def render_eval_report(results: dict) -> str:
     L = [f"# Evaluation report ({s['split']})", ""] + _summary(results) + [""]
     L += ["## Timing", "", "| | value |", "|---|---|",
           f"| precision | {_f(t['precision'])} |", f"| recall | {_f(t['recall'])} |",
-          f"| F1 | {_f(t['f1'])} |", "",
-          "F1 by notes-per-second bin:", "", "| nps bin | songs | F1 |", "|---|---|---|"]
-    L += [f"| {k} | {v['n']} | {_f(v['f1'])} |" for k, v in t["f1_by_nps_bin"].items()]
+          f"| F1 (25 ms) | {_f(t['f1'])} |", f"| F1 (10 ms) | {_f(t['f1_10'])} |", "",
+          "F1 by notes-per-second bin:", "", "| nps bin | songs | F1 (25 ms) | F1 (10 ms) |",
+          "|---|---|---|---|"]
+    L += [f"| {k} | {v['n']} | {_f(v['f1'])} | {_f(v['f1_10'])} |"
+          for k, v in t["f1_by_nps_bin"].items()]
     L += ["", "## Pattern", "", "| | cross-entropy | perplexity |", "|---|---|---|"]
     for name, key in (("both hands (joint, per event)", "ce"), ("left hand", "ce_left"),
                       ("right hand given left", "ce_right")):
@@ -278,10 +389,41 @@ def render_eval_report(results: dict) -> str:
           f"- Mean probability mass removed by the mask: {_f(g['masked_mass_mean'], 4)}",
           f"- Share of maps within 10% of the target nps after a single round: "
           f"{100 * g['density_hit_share']:.0f}%", ""]
+    sp = results.get("pattern_sampled")
+    if sp:
+        L += ["## Pattern on human event times", "",
+              f"{sp['n']} difficulties (one per song); notes sampled with the production "
+              "temperature and top-p on the human event times.", "",
+              "| row / direction | " + " | ".join(DIR_NAMES) + " |",
+              "|---|" + "---|" * 9]
+        for side in ("generated", "human"):
+            for row in (2, 1, 0):
+                L.append(f"| {side} row {row} | " + " | ".join(_f(v) for v in sp[side][row]) + " |")
+        L += ["", f"- tv_row_dir (27 cells): {_f(sp['tv_row_dir'])}",
+              f"- Upward cuts (up, up-left, up-right) in the bottom row: generated "
+              f"{_f(sp['up_share_bottom_row']['generated'])}, human "
+              f"{_f(sp['up_share_bottom_row']['human'])}",
+              f"- Downward cuts in the top row: generated "
+              f"{_f(sp['down_share_top_row']['generated'])}, human "
+              f"{_f(sp['down_share_top_row']['human'])}",
+              f"- Notes: generated {sp['n_notes_generated']}, human {sp['n_notes_human']}",
+              f"- Hard violations: {sp['hard_violations']} (must be 0)", ""]
     lo, med, hi = g["nps_range"]
-    L += ["## Setup", "", f"- Timing checkpoint: {s['timing_checkpoint']} (step {s['timing_step']})",
-          f"- Pattern checkpoint: {s['pattern_checkpoint']} (step {s['pattern_step']})",
-          f"- Split: {s['split']}", f"- n (timing, pattern): {s['n']}; n generated: {s['n_generated']}",
+
+    def ck(kind: str) -> list[str]:
+        out = [f"- {kind.capitalize()} checkpoint: {s[kind + '_checkpoint']} "
+               f"(step {s[kind + '_step']})"]
+        for key in ("model_config", "train_options"):
+            if s.get(f"{kind}_{key}"):
+                out.append(f"  - {key}: {json.dumps(json_safe(s[f'{kind}_{key}']), sort_keys=True)}")
+        return out
+
+    L += ["## Setup", ""] + ck("timing") + ck("pattern")
+    if s.get("entries_from"):
+        L.append(f"- Entries from: {s['entries_from']} (kept {s['entries_kept']} of "
+                 f"{s['entries_in_split']} {s['split']} difficulties)")
+    L += [f"- Split: {s['split']}", f"- n (timing, pattern): {s['n']}; n generated: {s['n_generated']}; "
+          f"n sampled pattern: {s.get('n_sampled', 0)}",
           f"- Generated difficulties' nps (min / median / max): {lo:.2f} / {med:.2f} / {hi:.2f}",
           f"- Seed: {s['seed']}", f"- Date: {s.get('date', date.today().isoformat())}", ""]
     return "\n".join(L)

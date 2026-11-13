@@ -579,8 +579,16 @@ def eval_cmd(
         n: int = typer.Option(200, "--n", help="Difficulties for timing and pattern metrics."),
         n_generated: int = typer.Option(10, "--n-generated", help="Difficulties to generate for."),
         seed: int = typer.Option(0, "--seed"),
-        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
-    """Evaluate both models on held-out songs and write reports/eval-<split>.md."""
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu."),
+        timing_ckpt: Path | None = typer.Option(None, "--timing-ckpt", help="Timing checkpoint."),
+        pattern_ckpt: Path | None = typer.Option(None, "--pattern-ckpt", help="Pattern checkpoint."),
+        entries_from: Path | None = typer.Option(
+            None, "--entries-from", help="index.json: evaluate only the difficulties it lists."),
+        tag: str | None = typer.Option(None, "--tag", help="Report name suffix (eval-<split>-<tag>)."),
+        n_sampled: int = typer.Option(40, "--n-sampled",
+                                      help="Difficulties for the sampled-pattern section; 0 skips it.")
+) -> None:
+    """Evaluate both models on held-out songs and write reports/eval-<split>[-<tag>].md and .json."""
     if split not in ("val", "test"):
         typer.echo("--split must be val or test", err=True)
         raise typer.Exit(2)
@@ -588,6 +596,12 @@ def eval_cmd(
         typer.echo("--device must be cuda or cpu", err=True)
         raise typer.Exit(2)
 
+    import re
+    if tag is not None and not re.fullmatch(r"[A-Za-z0-9_.-]+", tag):
+        typer.echo("--tag may contain only letters, digits, '-', '_' and '.'", err=True)
+        raise typer.Exit(2)
+
+    import json
     import tempfile
 
     from bsmaker.generate import GenerateError, require_stats
@@ -597,14 +611,15 @@ def eval_cmd(
 
     from bsmaker.data.events_cache import EventCache
     from bsmaker.evaluate import (
-        eval_generated, eval_pattern, eval_timing, render_eval_report, render_summary)
+        eval_generated, eval_pattern, eval_pattern_sampled, eval_timing, json_safe,
+        load_entry_keys, render_eval_report, render_summary, select_entries)
     from bsmaker.models.common import load_checkpoint
     from bsmaker.models.pattern.sample import load_pattern
     from bsmaker.models.timing.decode import load_timing
 
     cfg = load_config()
-    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
-    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    timing_ck = timing_ckpt or cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = pattern_ckpt or cfg.checkpoints_dir / "pattern" / "best.pt"
     for ck in (timing_ck, pattern_ck):
         if not ck.is_file():
             _fail(f"checkpoint not found: {ck}; train the models first")
@@ -615,8 +630,17 @@ def eval_cmd(
         _fail("--device cuda requested but CUDA is not available; use --device cpu")
     try:
         cache = EventCache.load(cfg.events_dir)
-        if not cache.select(split):
+        in_split = cache.select(split)
+        if not in_split:
             _fail(f"no {split} difficulties in the event cache")
+        pool = None
+        if entries_from is not None:
+            if not entries_from.is_file():
+                _fail(f"--entries-from file not found: {entries_from}")
+            pool = select_entries(cache, split, load_entry_keys(entries_from))
+            if not pool:
+                _fail(f"--entries-from {entries_from} leaves no {split} difficulty "
+                      f"(0 of {len(in_split)} kept)")
         timing = load_timing(timing_ck, dev)
         pattern = load_pattern(pattern_ck, dev)
         require_stats(timing.stats)
@@ -626,20 +650,33 @@ def eval_cmd(
             typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
     except (GenerateError, ValueError, KeyError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
-    steps = {name: load_checkpoint(ck).get("step", "?")
-             for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
+    cks = {name: load_checkpoint(ck) for name, ck in (("timing", timing_ck), ("pattern", pattern_ck))}
+    setup = {"timing_checkpoint": str(timing_ck), "pattern_checkpoint": str(pattern_ck),
+             "split": split, "n": n, "n_generated": n_generated, "n_sampled": n_sampled,
+             "seed": seed, "date": date.today().isoformat()}
+    for name, ck in cks.items():
+        setup[f"{name}_step"] = ck.get("step", "?")
+        setup[f"{name}_model_config"] = ck.get("model_config")
+        if ck.get("train_options"):
+            setup[f"{name}_train_options"] = ck["train_options"]
+    if entries_from is not None:
+        setup.update(entries_from=str(entries_from), entries_kept=len(pool),
+                     entries_in_split=len(in_split))
     results = {
-        "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev),
-        "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev),
+        "timing": eval_timing(timing, cache, cfg.features_dir, split, n, dev, pool),
+        "pattern": eval_pattern(pattern, cache, cfg.features_dir, split, n, dev, pool),
         "generated": eval_generated(timing, pattern, cache, cfg.features_dir, mask_cfg,
-                                    split, n_generated, seed, dev),
-        "setup": {"timing_checkpoint": str(timing_ck), "timing_step": steps["timing"],
-                  "pattern_checkpoint": str(pattern_ck), "pattern_step": steps["pattern"],
-                  "split": split, "n": n, "n_generated": n_generated, "seed": seed,
-                  "date": date.today().isoformat()},
+                                    split, n_generated, seed, dev, pool),
+        "setup": setup,
     }
+    if n_sampled > 0:
+        results["pattern_sampled"] = eval_pattern_sampled(
+            pattern, cache, cfg.features_dir, mask_cfg, split, n_sampled, seed, dev, pool)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
-    target = cfg.reports_dir / f"eval-{split}.md"
+    stem = f"eval-{split}-{tag}" if tag else f"eval-{split}"
+    target = cfg.reports_dir / f"{stem}.md"
+    (cfg.reports_dir / f"{stem}.json").write_text(
+        json.dumps(json_safe(results), indent=1), encoding="utf-8")
     fd, tmp_name = tempfile.mkstemp(dir=cfg.reports_dir, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
