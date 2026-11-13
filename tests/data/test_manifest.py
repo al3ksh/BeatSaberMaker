@@ -1,6 +1,7 @@
 import sqlite3
 
-from bsmaker.data.manifest import iter_accepted, open_manifest, upsert_difficulty, upsert_map
+from bsmaker.data.manifest import (SCHEMA_VERSION, get_meta, iter_accepted, open_manifest,
+                                  set_meta, upsert_difficulty, upsert_map)
 
 
 def _diff(key, rank="Expert", accepted=1, split="train"):
@@ -81,18 +82,43 @@ def test_migration_adds_song_id_and_sets_version(tmp_path):
     c.commit()
     c.close()
     conn = open_manifest(p)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert "song_id" in {r[1] for r in conn.execute("PRAGMA table_info(maps)")}
     assert conn.execute("SELECT title FROM maps").fetchone()[0] == "T"
     conn.close()
-    assert open_manifest(p).execute("PRAGMA user_version").fetchone()[0] == 2
+    assert open_manifest(p).execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_newer_schema_refused(tmp_path):
     import pytest
     p = tmp_path / "new.sqlite"
     c = sqlite3.connect(p)
-    c.execute("PRAGMA user_version = 3")
+    c.execute("PRAGMA user_version = 99")
     c.close()
-    with pytest.raises(RuntimeError, match="3.*2"):
+    with pytest.raises(RuntimeError, match="99.*3"):
         open_manifest(p)
+
+
+def test_migration_adds_tempo_columns_and_meta_idempotently(tmp_path):
+    p = tmp_path / "old.sqlite"
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE difficulties (map_key TEXT, characteristic TEXT, rank TEXT, "
+              "reject_reasons TEXT, PRIMARY KEY (map_key, characteristic, rank))")
+    c.execute("PRAGMA user_version = 2")
+    c.commit()
+    c.close()
+    for _ in range(2):
+        conn = open_manifest(p)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(difficulties)")}
+        assert {"tempo_kind", "align_score", "align_score_const"} <= cols
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        conn.close()
+
+
+def test_meta_get_set(tmp_path):
+    conn = open_manifest(tmp_path / "m.sqlite")
+    assert get_meta(conn, "align_threshold") is None
+    set_meta(conn, "align_threshold", "0.5")
+    assert get_meta(conn, "align_threshold") == "0.5"
+    set_meta(conn, "align_threshold", "0.7")
+    assert get_meta(conn, "align_threshold") == "0.7"

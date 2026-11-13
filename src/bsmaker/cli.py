@@ -21,7 +21,7 @@ from bsmaker.playability.checker import check as check_events
 from bsmaker.data.beatsaver import BeatSaverClient
 from bsmaker.data.features import build_features
 from bsmaker.data.fetch_metadata import fetch_metadata
-from bsmaker.data.index_local import index_folder
+from bsmaker.data.index_local import index_folder, reindex_tempo
 from bsmaker.data.manifest import open_manifest
 from bsmaker.data.songs import resplit
 from bsmaker.data.styles import STYLES, styles_from_tags
@@ -83,6 +83,17 @@ def index_raw() -> None:
     s = index_folder(conn, cfg.raw_dir, load_playability_config(cfg.playability_path, "data"),
                      source="beatsaver", progress_every=100)
     _summarise(conn, s, "index-raw.txt", cfg, "beatsaver")
+
+
+@data_app.command("reindex-tempo")
+def reindex_tempo_cmd() -> None:
+    """Re-index only maps with tempo reject reasons (keeps splits; safe to repeat)."""
+    _require_ffmpeg()
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    counts = reindex_tempo(conn, load_playability_config(cfg.playability_path, "data"))
+    for k, v in counts.items():
+        print(f"{k}: {v}")
 
 
 @data_app.command("resplit")

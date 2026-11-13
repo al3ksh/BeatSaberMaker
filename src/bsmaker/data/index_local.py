@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bsmaker.audio.decode import FfmpegMissingError
 from bsmaker.data.filters import nps, reject_reasons
-from bsmaker.data.manifest import upsert_difficulty, upsert_map
+from bsmaker.data.manifest import get_meta, upsert_difficulty, upsert_map
 from bsmaker.data.split import assign_split
 from bsmaker.formats.events import to_events
 from bsmaker.formats.reader import map_key, read_map
@@ -78,8 +78,12 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
     duration = probe_duration(bm.audio_path)
     row = conn.execute("SELECT bs_automapper FROM maps WHERE key = ?", (key,)).fetchone()
     automapper = None if row is None or row["bs_automapper"] is None else bool(row["bs_automapper"])
-    existing = {(r["characteristic"], r["rank"]): r["split"] for r in conn.execute(
-        "SELECT characteristic, rank, split FROM difficulties WHERE map_key = ?", (key,))}
+    stored = list(conn.execute(
+        "SELECT characteristic, rank, split, align_score FROM difficulties WHERE map_key = ?",
+        (key,)))
+    existing = {(r["characteristic"], r["rank"]): r["split"] for r in stored}
+    align = {(r["characteristic"], r["rank"]): r["align_score"] for r in stored}
+    threshold = get_meta(conn, "align_threshold")
     # keep the split of a re-indexed map (set by `data resplit`); new maps get a per-key
     # placeholder until the next resplit
     map_split = next((s for s in existing.values() if s), None) or assign_split(key)
@@ -89,13 +93,16 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
     for d in bm.difficulties:
         events, merged = to_events(d.notes)
         hard_rate = check(events, cfg).hard_rate
+        score = align.get((d.characteristic, d.rank))
+        verified = (score is not None and threshold is not None
+                    and score >= float(threshold))
         reasons = reject_reasons(bm, d, duration_s=duration, hard_rate=hard_rate,
-                                 automapper=automapper)
+                                 automapper=automapper, tempo_verified=verified)
         diff_rows.append({
             "map_key": key, "characteristic": d.characteristic, "rank": d.rank,
             "schema": d.schema, "n_notes": len(d.notes), "n_events": len(events),
             "merged_notes": merged, "nps": nps(d.notes), "njs": d.njs,
-            "njs_offset": d.njs_offset, "hard_rate": hard_rate,
+            "njs_offset": d.njs_offset, "tempo_kind": d.flags.tempo_kind, "hard_rate": hard_rate,
             "accepted": 0 if reasons else 1, "reject_reasons": json.dumps(reasons),
             "split": existing.get((d.characteristic, d.rank)) or map_split,
         })
@@ -156,3 +163,37 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
         for r, n in reasons.items():
             summary.reasons[r] = summary.reasons.get(r, 0) + n
     return summary
+
+
+_TEMPO_REASONS = ("bpm_changes", "tempo_external", "bpm_trick", "tempo_unverified")
+
+
+def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
+    """Re-index only maps with a tempo reject reason (old `bpm_changes` or a new one).
+
+    Goes through `_index_one`, so splits and map columns are kept. Folders that are missing
+    or unreadable are counted under "skipped" and their rows are left as they are.
+    Returns counts: "maps", "skipped" and one entry per tempo reason of the new rows.
+    """
+    where = " OR ".join("d.reject_reasons LIKE ?" for _ in _TEMPO_REASONS)
+    maps = conn.execute(
+        f"SELECT DISTINCT m.key, m.folder, m.source FROM maps m JOIN difficulties d "
+        f"ON d.map_key = m.key WHERE {where} ORDER BY m.key",
+        [f'%"{r}"%' for r in _TEMPO_REASONS]).fetchall()
+    out = {"maps": 0, "skipped": 0, **{r: 0 for r in _TEMPO_REASONS[1:]}}
+    for m in maps:
+        folder = Path(m["folder"]) if m["folder"] else None
+        if folder is None or not folder.is_dir():
+            out["skipped"] += 1
+            continue
+        try:
+            _, _, reasons = _index_one(conn, folder, m["key"], cfg, m["source"] or "local")
+        except (sqlite3.Error, FfmpegMissingError):
+            raise
+        except Exception:  # noqa: BLE001 - one bad folder must never stop the run
+            out["skipped"] += 1
+            continue
+        out["maps"] += 1
+        for r in _TEMPO_REASONS[1:]:
+            out[r] += reasons.get(r, 0)
+    return out

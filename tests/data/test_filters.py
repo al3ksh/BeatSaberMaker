@@ -55,8 +55,40 @@ def test_rejects_offgrid():
     assert _r(diff=_diff(flags=_flags(has_custom_note_data=True))) == ["offgrid_or_custom_notes"]
 
 
-def test_rejects_bpm_changes():
-    assert _r(diff=_diff(flags=_flags(has_bpm_changes=True))) == ["bpm_changes"]
+def _tempo(kind, lo=120.0, hi=120.0, **kw):
+    return _diff(flags=_flags(has_bpm_changes=True, tempo_kind=kind, bpm_min=lo, bpm_max=hi),
+                 **kw)
+
+
+def test_tempo_reasons_per_kind():
+    assert _r(diff=_tempo("external")) == ["tempo_external"]
+    assert _r(diff=_tempo("editor")) == ["tempo_unverified"]
+    assert _r(diff=_tempo("events")) == ["tempo_unverified"]
+    assert _r(diff=_tempo("external", 5, 5)) == ["tempo_external"]  # external wins over trick
+    assert _r(diff=_tempo("events", 5, 120)) == ["bpm_trick"]  # trick wins over unverified
+
+
+def test_bpm_trick_limits():
+    nan = float("nan")
+    for lo, hi in [(0, 120), (nan, nan), (19.9, 120), (120, 1000.1), (120, nan)]:
+        assert _r(diff=_tempo("editor", lo, hi)) == ["bpm_trick"], (lo, hi)
+    assert _r(diff=_tempo("editor", 20, 1000)) == ["tempo_unverified"]
+
+
+def test_tempo_verified_removes_only_tempo_unverified():
+    kw = dict(duration_s=120.0, hard_rate=0.0, automapper=None, tempo_verified=True)
+    d = _tempo("events")
+    assert reject_reasons(_bm(d), d, **kw) == []
+    d = _tempo("events", 5, 120)
+    assert reject_reasons(_bm(d), d, **kw) == ["bpm_trick"]
+    d = _tempo("external")
+    assert reject_reasons(_bm(d), d, **kw) == ["tempo_external"]
+
+
+def test_tempo_reason_keeps_position():
+    d = _diff(_notes(79), flags=_flags(has_bpm_changes=True, tempo_kind="editor",
+                                       bpm_min=120.0, bpm_max=120.0, has_time_offset=True))
+    assert _r(diff=d) == ["tempo_unverified", "time_offset", "too_few_notes"]
 
 
 def test_rejects_time_offset():
