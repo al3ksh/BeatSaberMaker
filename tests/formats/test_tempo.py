@@ -112,3 +112,33 @@ def test_read_map_v2_editor_keeps_constant_times(tmp_path):
     d = read_map(dst).difficulties[-1]
     assert d.flags.tempo_kind == "editor" and d.flags.has_bpm_changes
     assert d.notes[0].time_s == d.notes[0].beat * 60 / 120
+
+
+def test_non_finite_beat_invalidates_map(tmp_path):
+    for bad in ("abc", None, "inf"):
+        d = {"colorNotes": [], "bpmEvents": [{"b": 0, "m": 120}, {"b": bad, "m": 60}]}
+        kind, t = read_tempo(d, "v3", 120.0, tmp_path)
+        assert kind == "events" and math.isnan(t.bpm_range()[0])
+        m = read_map(_v3_folder(tmp_path, {"bpmEvents": d["bpmEvents"]}, name=f"nb{bad}"))
+        dd = m.difficulties[-1]
+        assert [n.time_s for n in dd.notes] == [2.0, 6.0]
+        assert math.isnan(dd.flags.bpm_min)
+
+
+def test_read_map_note_before_first_point(tmp_path):
+    m = read_map(_v3_folder(tmp_path, {"bpmEvents": [{"b": 8, "m": 60}, {"b": 20, "m": 30}]}))
+    assert [n.time_s for n in m.difficulties[-1].notes] == [2.0, 8.0]
+
+
+def test_read_map_v2_type100_exact_seconds(tmp_path):
+    dst = tmp_path / "t100"
+    shutil.copytree(FIX / "v2_basic", dst)
+    p = dst / "ExpertStandard.dat"
+    data = json.loads(p.read_text(encoding="utf-8-sig"))
+    data["_notes"] = [{"_time": b, "_lineIndex": 1, "_lineLayer": 0, "_type": 0, "_cutDirection": 1}
+                      for b in (4, 12)]
+    data["_events"] = [{"_time": 8, "_type": 100, "_floatValue": 60}]
+    p.write_text(json.dumps(data))
+    d = read_map(dst).difficulties[-1]
+    assert d.flags.tempo_kind == "events"
+    assert [n.time_s for n in d.notes] == [2.0, 8.0]

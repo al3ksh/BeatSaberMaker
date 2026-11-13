@@ -11,18 +11,17 @@ class TempoMap:
     info_bpm: float
     points: tuple[tuple[float, float], ...] = ()  # (beat, bpm)
 
-    def _normalized(self) -> list[tuple[float, float]]:
+    def __post_init__(self) -> None:
         by_beat: dict[float, float] = {}
         for beat, bpm in self.points:
             by_beat[beat] = bpm  # a later duplicate wins
-        return sorted(by_beat.items())
+        object.__setattr__(self, "points", tuple(sorted(by_beat.items())))
 
     def to_seconds(self, beat: float) -> float:
-        pts = self._normalized()
         seconds = 0.0
         prev_beat = 0.0
         bpm = self.info_bpm
-        for p_beat, p_bpm in pts:
+        for p_beat, p_bpm in self.points:
             if beat <= p_beat:
                 break
             seconds += (p_beat - prev_beat) * 60.0 / bpm
@@ -36,7 +35,7 @@ class TempoMap:
         return min(values), max(values)
 
 
-def _num(value: object, default: float = 0.0) -> float:
+def _num(value: object) -> float:
     try:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -46,6 +45,14 @@ def _num(value: object, default: float = 0.0) -> float:
 def _tempo_value(value: object) -> float:
     v = _num(value)
     return v if math.isfinite(v) and v > 0 else float("nan")
+
+
+def _point(beat: object, tempo: object) -> tuple[float, float]:
+    """A (beat, bpm) point; a non-finite beat invalidates the point like a bad tempo does."""
+    b = _num(beat)
+    if not math.isfinite(b):
+        return float("nan"), float("nan")
+    return b, _tempo_value(tempo)
 
 
 def _external_signals(folder: Path) -> bool:
@@ -66,7 +73,7 @@ def read_tempo(data: dict, schema: str, info_bpm: float, folder: Path) -> tuple[
     if schema == "v2":
         events = [e for e in data.get("_events") or [] if e.get("_type") == 100]
         if events:
-            pts = tuple((_num(e.get("_time", 0)), _tempo_value(e.get("_floatValue")))
+            pts = tuple(_point(e.get("_time", 0), e.get("_floatValue"))
                         for e in events)
             return "events", TempoMap(info_bpm, pts)
         cd = data.get("_customData") or {}
@@ -76,11 +83,11 @@ def read_tempo(data: dict, schema: str, info_bpm: float, folder: Path) -> tuple[
             for c in changes:
                 if isinstance(c, dict):
                     bpm = c["_BPM"] if "_BPM" in c else c.get("_bpm")
-                    pts_list.append((_num(c.get("_time", 0)), _tempo_value(bpm)))
+                    pts_list.append(_point(c.get("_time", 0), bpm))
             return "editor", TempoMap(info_bpm, tuple(pts_list))
     elif schema == "v3":
         ev = data.get("bpmEvents") or []
-        pts = tuple((_num(e.get("b", 0)), _tempo_value(e.get("m", info_bpm))) for e in ev)
+        pts = tuple(_point(e.get("b", 0), e.get("m", info_bpm)) for e in ev)
         changed = len(ev) > 1
         if len(ev) == 1:
             m = pts[0][1]
