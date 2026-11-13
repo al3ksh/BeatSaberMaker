@@ -67,6 +67,16 @@ def _mark_unreadable(conn, key: str) -> None:
     conn.commit()
 
 
+def _stored_threshold(conn) -> float | None:
+    raw = get_meta(conn, "align_threshold")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"manifest meta 'align_threshold' is not a number: {raw!r}") from None
+
+
 def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
                source: str) -> tuple[int, int, dict[str, int]]:
     """Index one folder in a single transaction; returns (n_difficulties, n_accepted, reasons).
@@ -83,7 +93,7 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
         (key,)))
     existing = {(r["characteristic"], r["rank"]): r["split"] for r in stored}
     align = {(r["characteristic"], r["rank"]): r["align_score"] for r in stored}
-    threshold = get_meta(conn, "align_threshold")
+    threshold = _stored_threshold(conn)
     # keep the split of a re-indexed map (set by `data resplit`); new maps get a per-key
     # placeholder until the next resplit
     map_split = next((s for s in existing.values() if s), None) or assign_split(key)
@@ -94,8 +104,7 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
         events, merged = to_events(d.notes)
         hard_rate = check(events, cfg).hard_rate
         score = align.get((d.characteristic, d.rank))
-        verified = (score is not None and threshold is not None
-                    and score >= float(threshold))
+        verified = score is not None and threshold is not None and score >= threshold
         reasons = reject_reasons(bm, d, duration_s=duration, hard_rate=hard_rate,
                                  automapper=automapper, tempo_verified=verified)
         diff_rows.append({
@@ -136,6 +145,7 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
 
     sqlite3 errors and a missing ffprobe propagate: they are not verdicts on a map.
     """
+    _stored_threshold(conn)  # fail early on a corrupt threshold, outside the per-map handler
     summary = IndexSummary()
     seen: set[str] = set()
     folders = sorted(p for p in Path(root).iterdir() if p.is_dir())
@@ -175,6 +185,7 @@ def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
     or unreadable are counted under "skipped" and their rows are left as they are.
     Returns counts: "maps", "skipped" and one entry per tempo reason of the new rows.
     """
+    _stored_threshold(conn)  # fail early on a corrupt threshold, outside the per-map handler
     where = " OR ".join("d.reject_reasons LIKE ?" for _ in _TEMPO_REASONS)
     maps = conn.execute(
         f"SELECT DISTINCT m.key, m.folder, m.source FROM maps m JOIN difficulties d "

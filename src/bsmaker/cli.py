@@ -132,7 +132,11 @@ def resplit_cmd() -> None:
 @data_app.command("features")
 def features(workers: int = typer.Option(
         max(1, min(8, (os.cpu_count() or 2) - 2)), "--workers",
-        help="Worker processes for decoding (>= 1).")) -> None:
+        help="Worker processes for decoding (>= 1)."),
+        tempo_candidates: bool = typer.Option(
+            False, "--tempo-candidates",
+            help="Also build features for maps with a difficulty awaiting tempo verification.")
+        ) -> None:
     """Compute log-mel features for every map with an accepted difficulty."""
     if workers < 1:
         raise typer.BadParameter("must be >= 1", param_hint="--workers")
@@ -140,8 +144,29 @@ def features(workers: int = typer.Option(
     cfg = load_config()
     conn = open_manifest(cfg.manifest_path)
     print(f"workers: {workers}")
-    computed, failed = build_features(conn, cfg.features_dir, progress_every=100, workers=workers)
+    computed, failed = build_features(conn, cfg.features_dir, progress_every=100, workers=workers,
+                                    tempo_candidates=tempo_candidates)
     print(f"computed: {computed}, failed: {failed}")
+
+
+@data_app.command("verify-tempo")
+def verify_tempo_cmd() -> None:
+    """Check audio alignment of tempo-map difficulties and accept those that pass."""
+    from bsmaker.data.align import calibrate_threshold, render_report, verify_tempo
+    from bsmaker.data.manifest import get_meta
+    cfg = load_config()
+    conn = open_manifest(cfg.manifest_path)
+    calibrated = get_meta(conn, "align_threshold") is None
+    if calibrated:
+        try:
+            calibrate_threshold(conn, cfg.features_dir)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(2) from None
+    text = render_report(verify_tempo(conn, cfg), calibrated)
+    print(text)
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.reports_dir / "verify-tempo.txt").write_text(text + "\n", encoding="utf-8")
 
 
 @data_app.command("build-events")

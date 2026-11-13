@@ -56,7 +56,7 @@ def _compute_one(audio: str, cache: str, key: str) -> tuple[str, str, str]:
 
 def build_features(conn, features_dir: Path, progress_every: int = 0,
                    free_bytes: Callable[[Path], int] = _default_free,
-                   workers: int = 1) -> tuple[int, int]:
+                   workers: int = 1, tempo_candidates: bool = False) -> tuple[int, int]:
     """Write features_dir/<key>.npy per map with an accepted difficulty; return (computed, failed).
 
     Only a failed decode of that map's audio marks it `no_audio`. Environment errors (missing
@@ -67,9 +67,12 @@ def build_features(conn, features_dir: Path, progress_every: int = 0,
     features_dir = Path(features_dir)
     features_dir.mkdir(parents=True, exist_ok=True)
     # fetchall: do not hold a read transaction open across slow decoding
+    where = "d.accepted = 1"
+    if tempo_candidates:
+        where += " OR d.reject_reasons = '[\"tempo_unverified\"]'"
     todo = conn.execute(
         "SELECT DISTINCT d.map_key AS key, m.folder AS folder FROM difficulties d "
-        "JOIN maps m ON m.key = d.map_key WHERE d.accepted = 1 ORDER BY d.map_key").fetchall()
+        f"JOIN maps m ON m.key = d.map_key WHERE {where} ORDER BY d.map_key").fetchall()
     if workers > 1:
         return _build_parallel(conn, features_dir, todo, progress_every, free_bytes, workers)
     computed = failed = 0

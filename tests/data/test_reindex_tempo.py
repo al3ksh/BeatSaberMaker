@@ -93,3 +93,15 @@ def test_verified_by_stored_align_score_and_threshold(tmp_path):
     assert "tempo_unverified" in run(0.4, "0.5")
     assert "tempo_unverified" not in run(0.5, "0.5")
     assert "tempo_unverified" not in run(0.9, "0.5")
+
+
+def test_corrupt_threshold_raises_and_does_not_mark_maps_unreadable(tmp_path):
+    import pytest
+    root, conn = _setup(tmp_path)
+    set_meta(conn, "align_threshold", "abc")
+    before = _reasons(conn, "1f00")
+    with pytest.raises(ValueError, match="align_threshold.*'abc'"):
+        index_folder(conn, root, CFG)
+    with pytest.raises(ValueError, match="align_threshold"):
+        reindex_tempo(conn, CFG)
+    assert _reasons(conn, "1f00") == before and "unreadable" not in before
