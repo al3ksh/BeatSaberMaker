@@ -17,6 +17,7 @@ from bsmaker.formats.events import Event, to_events
 from bsmaker.formats.model import Note
 from bsmaker.formats.reader import read_map
 from bsmaker.formats.tokens import NONE_TOKEN
+from bsmaker.models.sampling import entry_flags
 from bsmaker.playability.checker import drop_slider_tails
 
 SLIDER_GAP_S = 0.12
@@ -41,6 +42,9 @@ class Entry:
     njs: float
     njs_offset: float
     n_frames: int
+    score: float | None = None
+    upvotes: int | None = None
+    flags: tuple[str, ...] = ()
 
 
 def _atomic_write(path: Path, writer: Callable[[Path], None]) -> None:
@@ -73,7 +77,7 @@ def build_event_cache(conn: sqlite3.Connection, events_dir: Path, features_dir: 
         if not feat.is_file():
             left_out += len(rows)
             continue
-        m = conn.execute("SELECT folder, bs_tags FROM maps WHERE key = ?", (key,)).fetchone()
+        m = conn.execute("SELECT folder, bs_tags, bs_score, bs_upvotes FROM maps WHERE key = ?", (key,)).fetchone()
         if m is None:
             left_out += len(rows)
             continue
@@ -86,7 +90,10 @@ def build_event_cache(conn: sqlite3.Connection, events_dir: Path, features_dir: 
                 print(f"events: skipping unreadable map {key}: {type(exc).__name__}", flush=True)
             left_out += len(rows)
             continue
-        styles = list(styles_from_tags(json.loads(m["bs_tags"] or "[]")))
+        raw_tags = json.loads(m["bs_tags"] or "[]")
+        styles = list(styles_from_tags(raw_tags))
+        score, upvotes = m["bs_score"], m["bs_upvotes"]
+        flags = list(entry_flags(score, raw_tags))
         diffs = {(d.characteristic, d.rank): d for d in bm.difficulties}
         for row in rows:
             d = diffs.get((row["characteristic"], row["rank"]))
@@ -110,7 +117,7 @@ def build_event_cache(conn: sqlite3.Connection, events_dir: Path, features_dir: 
                 "map_key": key, "characteristic": row["characteristic"], "rank": row["rank"],
                 "split": row["split"], "nps": n_notes / span if span > 0 else 0.0,
                 "styles": styles, "njs": row["njs"], "njs_offset": row["njs_offset"],
-                "n_frames": n_frames})
+                "n_frames": n_frames, "score": score, "upvotes": upvotes, "flags": flags})
     if unreadable:
         print(f"events: {unreadable} maps unreadable, skipped", flush=True)
 
@@ -145,7 +152,8 @@ class EventCache:
         entries = [Entry(i=i, map_key=r["map_key"], characteristic=r["characteristic"],
                          rank=r["rank"], split=r["split"], nps=r["nps"],
                          styles=tuple(r["styles"]), njs=r["njs"], njs_offset=r["njs_offset"],
-                         n_frames=r["n_frames"]) for i, r in enumerate(raw)]
+                         n_frames=r["n_frames"], score=r.get("score"),
+                         upvotes=r.get("upvotes"), flags=tuple(r.get("flags", ()))) for i, r in enumerate(raw)]
         with np.load(events_dir / "events.npz", allow_pickle=False) as z:
             t, left, right, offsets = z["time_s"], z["left"], z["right"], z["offsets"]
         if (len(entries) != len(offsets) - 1 or int(offsets[-1]) != len(t)

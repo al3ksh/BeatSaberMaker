@@ -103,3 +103,27 @@ def test_load_rejects_mismatched_index(tmp_path, monkeypatch):
     (out / "index.json").write_text(json.dumps(idx[:1]))
     with pytest.raises(ValueError, match="inconsistent"):
         EventCache.load(out)
+
+
+def test_quality_fields_and_flags_in_index(tmp_path, monkeypatch):
+    conn, feats, out = _setup(tmp_path, monkeypatch, {
+        "a": {("Standard", "Expert"): _notes(30)}, "b": {("Standard", "Hard"): _notes(25)}})
+    conn.execute("UPDATE maps SET bs_score = 0.69, bs_upvotes = 7 WHERE key = 'a'")
+    conn.execute("UPDATE maps SET bs_tags = '[\"tech\", \"ai\"]' WHERE key = 'b'")
+    conn.commit()
+    build_event_cache(conn, out, feats)
+    a, b = EventCache.load(out).entries
+    assert (a.score, a.upvotes, a.flags) == (0.69, 7, ("low_score",))
+    assert (b.score, b.upvotes, b.flags) == (None, None, ("joke_tag",))
+
+
+def test_old_index_without_quality_fields_loads(tmp_path, monkeypatch):
+    conn, feats, out = _setup(tmp_path, monkeypatch, {"a": {("Standard", "Expert"): _notes(30)}})
+    build_event_cache(conn, out, feats)
+    raw = json.loads((out / "index.json").read_text())
+    for r in raw:
+        for k in ("score", "upvotes", "flags"):
+            del r[k]
+    (out / "index.json").write_text(json.dumps(raw))
+    e = EventCache.load(out).entries[0]
+    assert (e.score, e.upvotes, e.flags) == (None, None, ())

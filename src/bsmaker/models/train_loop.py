@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import Tensor, nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from bsmaker.models.common import load_checkpoint, save_checkpoint
 
@@ -71,7 +71,9 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
                  eval_fn: Callable[[nn.Module, DataLoader], dict[str, float]],
                  out_dir: Path, settings: TrainSettings, model_config: dict,
                  better: Callable[[dict, dict | None], bool],
-                 log: Callable[[str], None], stats: dict | None = None) -> dict:
+                 log: Callable[[str], None], stats: dict | None = None,
+                 sample_weights: np.ndarray | None = None,
+                 train_options: dict | None = None) -> dict:
     """Train until `settings.max_steps`; returns `{"step": int, "best": dict | None}`."""
     s = settings
     out_dir = Path(out_dir)
@@ -86,6 +88,7 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
     best: dict | None = None
     ckpt = _load_resume(out_dir, log)
     stats = dict(stats or {})
+    train_options = dict(train_options or {})
     if ckpt is not None:
         if ckpt["model_config"] != model_config:
             raise ValueError("checkpoint model_config differs from the requested model")
@@ -93,6 +96,16 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
         opt.load_state_dict(ckpt["optimizer"])
         if use_amp and ckpt.get("scaler"):
             scaler.load_state_dict(ckpt["scaler"])
+        if "train_options" in ckpt:
+            old = ckpt["train_options"]
+            diffs = [f"{k}: checkpoint {old.get(k)!r}, requested {train_options.get(k)!r}"
+                     for k in sorted(set(old) | set(train_options))
+                     if old.get(k) != train_options.get(k)]
+            if diffs:
+                raise ValueError("checkpoint train_options differ from the requested ones ("
+                                 + "; ".join(diffs) + "); use another --out")
+        else:
+            log("checkpoint has no train_options (older checkpoint); continuing")
         step, best = int(ckpt["step"]), ckpt["best"]
         log(f"resumed from step {step}")
     try:  # a best.pt of the same model config that beats the resumed record is kept
@@ -108,7 +121,7 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
     def payload() -> dict:
         return {"model": model.state_dict(), "optimizer": opt.state_dict(),
                 "scaler": scaler.state_dict(), "step": step, "model_config": model_config,
-                "stats": stats, "best": best}
+                "stats": stats, "best": best, "train_options": train_options}
 
     def save_last() -> None:
         last = out_dir / "last.pt"
@@ -120,7 +133,13 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
     pin = device.type == "cuda"
     gen = torch.Generator().manual_seed(
         int(np.random.SeedSequence([0, step]).generate_state(1, dtype=np.uint64)[0] >> 1))
-    loader = DataLoader(train_ds, batch_size=s.batch_size, shuffle=True, drop_last=True,
+    if sample_weights is None:
+        order: dict = {"shuffle": True}
+    else:
+        order = {"sampler": WeightedRandomSampler(
+            torch.as_tensor(sample_weights, dtype=torch.double), num_samples=len(train_ds),
+            replacement=True, generator=gen)}
+    loader = DataLoader(train_ds, batch_size=s.batch_size, drop_last=True, **order,
                         num_workers=s.num_workers, persistent_workers=s.num_workers > 0,
                         pin_memory=pin, generator=gen)
     if len(loader) == 0:

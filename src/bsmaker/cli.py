@@ -298,9 +298,31 @@ _NO_PLAYABILITY_WARNING = ("playability.toml not found next to bsmaker.toml; "
                            "using built-in mask defaults")
 
 
-def _fail(message: str) -> None:
+def _fail(message: str, code: int = 1) -> None:
     typer.echo(message, err=True)
-    raise typer.Exit(1)
+    raise typer.Exit(code)
+
+
+def _train_weights(entries: list, stats: dict, weighting: str):
+    """Sampling weights for the train entries (None for `none`); logs the mode and spread."""
+    import numpy as np
+
+    from bsmaker.models.sampling import entry_weights
+
+    if weighting not in ("none", "quality"):
+        _fail("--weighting must be none or quality", 2)
+    print(f"weighting: {weighting}", flush=True)
+    if weighting == "none":
+        return None
+    w = entry_weights(entries, stats)
+    nz = w[w > 0]
+    if len(nz) == 0:
+        _fail("every training entry has sampling weight 0 (all excluded); "
+              "check the quality fields in the event cache", 2)
+    print(f"weighting: {len(w) - len(nz)} of {len(w)} entries excluded (weight 0); "
+          f"non-zero weights min {nz.min():.3f} median {np.median(nz):.3f} max {nz.max():.3f}",
+          flush=True)
+    return w
 
 
 @train_app.command("timing")
@@ -311,6 +333,8 @@ def train_timing(
         device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
         eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
         save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
+        weighting: str = typer.Option("quality", "--weighting",
+                                      help="Sampling of training difficulties: none or quality."),
         out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
                                         "(default: <data_dir>/checkpoints/timing).")) -> None:
     """Train the timing model on the event cache; resumes from the checkpoint folder."""
@@ -345,6 +369,7 @@ def train_timing(
     val_entries = val_all[::step][:512]
     common = dict(features_dir=cfg.features_dir, stats=stats, window=mcfg.window,
                   events_dir=cfg.events_dir)
+    weights = _train_weights(train_entries, stats, weighting)
     train_ds = TimingWindows(cache, train_entries, seed=0, **common)
     val_ds = TimingWindows(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
@@ -354,7 +379,8 @@ def train_timing(
         make_timing_eval(cache, val_all, cfg.features_dir, stats, timing_eval),
         out if out is not None else cfg.checkpoints_dir / "timing", settings, asdict(mcfg),
         timing_better,
-        lambda m: print(m, flush=True), stats=stats)
+        lambda m: print(m, flush=True), stats=stats,
+        sample_weights=weights, train_options={"weighting": weighting})
     print(f"done at step {result['step']}, best {result['best']}")
 
 
@@ -366,6 +392,8 @@ def train_pattern(
         device: str = typer.Option("cuda", "--device", help="cuda or cpu."),
         eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
         save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
+        weighting: str = typer.Option("quality", "--weighting",
+                                      help="Sampling of training difficulties: none or quality."),
         out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
                                         "(default: <data_dir>/checkpoints/pattern).")) -> None:
     """Train the pattern model on the event cache; resumes from the checkpoint folder."""
@@ -399,6 +427,7 @@ def train_pattern(
     val_entries = val_all[::stride][:256]
     common = dict(features_dir=cfg.features_dir, stats=stats, context=mcfg.context,
                   events_dir=cfg.events_dir)
+    weights = _train_weights(train_entries, stats, weighting)
     train_ds = PatternSequences(cache, train_entries, seed=0, **common)
     val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
@@ -406,7 +435,8 @@ def train_pattern(
     result = run_training(
         PatternModel(mcfg), train_ds, val_ds, pattern_step, pattern_eval,
         out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
-        pattern_better, lambda m: print(m, flush=True), stats=stats)
+        pattern_better, lambda m: print(m, flush=True), stats=stats,
+        sample_weights=weights, train_options={"weighting": weighting})
     print(f"done at step {result['step']}, best {result['best']}")
 
 
