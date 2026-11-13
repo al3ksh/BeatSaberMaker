@@ -114,3 +114,19 @@ def test_best_pt_of_other_config_is_ignored(tmp_path):
     _, r, logs = _run(tmp_path, 10)
     assert r["best"] != {"loss": -1.0}
     assert any("ignoring best.pt" in m for m in logs)
+
+
+def test_resume_with_other_model_config_message(tmp_path):
+    s = TrainSettings(max_steps=2, batch_size=4, warmup=1, eval_every=1000, save_every=1000,
+                      num_workers=0, amp=False, device="cpu")
+
+    def go(cfg):
+        run_training(nn.Linear(4, 1), Toy(), Toy(), _step, _eval, tmp_path, s, cfg, _better,
+                     lambda m: None)
+
+    go({"d": 4})
+    s.max_steps = 4
+    with pytest.raises(ValueError) as ei:
+        go({"d": 8})
+    assert str(ei.value) == (f"checkpoint in {tmp_path} was made with {{'d': 4}}; "
+                             "this run asks for {'d': 8}; use another --out")

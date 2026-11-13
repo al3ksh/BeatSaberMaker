@@ -91,7 +91,8 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
     train_options = dict(train_options or {})
     if ckpt is not None:
         if ckpt["model_config"] != model_config:
-            raise ValueError("checkpoint model_config differs from the requested model")
+            raise ValueError(f"checkpoint in {out_dir} was made with {ckpt['model_config']}; "
+                             f"this run asks for {model_config}; use another --out")
         model.load_state_dict(ckpt["model"])
         opt.load_state_dict(ckpt["optimizer"])
         if use_amp and ckpt.get("scaler"):
