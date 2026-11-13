@@ -394,6 +394,9 @@ def train_pattern(
         save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
         weighting: str = typer.Option("quality", "--weighting",
                                       help="Sampling of training difficulties: none or quality."),
+        corrupt_p: float = typer.Option(0.1, "--corrupt-p", help="Chance (0-0.5) that a previous "
+                                        "token in the training input is replaced by another "
+                                        "token of the run."),
         out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
                                         "(default: <data_dir>/checkpoints/pattern).")) -> None:
     """Train the pattern model on the event cache; resumes from the checkpoint folder."""
@@ -408,6 +411,8 @@ def train_pattern(
         PatternConfig, PatternModel, pattern_better, pattern_eval, pattern_step)
     from bsmaker.models.train_loop import TrainSettings, run_training
 
+    if not 0.0 <= corrupt_p <= 0.5:
+        _fail("--corrupt-p must be in [0, 0.5]", 2)
     cfg = load_config()
     stats_path = cfg.base_dir / "dataset_stats.json"
     if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
@@ -428,7 +433,7 @@ def train_pattern(
     common = dict(features_dir=cfg.features_dir, stats=stats, context=mcfg.context,
                   events_dir=cfg.events_dir)
     weights = _train_weights(train_entries, stats, weighting)
-    train_ds = PatternSequences(cache, train_entries, seed=0, **common)
+    train_ds = PatternSequences(cache, train_entries, seed=0, corrupt_p=corrupt_p, **common)
     val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
                              device=device, eval_every=eval_every, save_every=save_every)
@@ -436,7 +441,7 @@ def train_pattern(
         PatternModel(mcfg), train_ds, val_ds, pattern_step, pattern_eval,
         out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
         pattern_better, lambda m: print(m, flush=True), stats=stats,
-        sample_weights=weights, train_options={"weighting": weighting})
+        sample_weights=weights, train_options={"weighting": weighting, "corrupt_p": corrupt_p})
     print(f"done at step {result['step']}, best {result['best']}")
 
 

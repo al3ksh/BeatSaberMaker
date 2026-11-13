@@ -58,11 +58,15 @@ class PatternSequences(Dataset):
     """One random run of up to `context` events of one difficulty per item.
 
     Events with both hands empty are skipped. Pass `events_dir` to pickle without the cache.
+    With `corrupt_p > 0` (training only, ignored when `fixed`) each previous-token pair of a
+    position `j >= 1` is replaced with probability `corrupt_p` by the true pair of another
+    position of the run (not `j - 1`); targets are unchanged.
     """
 
     def __init__(self, cache: EventCache | None, entries: Sequence[Entry], features_dir: Path,
                  stats: dict, context: int, seed: int, style_dropout: float = 0.15,
-                 fixed: bool = False, events_dir: Path | None = None) -> None:
+                 fixed: bool = False, events_dir: Path | None = None,
+                 corrupt_p: float = 0.0) -> None:
         if cache is None and events_dir is None:
             raise ValueError("give a cache or an events_dir")
         self._cache = cache
@@ -74,6 +78,7 @@ class PatternSequences(Dataset):
         self.seed = seed
         self.style_dropout = style_dropout
         self.fixed = fixed
+        self.corrupt_p = corrupt_p
         self._rng: np.random.Generator | None = None
 
     def __getstate__(self) -> dict:
@@ -133,6 +138,14 @@ class PatternSequences(Dataset):
         styles = e.styles
         if not self.fixed and styles != (UNKNOWN,) and rng.random() < self.style_dropout:
             styles = ()
+        if not self.fixed and self.corrupt_p > 0 and n >= 3:
+            # drawn last, so corrupt_p=0 consumes no random numbers
+            js = np.flatnonzero(rng.random(n - 1) < self.corrupt_p) + 1
+            if len(js):
+                ks = rng.integers(0, n - 1, size=len(js))
+                ks = ks + (ks >= js - 1)  # any run position except j - 1
+                prev_l[js] = left[start + ks]
+                prev_r[js] = right[start + ks]
         return {"mel_slices": torch.from_numpy(slices), "gaps": torch.from_numpy(gaps),
                 "prev_left": torch.from_numpy(prev_l), "prev_right": torch.from_numpy(prev_r),
                 "left": torch.from_numpy(tl), "right": torch.from_numpy(tr),
