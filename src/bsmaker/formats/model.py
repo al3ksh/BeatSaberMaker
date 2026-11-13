@@ -21,6 +21,9 @@ class DifficultyFlags:
     has_offgrid_notes: bool
     has_custom_note_data: bool
     has_time_offset: bool
+    tempo_kind: str = "none"
+    bpm_min: float = 0.0
+    bpm_max: float = 0.0
 
 
 @dataclass(frozen=True)

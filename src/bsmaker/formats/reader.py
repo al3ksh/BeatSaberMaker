@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
 
 from bsmaker.formats.model import BeatMap, Difficulty, DifficultyFlags, Note
+from bsmaker.formats.tempo import read_tempo
 
 _RawNote = tuple[float, int, int, int, int, bool]  # beat, x, y, color, direction, has_custom
 
@@ -94,30 +96,6 @@ def _counts(data: dict, schema: str) -> tuple[int, int, int]:
             len(data.get("chains") or []))
 
 
-def _bpm_changes(data: dict, schema: str, info_bpm: float, folder: Path) -> bool:
-    if schema == "v2":
-        cd = data.get("_customData") or {}
-        if cd.get("_BPMChanges") or cd.get("_bpmChanges"):
-            return True
-        if any(e.get("_type") == 100 for e in data.get("_events") or []):
-            return True
-    elif schema == "v3":
-        ev = data.get("bpmEvents") or []
-        if len(ev) > 1:
-            return True
-        if len(ev) == 1 and abs(float(ev[0].get("m", info_bpm)) - info_bpm) > 0.01:
-            return True
-    for name, key in (("BPMInfo.dat", "_regions"), ("AudioData.dat", "bpmData")):
-        p = _find_ci(folder, name)
-        if p is not None:
-            try:
-                if len(_load(p).get(key) or []) > 1:
-                    return True
-            except (OSError, ValueError, AttributeError):
-                pass
-    return False
-
-
 def _read_difficulty(path: Path, folder: Path, characteristic: str, rank: str, njs: float,
                      njs_offset: float, bpm: float, time_offset: float) -> Difficulty:
     data = _load(path)
@@ -125,6 +103,9 @@ def _read_difficulty(path: Path, folder: Path, characteristic: str, rank: str, n
         raise ValueError("difficulty file is not a JSON object")
     schema = _detect_schema(data)
     raw, bombs = _raw_notes(data, schema)
+    kind, tempo = read_tempo(data, schema, bpm, folder)
+    use_map = kind == "events" and all(math.isfinite(b) and b > 0 for _, b in tempo.points)
+    bpm_min, bpm_max = tempo.bpm_range()
     offgrid = False
     custom = False
     notes: list[Note] = []
@@ -133,11 +114,11 @@ def _read_difficulty(path: Path, folder: Path, characteristic: str, rank: str, n
         if not (0 <= x <= 3 and 0 <= y <= 2 and 0 <= d <= 8):
             offgrid = True
             continue
-        notes.append(Note(beat * 60.0 / bpm, beat, x, y, c, d))
+        notes.append(Note(tempo.to_seconds(beat) if use_map else beat * 60.0 / bpm, beat, x, y, c, d))
     notes.sort(key=lambda n: (n.time_s, n.color, n.x, n.y))
     n_obst, n_arcs, n_chains = _counts(data, schema)
-    flags = DifficultyFlags(_bpm_changes(data, schema, bpm, folder), offgrid, custom,
-                            time_offset != 0)
+    flags = DifficultyFlags(kind != "none", offgrid, custom, time_offset != 0,
+                            kind, bpm_min, bpm_max)
     return Difficulty(characteristic, rank, schema, njs, njs_offset, tuple(notes), bombs,
                       n_obst, n_arcs, n_chains, flags)
 

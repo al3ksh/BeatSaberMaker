@@ -37,7 +37,9 @@ def test_reads_v2_basic():
     assert d.njs == 16 and d.njs_offset == 0
     n = d.notes[0]
     assert (n.time_s, n.beat, n.x, n.y, n.color, n.direction) == (1.0, 2, 1, 0, 0, 1)
-    assert not any(d.flags.__dict__.values())
+    f = d.flags
+    assert not (f.has_bpm_changes or f.has_offgrid_notes or f.has_custom_note_data or f.has_time_offset)
+    assert f.tempo_kind == "none"
     assert m.problems == ()
 
 
