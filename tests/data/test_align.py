@@ -51,8 +51,8 @@ def test_alignment_score_aligned_shifted_stretched():
     shifted = alignment_score(t + 0.15, env)
     stretched = alignment_score(t[0] + (t - t[0]) * 1.03, env)
     assert aligned > 5
-    assert shifted < 2
-    assert stretched < aligned - 2
+    assert 0.7 < shifted < 1.3
+    assert stretched < aligned / 2
 
 
 def test_alignment_score_nan_cases():
@@ -61,8 +61,8 @@ def test_alignment_score_nan_cases():
     assert math.isnan(alignment_score(t[:19], env))
     assert math.isnan(alignment_score(t, np.zeros(FRAMES, dtype=np.float32)))
     assert math.isnan(alignment_score(t + 1000.0, env))  # beyond the envelope: nothing usable
-    # notes beyond the end are ignored, the rest still count
-    assert alignment_score(np.concatenate([t, t + 1000.0]), env) > 5
+    # more than 2% of the events beyond the envelope: not covered
+    assert math.isnan(alignment_score(np.concatenate([t, t + 1000.0]), env))
 
 
 def _write_map(folder: Path, bpm_events=None, n=40) -> None:
@@ -109,7 +109,7 @@ def test_verify_tempo_accepts_aligned_keeps_misaligned_and_reports_missing(tmp_p
     set_meta(conn, "align_threshold", "3.0")
     res = verify_tempo(conn, cfg)
     ev = res["kinds"]["events"]
-    assert ev == {"accepted": 1, "failed": 1, "missing": 1, "nan": 0}
+    assert ev == {"accepted": 1, "failed": 1, "missing": 1, "unreadable": 0, "nan": 0}
     assert res["threshold"] == 3.0
     row = conn.execute("SELECT * FROM difficulties WHERE map_key='1f00'").fetchone()
     assert row["accepted"] == 1 and row["reject_reasons"] == "[]"
@@ -120,10 +120,13 @@ def test_verify_tempo_accepts_aligned_keeps_misaligned_and_reports_missing(tmp_p
     assert bad["align_score"] is not None and bad["align_score"] < 3.0
     miss = conn.execute("SELECT * FROM difficulties WHERE map_key='3f00'").fetchone()
     assert miss["align_score"] is None and miss["accepted"] == 0
-    assert res["events_scored"] == 2 and res["const_higher"] >= 0
+    assert res["events_scored"] == 2
+    expected = conn.execute("SELECT COUNT(*) FROM difficulties WHERE "
+                            "align_score_const > align_score").fetchone()[0]
+    assert res["const_higher"] == expected and expected <= 1  # 1f00 is never const-higher
     # safe to repeat: accepted stays accepted, failed is re-scored
     res2 = verify_tempo(conn, cfg)
-    assert res2["kinds"]["events"] == {"accepted": 0, "failed": 1, "missing": 1, "nan": 0}
+    assert res2["kinds"]["events"] == {"accepted": 0, "failed": 1, "missing": 1, "unreadable": 0, "nan": 0}
     assert conn.execute("SELECT accepted FROM difficulties WHERE map_key='1f00'"
                         ).fetchone()[0] == 1
     text = render_report(res, calibrated=False)
@@ -146,6 +149,68 @@ def test_verify_tempo_without_threshold_raises(tmp_path):
         verify_tempo(conn, cfg)
 
 
+def test_dense_case_scores_above_one_and_offset_events_below():
+    # dense events, 6-11 frames apart; the envelope is bright exactly on them. A +-1 frame
+    # window cannot separate a strictly periodic envelope from its shifts, so gaps vary.
+    rng = np.random.default_rng(3)
+    frames = np.cumsum(rng.integers(6, 12, size=550)) + 40
+    env = np.zeros(FRAMES, dtype=np.float32)
+    env[frames] = 1.0
+    t = frames / FRAMES_PER_SECOND
+    assert alignment_score(t, env) > 1.5
+    assert alignment_score(t + 3 / FRAMES_PER_SECOND, env) < 1.0
+
+
+def test_short_feature_file_is_nan_and_stays_unverified(tmp_path):
+    t = _times()
+    env = onset_envelope(_mel(t))
+    assert math.isnan(alignment_score(t, env[: 20 * 86]))  # cut at ~30 s
+    root, conn, cfg = _setup(tmp_path)
+    times = [n.time_s for n in read_map(root / "1f00 (Aligned)").difficulties[0].notes]
+    cut = int(max(times) * FRAMES_PER_SECOND * 0.6)
+    np.save(cfg.features_dir / "1f00.npy", _mel(times)[:cut].astype(np.float16))
+    set_meta(conn, "align_threshold", "0.0")
+    res = verify_tempo(conn, cfg)
+    assert res["kinds"]["events"]["nan"] == 1
+    row = conn.execute("SELECT * FROM difficulties WHERE map_key='1f00'").fetchone()
+    assert row["accepted"] == 0 and row["reject_reasons"] == '["tempo_unverified"]'
+    assert row["align_score"] is None
+
+
+def test_verify_tempo_ignores_difficulty_with_other_reasons(tmp_path):
+    root, conn, cfg = _setup(tmp_path)
+    conn.execute("UPDATE difficulties SET reject_reasons='[\"tempo_unverified\",\"duration\"]' "
+                 "WHERE map_key='1f00'")
+    conn.commit()
+    set_meta(conn, "align_threshold", "0.0")
+    verify_tempo(conn, cfg)
+    row = conn.execute("SELECT * FROM difficulties WHERE map_key='1f00'").fetchone()
+    assert row["accepted"] == 0 and row["align_score"] is None
+
+
+def test_const_score_null_for_editor_kind_and_report_lists_all_kinds(tmp_path):
+    root, conn, cfg = _setup(tmp_path)
+    conn.execute("UPDATE difficulties SET tempo_kind='editor' WHERE map_key='1f00'")
+    conn.commit()
+    set_meta(conn, "align_threshold", "0.0")
+    res = verify_tempo(conn, cfg)
+    row = conn.execute("SELECT * FROM difficulties WHERE map_key='1f00'").fetchone()
+    assert row["align_score"] is not None and row["align_score_const"] is None
+    assert res["kinds"]["editor"]["accepted"] == 1
+    res["kinds"]["external"] = {"accepted": 0, "failed": 2, "missing": 0, "unreadable": 0,
+                                "nan": 0}
+    assert "external: accepted 0, failed 2" in render_report(res, calibrated=True)
+
+
+def test_unreadable_map_is_counted_apart_from_missing_features(tmp_path):
+    root, conn, cfg = _setup(tmp_path)
+    shutil.rmtree(root / "1f00 (Aligned)")
+    set_meta(conn, "align_threshold", "0.0")
+    res = verify_tempo(conn, cfg)
+    assert res["kinds"]["events"]["unreadable"] == 1
+    assert res["kinds"]["events"]["missing"] == 1
+
+
 def _calib_setup(tmp_path, n_maps):
     root = tmp_path / "levels"
     root.mkdir()
@@ -160,7 +225,7 @@ def _calib_setup(tmp_path, n_maps):
     for r in conn.execute("SELECT map_key FROM difficulties").fetchall():
         t = [n.time_s for n in read_map(Path(conn.execute(
             "SELECT folder FROM maps WHERE key=?", (r[0],)).fetchone()[0])).difficulties[0].notes]
-        np.save(feats / f"{r[0]}.npy", _mel(t, seed=hash(r[0]) % 1000).astype(np.float16))
+        np.save(feats / f"{r[0]}.npy", _mel(t, seed=int(r[0][:2], 16)).astype(np.float16))
     return conn, feats
 
 
@@ -169,6 +234,17 @@ def test_calibrate_threshold_stores_percentile(tmp_path):
     thr = calibrate_threshold(conn, feats, n=6, min_scores=5)
     assert thr > 3.0
     assert float(get_meta(conn, "align_threshold")) == thr
+
+
+def test_calibrate_threshold_skips_events_and_editor_rows(tmp_path):
+    conn, feats = _calib_setup(tmp_path, 6)
+    keys = [r[0] for r in conn.execute("SELECT map_key FROM difficulties ORDER BY map_key")]
+    conn.execute("UPDATE difficulties SET tempo_kind='events' WHERE map_key=?", (keys[0],))
+    conn.execute("UPDATE difficulties SET tempo_kind='editor' WHERE map_key=?", (keys[1],))
+    conn.commit()
+    calibrate_threshold(conn, feats, n=6, min_scores=4)
+    with pytest.raises(ValueError, match="only 4 usable"):
+        calibrate_threshold(conn, feats, n=6, min_scores=5)
 
 
 def test_calibrate_threshold_too_few_scores(tmp_path):

@@ -78,7 +78,7 @@ def _stored_threshold(conn) -> float | None:
 
 
 def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
-               source: str) -> tuple[int, int, dict[str, int]]:
+               source: str, threshold: float | None = None) -> tuple[int, int, dict[str, int]]:
     """Index one folder in a single transaction; returns (n_difficulties, n_accepted, reasons).
 
     The slow work (parsing, ffprobe, checking) happens before the first write, so the write
@@ -93,7 +93,6 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
         (key,)))
     existing = {(r["characteristic"], r["rank"]): r["split"] for r in stored}
     align = {(r["characteristic"], r["rank"]): r["align_score"] for r in stored}
-    threshold = _stored_threshold(conn)
     # keep the split of a re-indexed map (set by `data resplit`); new maps get a per-key
     # placeholder until the next resplit
     map_split = next((s for s in existing.values() if s), None) or assign_split(key)
@@ -145,7 +144,7 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
 
     sqlite3 errors and a missing ffprobe propagate: they are not verdicts on a map.
     """
-    _stored_threshold(conn)  # fail early on a corrupt threshold, outside the per-map handler
+    threshold = _stored_threshold(conn)  # once, outside the per-map handler
     summary = IndexSummary()
     seen: set[str] = set()
     folders = sorted(p for p in Path(root).iterdir() if p.is_dir())
@@ -161,7 +160,7 @@ def index_folder(conn, root: Path, cfg: PlayabilityConfig, source: str = "local"
         seen.add(key)
         summary.n_maps += 1
         try:
-            n_d, n_acc, reasons = _index_one(conn, folder, key, cfg, source)
+            n_d, n_acc, reasons = _index_one(conn, folder, key, cfg, source, threshold)
         except (sqlite3.Error, FfmpegMissingError):
             raise  # environment or database trouble, not a bad map
         except Exception:  # noqa: BLE001 - one bad folder must never stop the run
@@ -185,7 +184,7 @@ def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
     or unreadable are counted under "skipped" and their rows are left as they are.
     Returns counts: "maps", "skipped" and one entry per tempo reason of the new rows.
     """
-    _stored_threshold(conn)  # fail early on a corrupt threshold, outside the per-map handler
+    threshold = _stored_threshold(conn)  # once, outside the per-map handler
     where = " OR ".join("d.reject_reasons LIKE ?" for _ in _TEMPO_REASONS)
     maps = conn.execute(
         f"SELECT DISTINCT m.key, m.folder, m.source FROM maps m JOIN difficulties d "
@@ -198,7 +197,8 @@ def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
             out["skipped"] += 1
             continue
         try:
-            _, _, reasons = _index_one(conn, folder, m["key"], cfg, m["source"] or "local")
+            _, _, reasons = _index_one(conn, folder, m["key"], cfg, m["source"] or "local",
+                                    threshold)
         except (sqlite3.Error, FfmpegMissingError):
             raise
         except Exception:  # noqa: BLE001 - one bad folder must never stop the run

@@ -15,6 +15,8 @@ from bsmaker.formats.model import Note
 from bsmaker.formats.reader import read_map
 
 MIN_NOTES = 20
+ALIGN_SHIFTS_S = (-0.31, -0.23, -0.17, -0.11, 0.11, 0.17, 0.23, 0.31)
+MAX_UNCOVERED_SHARE = 0.02
 THRESHOLD_KEY = "align_threshold"
 
 
@@ -27,22 +29,44 @@ def onset_envelope(mel: np.ndarray) -> np.ndarray:
     return flux - flux.min() if flux.size else flux
 
 
-def alignment_score(times_s: np.ndarray, env: np.ndarray) -> float:
-    """Mean envelope peak (+-1 frame) at the note times relative to the envelope mean."""
-    env = np.asarray(env, dtype=np.float32)
-    if env.size == 0:
-        return float("nan")
-    mean = float(env.mean())
-    if not math.isfinite(mean) or mean <= 1e-9:
-        return float("nan")
-    frames = np.rint(np.asarray(times_s, dtype=np.float64) * FRAMES_PER_SECOND)
-    frames = frames[np.isfinite(frames)].astype(np.int64)
-    frames = frames[(frames >= 0) & (frames < env.size)]
-    if frames.size < MIN_NOTES:
-        return float("nan")
+def _mean_peak(frames: np.ndarray, env: np.ndarray) -> tuple[float, int]:
+    """Mean envelope maximum over frame +-1 for in-range frames; returns (mean, count)."""
+    ok = frames[(frames >= 0) & (frames < env.size)]
+    if ok.size == 0:
+        return float("nan"), 0
     padded = np.pad(env, 1, constant_values=-np.inf)
-    peaks = np.maximum(np.maximum(padded[frames], padded[frames + 1]), padded[frames + 2])
-    return float(peaks.mean() / mean)
+    peaks = np.maximum(np.maximum(padded[ok], padded[ok + 1]), padded[ok + 2])
+    return float(peaks.mean()), int(ok.size)
+
+
+def alignment_score(times_s: np.ndarray, env: np.ndarray) -> float:
+    """A(0) / median(A(s) for s in ALIGN_SHIFTS_S), A(s) = mean envelope peak at t + s.
+
+    The shifted copies of the same events are the baseline, so dense maps do not score high
+    just because the envelope is busy. NaN: fewer than 20 usable events, a flat envelope, a
+    non-positive baseline, or more than MAX_UNCOVERED_SHARE of events beyond the envelope.
+    """
+    env = np.asarray(env, dtype=np.float32)
+    times = np.asarray(times_s, dtype=np.float64)
+    times = times[np.isfinite(times)]
+    if env.size == 0 or times.size == 0 or float(env.max()) - float(env.min()) <= 1e-9:
+        return float("nan")
+
+    def frames_at(shift: float) -> np.ndarray:
+        return np.rint((times + shift) * FRAMES_PER_SECOND).astype(np.int64)
+
+    f0 = frames_at(0.0)
+    a0, n0 = _mean_peak(f0, env)
+    if n0 < MIN_NOTES or (times.size - n0) / times.size > MAX_UNCOVERED_SHARE:
+        return float("nan")
+    base = [_mean_peak(frames_at(s), env)[0] for s in ALIGN_SHIFTS_S]
+    base = [b for b in base if math.isfinite(b)]
+    if not base:
+        return float("nan")
+    median = float(np.median(base))
+    if not math.isfinite(median) or median <= 0:
+        return float("nan")
+    return a0 / median
 
 
 def _envelope(features_dir: Path, key: str) -> np.ndarray | None:
@@ -101,7 +125,7 @@ def calibrate_threshold(conn: sqlite3.Connection, features_dir: Path, n: int = 1
 
 
 def _blank() -> dict[str, int]:
-    return {"accepted": 0, "failed": 0, "missing": 0, "nan": 0}
+    return {"accepted": 0, "failed": 0, "missing": 0, "unreadable": 0, "nan": 0}
 
 
 def verify_tempo(conn: sqlite3.Connection, cfg) -> dict:
@@ -140,9 +164,12 @@ def verify_tempo(conn: sqlite3.Connection, cfg) -> dict:
         for r in diffs:
             kind = r["tempo_kind"] or "none"
             c = out["kinds"].setdefault(kind, _blank())
+            if env is None:
+                c["missing"] += 1
+                continue
             d = None if bm is None else _find(bm, r["characteristic"], r["rank"])
             if d is None:
-                c["missing"] += 1
+                c["unreadable"] += 1
                 continue
             score = alignment_score(_event_times(d.notes), env)
             const = None
@@ -174,10 +201,11 @@ def verify_tempo(conn: sqlite3.Connection, cfg) -> dict:
 def render_report(res: dict, calibrated: bool) -> str:
     lines = [f"threshold: {res['threshold']:.4f} "
              f"({'calibrated now' if calibrated else 'read from the manifest'})"]
-    for kind in ("editor", "events"):
+    for kind in sorted(set(res["kinds"]) | {"editor", "events"}):
         c = res["kinds"].get(kind, _blank())
         lines.append(f"{kind}: accepted {c['accepted']}, failed {c['failed']}, "
-                     f"missing features {c['missing']}, NaN {c['nan']}")
+                     f"missing features {c['missing']}, unreadable {c['unreadable']}, "
+                     f"NaN {c['nan']}")
     n = res["events_scored"]
     share = res["const_higher"] / n if n else 0.0
     lines.append(f"events: {res['const_higher']} of {n} ({share:.1%}) score higher with "
