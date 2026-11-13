@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -43,10 +45,62 @@ def build_bundle(repo: Path, out: Path) -> str:
     return commit
 
 
+def _keys(index: Path) -> set[str]:
+    return {str(r["map_key"]) for r in json.loads(index.read_text("utf-8"))}
+
+
+def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, int]:
+    """Write bsmaker-train-delta.tar; returns (path, number of new keys).
+
+    Holds events/ (whole), dataset_stats.json (if present) and features/<key>.npy + .json
+    for every map key in data_dir/events/index.json that is absent from base_index.
+    """
+    out = out_dir / "bsmaker-train-delta.tar"
+    if out.exists():
+        raise RuntimeError(f"refusing to overwrite {out}")
+    new_keys = sorted(_keys(data_dir / "events" / "index.json") - _keys(base_index))
+    files: list[Path] = []
+    for key in new_keys:
+        for ext in (".npy", ".json"):
+            f = data_dir / "features" / f"{key}{ext}"
+            if not f.is_file():
+                raise RuntimeError(f"feature file missing for map key {key}: {f}")
+            files.append(f)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        with tarfile.open(tmp, "w") as tf:
+            tf.add(data_dir / "events", arcname="events")
+            stats = data_dir / "dataset_stats.json"
+            if stats.is_file():
+                tf.add(stats, arcname="dataset_stats.json")
+            for f in files:
+                tf.add(f, arcname=f"features/{f.name}")
+        tmp.replace(out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return out, len(new_keys)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--delta", action="store_true", help="build the delta data tar instead")
+    ap.add_argument("--base-index", type=Path, help="events/index.json of the base tar")
+    ap.add_argument("--data-dir", type=Path)
+    ap.add_argument("--out-dir", type=Path)
     args = ap.parse_args(argv)
+    if args.delta:
+        if not (args.base_index and args.data_dir and args.out_dir):
+            ap.error("--delta needs --base-index, --data-dir and --out-dir")
+        try:
+            out, n = build_delta(args.base_index, args.data_dir, args.out_dir)
+        except (RuntimeError, OSError, ValueError, KeyError) as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(f"{out}  {n} new maps ({2 * n} feature files)  {out.stat().st_size / 1e6:.2f} MB")
+        return 0
     repo = Path(__file__).resolve().parent.parent
     try:
         commit = build_bundle(repo, args.out)
