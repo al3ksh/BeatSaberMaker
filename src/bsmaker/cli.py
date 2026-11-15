@@ -150,7 +150,8 @@ def features(workers: int = typer.Option(
 
 
 @data_app.command("verify-tempo")
-def verify_tempo_cmd() -> None:
+def verify_tempo_cmd(dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report only: store no scores and accept nothing.")) -> None:
     """Check audio alignment of tempo-map difficulties and accept those that pass."""
     from bsmaker.data.align import calibrate_threshold, render_report, verify_tempo
     from bsmaker.data.manifest import get_meta
@@ -163,10 +164,10 @@ def verify_tempo_cmd() -> None:
         except ValueError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(2) from None
-    text = render_report(verify_tempo(conn, cfg), calibrated)
+    text = render_report(verify_tempo(conn, cfg, write=not dry_run), calibrated)
     print(text)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.reports_dir / "verify-tempo.txt").write_text(text + "\n", encoding="utf-8")
+    (cfg.reports_dir / ("verify-tempo-dry.txt" if dry_run else "verify-tempo.txt")).write_text(text + "\n", encoding="utf-8")
 
 
 @data_app.command("build-events")

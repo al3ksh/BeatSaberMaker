@@ -142,3 +142,35 @@ def test_read_map_v2_type100_exact_seconds(tmp_path):
     d = read_map(dst).difficulties[-1]
     assert d.flags.tempo_kind == "events"
     assert [n.time_s for n in d.notes] == [2.0, 8.0]
+
+
+def test_non_dict_tempo_elements_do_not_raise(tmp_path):
+    d = {"colorNotes": [], "bpmEvents": [{"b": 0, "m": 120}, "junk", 5, None]}
+    kind, t = read_tempo(d, "v3", 120.0, tmp_path)
+    assert kind == "events" and math.isnan(t.bpm_range()[0])
+    d = {"_notes": [], "_customData": {"_BPMChanges": [{"_time": 4, "_BPM": 90}, "junk", None]}}
+    kind, t = read_tempo(d, "v2", 120.0, tmp_path)
+    assert kind == "editor" and math.isnan(t.bpm_range()[0])
+    d = {"_notes": [], "_events": ["junk", 3, {"_time": 8, "_type": 100, "_floatValue": 60}]}
+    kind, t = read_tempo(d, "v2", 120.0, tmp_path)
+    assert kind == "events" and t.points == ((8.0, 60.0),)
+
+
+def test_read_map_survives_non_dict_tempo_elements(tmp_path):
+    m = read_map(_v3_folder(tmp_path, {"bpmEvents": [{"b": 0, "m": 120}, "junk"]}))
+    d = m.difficulties[-1]
+    assert d.flags.tempo_kind == "events" and math.isnan(d.flags.bpm_min)
+    assert [n.time_s for n in d.notes] == [2.0, 6.0]
+
+
+def test_read_map_with_tempo_exposes_points(tmp_path):
+    from bsmaker.formats.reader import read_map_with_tempo
+    dst = tmp_path / "ed2"
+    shutil.copytree(FIX / "v2_basic", dst)
+    p = dst / "ExpertStandard.dat"
+    data = json.loads(p.read_text(encoding="utf-8-sig"))
+    data["_customData"] = {"_BPMChanges": [{"_time": 4, "_BPM": 60}]}
+    p.write_text(json.dumps(data))
+    bm, tempos = read_map_with_tempo(dst)
+    d = bm.difficulties[-1]
+    assert tempos[(d.characteristic, d.rank)].points == ((4.0, 60.0),)

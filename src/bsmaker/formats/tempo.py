@@ -71,7 +71,8 @@ def _external_signals(folder: Path) -> bool:
 
 def read_tempo(data: dict, schema: str, info_bpm: float, folder: Path) -> tuple[str, TempoMap]:
     if schema == "v2":
-        events = [e for e in data.get("_events") or [] if e.get("_type") == 100]
+        events = [e for e in data.get("_events") or []
+                  if isinstance(e, dict) and e.get("_type") == 100]
         if events:
             pts = tuple(_point(e.get("_time", 0), e.get("_floatValue"))
                         for e in events)
@@ -84,10 +85,13 @@ def read_tempo(data: dict, schema: str, info_bpm: float, folder: Path) -> tuple[
                 if isinstance(c, dict):
                     bpm = c["_BPM"] if "_BPM" in c else c.get("_bpm")
                     pts_list.append(_point(c.get("_time", 0), bpm))
+                else:
+                    pts_list.append((float("nan"), float("nan")))
             return "editor", TempoMap(info_bpm, tuple(pts_list))
     elif schema == "v3":
         ev = data.get("bpmEvents") or []
-        pts = tuple(_point(e.get("b", 0), e.get("m", info_bpm)) for e in ev)
+        pts = tuple(_point(e.get("b", 0), e.get("m", info_bpm)) if isinstance(e, dict)
+                    else (float("nan"), float("nan")) for e in ev)
         changed = len(ev) > 1
         if len(ev) == 1:
             m = pts[0][1]

@@ -78,11 +78,13 @@ def _stored_threshold(conn) -> float | None:
 
 
 def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
-               source: str, threshold: float | None = None) -> tuple[int, int, dict[str, int]]:
+               source: str, threshold: float | None = None,
+               reset_scores: bool = False) -> tuple[int, int, dict[str, int]]:
     """Index one folder in a single transaction; returns (n_difficulties, n_accepted, reasons).
 
     The slow work (parsing, ffprobe, checking) happens before the first write, so the write
-    lock is held only briefly. May raise; the caller rolls back.
+    lock is held only briefly. May raise; the caller rolls back. With `reset_scores` the stored
+    alignment scores are ignored and set to NULL in the same transaction.
     """
     bm = read_map(folder)
     duration = probe_duration(bm.audio_path)
@@ -92,7 +94,8 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
         "SELECT characteristic, rank, split, align_score FROM difficulties WHERE map_key = ?",
         (key,)))
     existing = {(r["characteristic"], r["rank"]): r["split"] for r in stored}
-    align = {(r["characteristic"], r["rank"]): r["align_score"] for r in stored}
+    align = {} if reset_scores else {
+        (r["characteristic"], r["rank"]): r["align_score"] for r in stored}
     # keep the split of a re-indexed map (set by `data resplit`); new maps get a per-key
     # placeholder until the next resplit
     map_split = next((s for s in existing.values() if s), None) or assign_split(key)
@@ -135,6 +138,9 @@ def _index_one(conn, folder: Path, key: str, cfg: PlayabilityConfig,
         }, commit=False)
         for dr in diff_rows:
             upsert_difficulty(conn, dr, commit=False)
+        if reset_scores:
+            conn.execute("UPDATE difficulties SET align_score = NULL, align_score_const = NULL "
+                         "WHERE map_key = ?", (key,))
     return len(diff_rows), n_acc, counts
 
 
@@ -178,7 +184,12 @@ _TEMPO_REASONS = ("bpm_changes", "tempo_external", "bpm_trick", "tempo_unverifie
 
 
 def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
-    """Re-index only maps with a tempo reject reason (old `bpm_changes` or a new one).
+    """Re-index maps with a tempo reject reason (old `bpm_changes` or a new one), and maps
+    having a difficulty of tempo_kind 'editor' or 'events' (redoing earlier decisions).
+
+    For the latter the stored alignment scores are reset, so a stale score never verifies a
+    re-read difficulty: previously verified difficulties become `tempo_unverified` again until
+    `verify-tempo` runs.
 
     Goes through `_index_one`, so splits and map columns are kept. Folders that are missing
     or unreadable are counted under "skipped" and their rows are left as they are.
@@ -188,7 +199,8 @@ def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
     where = " OR ".join("d.reject_reasons LIKE ?" for _ in _TEMPO_REASONS)
     maps = conn.execute(
         f"SELECT DISTINCT m.key, m.folder, m.source FROM maps m JOIN difficulties d "
-        f"ON d.map_key = m.key WHERE {where} ORDER BY m.key",
+        f"ON d.map_key = m.key WHERE {where} OR d.tempo_kind IN ('editor', 'events') "
+        f"ORDER BY m.key",
         [f'%"{r}"%' for r in _TEMPO_REASONS]).fetchall()
     out = {"maps": 0, "skipped": 0, **{r: 0 for r in _TEMPO_REASONS[1:]}}
     for m in maps:
@@ -198,7 +210,7 @@ def reindex_tempo(conn, cfg: PlayabilityConfig) -> dict[str, int]:
             continue
         try:
             _, _, reasons = _index_one(conn, folder, m["key"], cfg, m["source"] or "local",
-                                    threshold)
+                                       threshold, reset_scores=True)
         except (sqlite3.Error, FfmpegMissingError):
             raise
         except Exception:  # noqa: BLE001 - one bad folder must never stop the run

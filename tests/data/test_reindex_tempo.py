@@ -105,3 +105,19 @@ def test_corrupt_threshold_raises_and_does_not_mark_maps_unreadable(tmp_path):
     with pytest.raises(ValueError, match="align_threshold"):
         reindex_tempo(conn, CFG)
     assert _reasons(conn, "1f00") == before and "unreadable" not in before
+
+
+def test_reindex_resets_scores_of_verified_events_difficulty(tmp_path):
+    root, conn = _setup(tmp_path)
+    set_meta(conn, "align_threshold", "0.5")
+    conn.execute("UPDATE difficulties SET accepted=1, reject_reasons='[]', align_score=0.9, "
+                 "align_score_const=0.4, split='test' WHERE map_key='3f00'")
+    conn.commit()
+    const_before = _row(conn, "1f00")
+    out = reindex_tempo(conn, CFG)
+    assert out["maps"] >= 1
+    row = conn.execute("SELECT * FROM difficulties WHERE map_key='3f00'").fetchone()
+    assert "tempo_unverified" in json.loads(row["reject_reasons"])
+    assert row["accepted"] == 0 and row["split"] == "test"
+    assert row["align_score"] is None and row["align_score_const"] is None
+    assert _row(conn, "1f00") == const_before

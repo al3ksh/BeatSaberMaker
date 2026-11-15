@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from bsmaker.formats.model import BeatMap, Difficulty, DifficultyFlags, Note
-from bsmaker.formats.tempo import read_tempo
+from bsmaker.formats.tempo import TempoMap, read_tempo
 
 _RawNote = tuple[float, int, int, int, int, bool]  # beat, x, y, color, direction, has_custom
 
@@ -97,13 +97,16 @@ def _counts(data: dict, schema: str) -> tuple[int, int, int]:
 
 
 def _read_difficulty(path: Path, folder: Path, characteristic: str, rank: str, njs: float,
-                     njs_offset: float, bpm: float, time_offset: float) -> Difficulty:
+                     njs_offset: float, bpm: float, time_offset: float,
+                     tempos: dict | None = None) -> Difficulty:
     data = _load(path)
     if not isinstance(data, dict):
         raise ValueError("difficulty file is not a JSON object")
     schema = _detect_schema(data)
     raw, bombs = _raw_notes(data, schema)
     kind, tempo = read_tempo(data, schema, bpm, folder)
+    if tempos is not None:
+        tempos[(characteristic, rank)] = tempo
     use_map = kind == "events" and all(math.isfinite(b) and b > 0 for _, b in tempo.points)
     bpm_min, bpm_max = tempo.bpm_range()
     offgrid = False
@@ -124,7 +127,13 @@ def _read_difficulty(path: Path, folder: Path, characteristic: str, rank: str, n
 
 
 def read_map(folder: Path) -> BeatMap:
+    return read_map_with_tempo(folder)[0]
+
+
+def read_map_with_tempo(folder: Path) -> tuple[BeatMap, dict[tuple[str, str], TempoMap]]:
+    """read_map plus the TempoMap recorded in each difficulty file, keyed (characteristic, rank)."""
     folder = Path(folder)
+    tempos: dict[tuple[str, str], TempoMap] = {}
     problems: list[str] = []
     info_path = _find_ci(folder, "Info.dat")
     if info_path is None:
@@ -186,12 +195,14 @@ def read_map(folder: Path) -> BeatMap:
             problems.append(f"skipped {fname!r}: no BPM")
             continue
         try:
-            diffs.append(_read_difficulty(p, folder, ch, rank, njs, off, bpm, time_offset))
+            diffs.append(_read_difficulty(p, folder, ch, rank, njs, off, bpm, time_offset,
+                                          tempos))
         except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
             problems.append(f"cannot read {fname!r}: {type(e).__name__}: {e}")
 
     audio_path = _find_safe(folder, audio_name)
     if audio_path is None and (folder / "audio.ogg").is_file():
         audio_path = folder / "audio.ogg"
-    return BeatMap(folder, map_key(folder.name), title, artist, mapper, bpm, audio_path,
-                   tuple(reqs), tuple(sugs), tuple(diffs), tuple(problems))
+    bm = BeatMap(folder, map_key(folder.name), title, artist, mapper, bpm, audio_path,
+                 tuple(reqs), tuple(sugs), tuple(diffs), tuple(problems))
+    return bm, tempos
