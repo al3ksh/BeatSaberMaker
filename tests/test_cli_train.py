@@ -136,3 +136,13 @@ def test_resume_with_other_size_stops_naming_both_configs(env):
     msg = str(r.exception)
     assert f"checkpoint in {env / 'ck'} was made with " in msg
     assert "'d_model': 256" in msg and "'d_model': 384" in msg and msg.endswith("use another --out")
+
+
+@pytest.mark.parametrize("kind", ["pattern", "timing"])
+def test_resume_with_other_schedule_or_batch_is_refused(env, kind):
+    first = _train(kind, env / "ck", "--weighting", "none")
+    assert first.exit_code == 0, first.output
+    opts = load_checkpoint(env / "ck" / "last.pt")["train_options"]
+    assert "max_steps" in opts and "batch_size" in opts
+    again = _train(kind, env / "ck", "--weighting", "none", "--max-steps", str(opts["max_steps"] + 2))
+    assert again.exit_code != 0 and "max_steps" in str(again.exception)

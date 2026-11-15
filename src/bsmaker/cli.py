@@ -398,7 +398,8 @@ def train_timing(
     val_ds = TimingWindows(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
                              device=device, eval_every=eval_every, save_every=save_every, lr=lr)
-    options = {"weighting": weighting, "size": size, "lr": lr}
+    options = {"weighting": weighting, "size": size, "lr": lr, "max_steps": max_steps,
+               "batch_size": batch_size}
     model = TimingModel(mcfg)
     _log_start(size, model, options)
     result = run_training(
@@ -467,7 +468,8 @@ def train_pattern(
     val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
                              device=device, eval_every=eval_every, save_every=save_every, lr=lr)
-    options = {"weighting": weighting, "corrupt_p": corrupt_p, "size": size, "lr": lr}
+    options = {"weighting": weighting, "corrupt_p": corrupt_p, "size": size, "lr": lr,
+               "max_steps": max_steps, "batch_size": batch_size}
     model = PatternModel(mcfg)
     _log_start(size, model, options)
     result = run_training(

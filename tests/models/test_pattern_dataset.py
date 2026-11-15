@@ -75,15 +75,22 @@ def test_replacement_is_never_the_true_predecessor_position(tmp_path):
                 assert pl[j] in left
 
 
+def test_replacement_excludes_own_target_and_true_predecessor(tmp_path):
+    for n in (4, 5, 12):
+        ds = _ds(tmp_path, n, n, corrupt_p=1.0)
+        for _ in range(60):
+            it = ds[0]
+            left, pl = it["left"].tolist(), it["prev_left"].tolist()
+            for j in range(1, n):  # unique tokens: equal token = same position
+                assert pl[j] != left[j] and pl[j] != left[j - 1]
+
+
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_short_runs_do_not_crash(tmp_path, n):
     ds = _ds(tmp_path, n, 8, corrupt_p=0.5)
     for _ in range(10):
         it = ds[0]
-        if n < 3:  # nothing to corrupt: identical to the true predecessors
-            assert it["prev_left"][1:n].tolist() == it["left"][:n - 1].tolist()
-        else:  # 3 events: replacement for j=1 can only be position 1 or 2
-            assert int(it["valid"].sum()) == 3
+        assert it["prev_left"][1:n].tolist() == it["left"][:n - 1].tolist()
 
 
 def test_fixed_ignores_corrupt_p(tmp_path):

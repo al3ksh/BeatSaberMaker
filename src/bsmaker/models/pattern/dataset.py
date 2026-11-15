@@ -60,7 +60,7 @@ class PatternSequences(Dataset):
     Events with both hands empty are skipped. Pass `events_dir` to pickle without the cache.
     With `corrupt_p > 0` (training only, ignored when `fixed`) each previous-token pair of a
     position `j >= 1` is replaced with probability `corrupt_p` by the true pair of another
-    position of the run (not `j - 1`); targets are unchanged.
+    position of the run (neither `j - 1` nor `j`; needs 4 events); targets are unchanged.
     """
 
     def __init__(self, cache: EventCache | None, entries: Sequence[Entry], features_dir: Path,
@@ -138,12 +138,14 @@ class PatternSequences(Dataset):
         styles = e.styles
         if not self.fixed and styles != (UNKNOWN,) and rng.random() < self.style_dropout:
             styles = ()
-        if not self.fixed and self.corrupt_p > 0 and n >= 3:
+        if not self.fixed and self.corrupt_p > 0 and n >= 4:
             # drawn last, so corrupt_p=0 consumes no random numbers
             js = np.flatnonzero(rng.random(n - 1) < self.corrupt_p) + 1
             if len(js):
-                ks = rng.integers(0, n - 1, size=len(js))
-                ks = ks + (ks >= js - 1)  # any run position except j - 1
+                ks = rng.integers(0, n - 2, size=len(js))
+                # any run position except j - 1 (true predecessor) and j (own target)
+                ks = ks + (ks >= js - 1)
+                ks = ks + (ks >= js)
                 prev_l[js] = left[start + ks]
                 prev_r[js] = right[start + ks]
         return {"mel_slices": torch.from_numpy(slices), "gaps": torch.from_numpy(gaps),
