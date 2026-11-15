@@ -114,7 +114,7 @@ def _make_data(root: Path, keys: list[str], stats: bool = True) -> None:
     (root / "events" / "events.npz").write_bytes(b"npz")
     for k in keys:
         (root / "features" / f"{k}.npy").write_bytes(b"n")
-        (root / "features" / f"{k}.json").write_text("{}")
+        (root / "features" / f"{k}.npy.json").write_text("{}")
     if stats:
         (root / "dataset_stats.json").write_text("{}")
 
@@ -134,7 +134,7 @@ def test_delta_holds_new_keys_and_events(tmp_path: Path) -> None:
     with tarfile.open(out) as tf:
         names = {m.name for m in tf.getmembers() if m.isfile()}
     assert names == {"events/index.json", "events/events.npz",
-                     "features/b.npy", "features/b.json", "features/c.npy", "features/c.json"}
+                     "features/b.npy", "features/b.npy.json", "features/c.npy", "features/c.npy.json"}
 
 
 def test_delta_never_carries_dataset_stats_and_refuses_overwrite(tmp_path: Path) -> None:

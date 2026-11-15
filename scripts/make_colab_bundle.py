@@ -52,7 +52,7 @@ def _keys(index: Path) -> set[str]:
 def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, int]:
     """Write bsmaker-train-delta.tar; returns (path, number of new keys).
 
-    Holds events/ (whole) and features/<key>.npy + .json (dataset_stats.json travels in the code
+    Holds events/ (whole) and features/<key>.npy + .npy.json (dataset_stats.json travels in the code
     zip only)
     for every map key in data_dir/events/index.json that is absent from base_index.
     """
@@ -62,7 +62,7 @@ def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, 
     new_keys = sorted(_keys(data_dir / "events" / "index.json") - _keys(base_index))
     files: list[Path] = []
     for key in new_keys:
-        for ext in (".npy", ".json"):
+        for ext in (".npy", ".npy.json"):
             f = data_dir / "features" / f"{key}{ext}"
             if not f.is_file():
                 raise RuntimeError(f"feature file missing for map key {key}: {f}")
