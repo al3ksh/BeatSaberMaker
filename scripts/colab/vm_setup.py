@@ -1,7 +1,7 @@
 """Prepare a Colab VM for training: unpack data and code, install deps, write bsmaker.toml.
 
 Runs on the VM with the Python standard library only (it must not import bsmaker).
-Order: base tar -> delta tar -> code zip -> pip -> config. Safe to run twice.
+Order: base tar -> delta tar -> feature check -> code zip -> pip -> config. Safe to run twice.
 """
 from __future__ import annotations
 
@@ -52,12 +52,14 @@ def unpack_base(tar: Path, work: Path) -> None:
 def unpack_delta(tar: Path, work: Path) -> None:
     data = work / "data"
     marker = data / ".delta.done"
-    if marker.is_file():
+    st = tar.stat()
+    stamp = f"{st.st_size} {st.st_mtime_ns}"  # a replaced delta tar differs in size or mtime
+    if marker.is_file() and marker.read_text() == stamp:
         print("delta data already unpacked (.delta.done), skipping")
         return
     print(f"unpacking {tar.name} ...", flush=True)
     safe_extract(tar, data)
-    marker.write_text("ok")
+    marker.write_text(stamp)
 
 
 def unpack_code(zip_path: Path, work: Path) -> Path:
@@ -70,6 +72,19 @@ def unpack_code(zip_path: Path, work: Path) -> Path:
                 raise SystemExit(f"unsafe path in {zip_path.name}: {name}")
         zf.extractall(code)
     return code
+
+
+def check_features(data: Path) -> None:
+    """Exit non-zero when an index entry has no features/<map_key>.npy."""
+    index = data / "events" / "index.json"
+    if not index.is_file():
+        return
+    keys = [str(r["map_key"]) for r in json.loads(index.read_text("utf-8"))]
+    missing = [k for k in keys if not (data / "features" / f"{k}.npy").is_file()]
+    if missing:
+        print(f"vm_setup: {len(missing)} of {len(keys)} index entries have no feature file; "
+              f"first {min(10, len(missing))}: {', '.join(missing[:10])}", flush=True)
+        raise SystemExit(1)
 
 
 def run_streamed(cmd: list[str]) -> int:
@@ -105,11 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     unpack_base(base, work)
     if use_delta:
         unpack_delta(delta, work)
-    code = unpack_code(zip_path, work)
     data = work / "data"
-    stats = data / "dataset_stats.json"
-    if stats.is_file():  # training reads dataset_stats.json next to bsmaker.toml
-        shutil.copyfile(stats, code / "dataset_stats.json")
+    check_features(data)
+    code = unpack_code(zip_path, work)  # dataset_stats.json comes from the code zip only
     if not args.no_pip:
         code_ = run_streamed([sys.executable, "-m", "pip", "install", "-q", *PIP_PACKAGES])
         if code_ != 0:

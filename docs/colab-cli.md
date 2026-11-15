@@ -17,7 +17,10 @@ The notebook route (`docs/colab.md`) still works; this is the scripted route.
     .venv/Scripts/python scripts/make_colab_bundle.py --delta --base-index BASE/events/index.json \
         --data-dir F:\BeatSaberMakerData --out-dir F:\BeatSaberMakerData\upload
 
-The delta holds all of `events/`, `dataset_stats.json` and the features of maps absent from the base index.
+The delta holds all of `events/` and the features of maps absent from the base index. It does not
+hold `dataset_stats.json`: the code zip is its only source (tracked at HEAD, bundled by the first command).
+
+Checklist: after `data build-events`, commit `dataset_stats.json` before building the code zip.
 
 ## Session
 
@@ -42,7 +45,13 @@ Setup (unpacks about 40 GB, takes a while):
 
 Without a delta tar add `--no-delta` inside `BSM_ARGS`. Setup is safe to run twice: finished steps are
 skipped (`.base.done`, `.delta.done`), an interrupted base unpack (`/content/data.partial`) is redone.
+The delta is re-applied when its size or modification time differs from the one recorded in `.delta.done`.
+After unpacking, setup checks that every `map_key` in `events/index.json` has a feature file; if not it prints
+the count and the first 10 keys and exits with status 1 before the pip step.
 It prints feature file count, index entries, bundle commit and free disk.
+
+`vm_train.py` exits with 2 (`vm_train: drive dir not found: ...`) when `--drive-dir` is not a directory
+(Drive not mounted); `--dry-run` skips that check.
 
 Prove the mechanism first (nothing is trained): the output must show the command line and `vm_train: exit code 0`.
 

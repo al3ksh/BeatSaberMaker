@@ -133,14 +133,14 @@ def test_delta_holds_new_keys_and_events(tmp_path: Path) -> None:
     assert n == 2 and out.name == "bsmaker-train-delta.tar"
     with tarfile.open(out) as tf:
         names = {m.name for m in tf.getmembers() if m.isfile()}
-    assert names == {"events/index.json", "events/events.npz", "dataset_stats.json",
+    assert names == {"events/index.json", "events/events.npz",
                      "features/b.npy", "features/b.json", "features/c.npy", "features/c.json"}
 
 
-def test_delta_without_stats_and_refuses_overwrite(tmp_path: Path) -> None:
+def test_delta_never_carries_dataset_stats_and_refuses_overwrite(tmp_path: Path) -> None:
     import tarfile
     mod = _load_script()
-    _make_data(tmp_path / "d", ["a", "b"], stats=False)
+    _make_data(tmp_path / "d", ["a", "b"], stats=True)
     base = _base_index(tmp_path / "base.json", ["a"])
     out, _ = mod.build_delta(base, tmp_path / "d", tmp_path / "out")
     with tarfile.open(out) as tf:
@@ -184,9 +184,12 @@ def _tar(path: Path, files: dict[str, str]) -> None:
 def drive(tmp_path: Path) -> Path:
     d = tmp_path / "drive"
     d.mkdir()
-    _tar(d / "bsmaker-train-data.tar", {"events/index.json": "[1, 2]", "features/a.npy": "x"})
-    _tar(d / "bsmaker-train-delta.tar", {"events/index.json": "[1, 2, 3]", "features/b.npy": "x",
-                                         "dataset_stats.json": '{"new": 1}'})
+    def idx(*keys: str) -> str:
+        return json.dumps([{"map_key": x} for x in keys])
+
+    _tar(d / "bsmaker-train-data.tar", {"events/index.json": idx("a"), "features/a.npy": "x"})
+    _tar(d / "bsmaker-train-delta.tar", {"events/index.json": idx("a", "b", "c"),
+                                         "features/b.npy": "x", "features/c.npy": "x"})
     with zipfile.ZipFile(d / "bsmaker-code.zip", "w") as zf:
         zf.writestr("src/bsmaker/__init__.py", "")
         zf.writestr("dataset_stats.json", '{"old": 1}')
@@ -199,10 +202,10 @@ def test_vm_setup_layout_and_idempotence(drive: Path, tmp_path: Path, capsys) ->
     work = tmp_path / "work"
     assert mod.main(["--drive-dir", str(drive), "--work", str(work), "--no-pip"]) == 0
     out = capsys.readouterr().out
-    assert "feature files (.npy): 2" in out and "index entries: 3" in out and "abc123" in out
+    assert "feature files (.npy): 3" in out and "index entries: 3" in out and "abc123" in out
     assert (work / "data" / ".base.done").is_file() and (work / "data" / ".delta.done").is_file()
     assert not (work / "data.partial").exists()
-    assert json.loads((work / "bsmaker" / "dataset_stats.json").read_text()) == {"new": 1}
+    assert json.loads((work / "bsmaker" / "dataset_stats.json").read_text()) == {"old": 1}  # zip only
     toml = (work / "bsmaker" / "bsmaker.toml").read_text()
     assert (work / "data").as_posix() in toml and "custom_levels" in toml
     (work / "data" / "features" / "marker.txt").write_text("keep")
@@ -265,6 +268,7 @@ def test_vm_train_dry_run_and_validation(tmp_path: Path, capsys) -> None:
 def test_vm_train_runs_logs_and_propagates_exit(tmp_path: Path, capsys) -> None:
     mod = _load_vm("vm_train")
     work, drv = tmp_path / "w", tmp_path / "drv"
+    drv.mkdir()
     pkg = work / "bsmaker" / "src" / "bsmaker"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
@@ -323,6 +327,7 @@ def test_vm_train_source_runs_in_kernel_style_exec(tmp_path: Path, monkeypatch, 
 
 def test_vm_train_start_failure_gives_127(tmp_path: Path, capsys) -> None:
     mod = _load_vm("vm_train")
+    (tmp_path / "drv").mkdir()
     work = tmp_path / "w"  # code dir missing -> Popen cwd error (OSError)
     with pytest.raises(SystemExit) as ei:
         mod.main(["--model", "timing", "--name", "r", "--drive-dir", str(tmp_path / "drv"),
@@ -338,3 +343,48 @@ def test_vm_setup_data_without_marker_is_rebuilt(drive: Path, tmp_path: Path) ->
     (work / "data" / "features" / "junk.npy").write_text("j")
     assert mod.main(["--drive-dir", str(drive), "--work", str(work), "--no-pip"]) == 0
     assert not (work / "data" / "features" / "junk.npy").exists()
+
+
+def test_vm_setup_fails_when_an_index_key_has_no_features(drive: Path, tmp_path: Path, capsys) -> None:
+    mod = _load_vm("vm_setup")
+    keys = [{"map_key": f"k{i}"} for i in range(12)] + [{"map_key": "a"}]
+    _tar(drive / "bsmaker-train-delta.tar", {"events/index.json": json.dumps(keys)})
+    work = tmp_path / "work"
+    with pytest.raises(SystemExit) as ei:
+        mod.main(["--drive-dir", str(drive), "--work", str(work), "--no-pip"])
+    assert ei.value.code == 1
+    out = capsys.readouterr().out
+    assert "12 of 13" in out and "k0" in out and "k9" in out and "k10" not in out
+    assert not (work / "bsmaker" / "bsmaker.toml").exists()
+
+
+def test_vm_setup_reapplies_a_changed_delta(drive: Path, tmp_path: Path, capsys) -> None:
+    import os
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    args = ["--drive-dir", str(drive), "--work", str(work), "--no-pip"]
+    assert mod.main(args) == 0
+    capsys.readouterr()
+    assert mod.main(args) == 0
+    assert "delta data already unpacked" in capsys.readouterr().out
+    delta = drive / "bsmaker-train-delta.tar"
+    st = delta.stat()
+    os.utime(delta, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # same size, newer
+    assert mod.main(args) == 0
+    out = capsys.readouterr().out
+    assert "delta data already unpacked" not in out and "unpacking bsmaker-train-delta.tar" in out
+    new = delta.stat()
+    assert (work / "data" / ".delta.done").read_text() == f"{new.st_size} {new.st_mtime_ns}"
+
+
+def test_vm_train_requires_the_drive_dir(tmp_path: Path, capsys) -> None:
+    mod = _load_vm("vm_train")
+    gone = tmp_path / "nodrive"
+    with pytest.raises(SystemExit) as ei:
+        mod.main(["--model", "timing", "--name", "r", "--drive-dir", str(gone),
+                  "--work", str(tmp_path / "w")])
+    assert ei.value.code == 2
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [f"vm_train: drive dir not found: {gone} (is Drive mounted?)",
+                     "vm_train: exit code 2"]
+    assert not gone.exists()

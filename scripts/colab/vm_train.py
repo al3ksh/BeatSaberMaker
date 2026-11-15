@@ -43,6 +43,10 @@ def main(argv: list[str] | None = None) -> int:
         print("vm_train: exit code 0", flush=True)
         return 0
 
+    if not args.drive_dir.is_dir():
+        print(f"vm_train: drive dir not found: {args.drive_dir} (is Drive mounted?)", flush=True)
+        print("vm_train: exit code 2", flush=True)
+        raise SystemExit(2)
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PYTHONPATH=str(code_dir / "src"), PYTHONUNBUFFERED="1")
     with open(out / "console.log", "a", encoding="utf-8") as log:

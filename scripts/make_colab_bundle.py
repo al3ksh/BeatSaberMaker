@@ -52,7 +52,8 @@ def _keys(index: Path) -> set[str]:
 def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, int]:
     """Write bsmaker-train-delta.tar; returns (path, number of new keys).
 
-    Holds events/ (whole), dataset_stats.json (if present) and features/<key>.npy + .json
+    Holds events/ (whole) and features/<key>.npy + .json (dataset_stats.json travels in the code
+    zip only)
     for every map key in data_dir/events/index.json that is absent from base_index.
     """
     out = out_dir / "bsmaker-train-delta.tar"
@@ -75,9 +76,6 @@ def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, 
                 if (f.is_file() and not f.is_symlink() and not f.name.startswith(".")
                         and not f.name.endswith((".tmp", ".partial"))):
                     tf.add(f, arcname=f"events/{f.name}")
-            stats = data_dir / "dataset_stats.json"
-            if stats.is_file():
-                tf.add(stats, arcname="dataset_stats.json")
             for f in files:
                 tf.add(f, arcname=f"features/{f.name}")
         tmp.replace(out)
