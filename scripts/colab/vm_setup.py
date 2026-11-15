@@ -6,6 +6,9 @@ Order: base tar -> delta tar -> code zip -> pip -> config. Safe to run twice.
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,8 +45,8 @@ def unpack_base(tar: Path, work: Path) -> None:
         shutil.rmtree(d, ignore_errors=True)
     print(f"unpacking {tar.name} ...", flush=True)
     safe_extract(tar, part)
+    (part / ".base.done").write_text("ok")  # the rename below is the commit point
     part.rename(data)
-    marker.write_text("ok")
 
 
 def unpack_delta(tar: Path, work: Path) -> None:
@@ -69,7 +72,18 @@ def unpack_code(zip_path: Path, work: Path) -> Path:
     return code
 
 
+def run_streamed(cmd: list[str]) -> int:
+    """Run a child process, re-printing its output line by line (no inherited stdout)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            bufsize=1, encoding="utf-8", errors="replace")
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    return proc.wait()
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = shlex.split(os.environ["BSM_ARGS"]) if "BSM_ARGS" in os.environ else sys.argv[1:]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--drive-dir", type=Path, default=Path("/content/drive/MyDrive/BeatSaberMaker"))
     ap.add_argument("--work", type=Path, default=Path("/content"))
@@ -97,14 +111,17 @@ def main(argv: list[str] | None = None) -> int:
     if stats.is_file():  # training reads dataset_stats.json next to bsmaker.toml
         shutil.copyfile(stats, code / "dataset_stats.json")
     if not args.no_pip:
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", *PIP_PACKAGES], check=True)
+        code_ = run_streamed([sys.executable, "-m", "pip", "install", "-q", *PIP_PACKAGES])
+        if code_ != 0:
+            print(f"vm_setup: pip failed with exit code {code_}", flush=True)
+            raise SystemExit(code_)
+    (work / "none").mkdir(exist_ok=True)
     (code / "bsmaker.toml").write_text(
         f"data_dir = '{data.as_posix()}'\ncustom_levels = '{(work / 'none').as_posix()}'\n")
 
     index = data / "events" / "index.json"
     n_index = "missing"
     if index.is_file():
-        import json
         n_index = str(len(json.loads(index.read_text("utf-8"))))
     commit = code / "BUNDLE_COMMIT.txt"
     print(f"feature files (.npy): {sum(1 for _ in (data / 'features').glob('*.npy'))}")
@@ -115,4 +132,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

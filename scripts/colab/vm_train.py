@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,8 @@ def build_command(model: str, out: Path, extra: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = shlex.split(os.environ["BSM_ARGS"]) if "BSM_ARGS" in os.environ else sys.argv[1:]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True, choices=["timing", "pattern"])
     ap.add_argument("--name", required=True, help="run name (folder under checkpoints/gen2)")
@@ -34,9 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     out = args.drive_dir / "checkpoints" / "gen2" / args.name
     cmd = build_command(args.model, out, extra)
     code_dir = args.work / "bsmaker"
-    header = "$ " + " ".join(cmd)
+    header = "$ " + shlex.join(cmd)
     if args.dry_run:
-        print(header)
+        print(header, flush=True)
+        print("vm_train: exit code 0", flush=True)
         return 0
 
     out.mkdir(parents=True, exist_ok=True)
@@ -48,9 +52,14 @@ def main(argv: list[str] | None = None) -> int:
             log.flush()
 
         emit(header)
-        proc = subprocess.Popen(cmd, cwd=code_dir, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                encoding="utf-8", errors="replace")
+        try:
+            proc = subprocess.Popen(cmd, cwd=code_dir, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                    encoding="utf-8", errors="replace")
+        except OSError as e:
+            emit(f"vm_train: cannot start training: {e}")
+            emit("vm_train: exit code 127")
+            raise SystemExit(127) from e
         try:
             for line in proc.stdout:
                 emit(line.rstrip("\n"))
@@ -64,4 +73,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _code = main()
+    if _code:
+        raise SystemExit(_code)

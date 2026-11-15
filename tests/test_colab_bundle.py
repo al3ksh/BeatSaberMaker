@@ -252,9 +252,10 @@ def test_vm_train_dry_run_and_validation(tmp_path: Path, capsys) -> None:
     assert mod.main(["--model", "timing", "--name", "r1", "--drive-dir", str(drv),
                      "--work", str(tmp_path / "w"), "--dry-run", "--", "--max-steps", "5"]) == 0
     out = capsys.readouterr().out.strip()
-    expected = (f"$ {_sys.executable} -u -m bsmaker train timing --out "
-                f"{drv / 'checkpoints' / 'gen2' / 'r1'} --max-steps 5")
-    assert out == expected and not drv.exists()
+    import shlex
+    expected = "$ " + shlex.join([_sys.executable, "-u", "-m", "bsmaker", "train", "timing", "--out",
+                                  str(drv / "checkpoints" / "gen2" / "r1"), "--max-steps", "5"])
+    assert out.splitlines() == [expected, "vm_train: exit code 0"] and not drv.exists()
     with pytest.raises(SystemExit):
         mod.main(["--model", "timing", "--name", "bad name", "--dry-run"])
     with pytest.raises(SystemExit):
@@ -275,3 +276,65 @@ def test_vm_train_runs_logs_and_propagates_exit(tmp_path: Path, capsys) -> None:
     assert log.startswith("$ ") and "hello ['train', 'pattern'" in log
     assert log.strip().endswith("vm_train: exit code 3")
     assert capsys.readouterr().out.strip().endswith("vm_train: exit code 3")
+
+
+def test_delta_events_filter(tmp_path: Path) -> None:
+    import tarfile
+    mod = _load_script()
+    _make_data(tmp_path / "d", ["a", "b"])
+    ev = tmp_path / "d" / "events"
+    (ev / "index.json.tmp").write_text("x")
+    (ev / "x.partial").write_text("x")
+    (ev / ".hidden").write_text("x")
+    (ev / "sub").mkdir()
+    (ev / "sub" / "f.txt").write_text("x")
+    base = _base_index(tmp_path / "base.json", ["a"])
+    out, _ = mod.build_delta(base, tmp_path / "d", tmp_path / "out")
+    with tarfile.open(out) as tf:
+        names = {m.name for m in tf.getmembers() if m.name.startswith("events")}
+    assert names == {"events", "events/index.json", "events/events.npz"}
+
+
+@pytest.mark.parametrize("name", ["vm_setup", "vm_train"])
+def test_bsm_args_wins_over_sys_argv(name: str, drive: Path, tmp_path: Path, monkeypatch, capsys) -> None:
+    mod = _load_vm(name)
+    monkeypatch.setattr("sys.argv", ["kernel", "--bogus"])
+    if name == "vm_train":
+        monkeypatch.setenv("BSM_ARGS", f'--model timing --name e1 --drive-dir "{tmp_path / "d"}" --dry-run -- --size s')
+        assert mod.main() == 0
+        assert "--size s" in capsys.readouterr().out
+    else:
+        work = tmp_path / "work"
+        monkeypatch.setenv("BSM_ARGS", f'--drive-dir "{drive}" --work "{work}" --no-pip')
+        assert mod.main() == 0
+        assert (work / "none").is_dir() and (work / "data" / ".base.done").is_file()
+
+
+def test_vm_train_source_runs_in_kernel_style_exec(tmp_path: Path, monkeypatch, capsys) -> None:
+    src = (ROOT / "scripts" / "colab" / "vm_train.py").read_text("utf-8")
+    assert "__file__" not in src
+    monkeypatch.setenv("BSM_ARGS", f'--model pattern --name k1 --drive-dir "{tmp_path}" --dry-run')
+    exec(compile(src, "<kernel>", "exec"), {"__name__": "__main__"})
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("$ ") and "train pattern --out" in lines[0]
+    assert lines[-1] == "vm_train: exit code 0"
+    assert "__file__" not in (ROOT / "scripts" / "colab" / "vm_setup.py").read_text("utf-8")
+
+
+def test_vm_train_start_failure_gives_127(tmp_path: Path, capsys) -> None:
+    mod = _load_vm("vm_train")
+    work = tmp_path / "w"  # code dir missing -> Popen cwd error (OSError)
+    with pytest.raises(SystemExit) as ei:
+        mod.main(["--model", "timing", "--name", "r", "--drive-dir", str(tmp_path / "drv"),
+                  "--work", str(work)])
+    assert ei.value.code == 127
+    assert capsys.readouterr().out.strip().endswith("vm_train: exit code 127")
+
+
+def test_vm_setup_data_without_marker_is_rebuilt(drive: Path, tmp_path: Path) -> None:
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    (work / "data" / "features").mkdir(parents=True)
+    (work / "data" / "features" / "junk.npy").write_text("j")
+    assert mod.main(["--drive-dir", str(drive), "--work", str(work), "--no-pip"]) == 0
+    assert not (work / "data" / "features" / "junk.npy").exists()

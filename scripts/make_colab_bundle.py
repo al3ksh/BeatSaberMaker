@@ -70,7 +70,11 @@ def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, 
     tmp = out.with_name(out.name + ".tmp")
     try:
         with tarfile.open(tmp, "w") as tf:
-            tf.add(data_dir / "events", arcname="events")
+            tf.add(data_dir / "events", arcname="events", recursive=False)
+            for f in sorted((data_dir / "events").iterdir()):
+                if (f.is_file() and not f.is_symlink() and not f.name.startswith(".")
+                        and not f.name.endswith((".tmp", ".partial"))):
+                    tf.add(f, arcname=f"events/{f.name}")
             stats = data_dir / "dataset_stats.json"
             if stats.is_file():
                 tf.add(stats, arcname="dataset_stats.json")
