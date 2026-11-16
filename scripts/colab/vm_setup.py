@@ -1,7 +1,7 @@
 """Prepare a Colab VM for training: unpack data and code, install deps, write bsmaker.toml.
 
 Runs on the VM with the Python standard library only (it must not import bsmaker).
-Order: base tar -> delta tar -> feature check -> code zip -> pip -> config. Safe to run twice.
+Order: base tar -> delta tar -> optional layers tar -> feature check -> code zip -> pip -> config. Safe to run twice.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from pathlib import Path
 
 BASE_TAR = "bsmaker-train-data.tar"
 DELTA_TAR = "bsmaker-train-delta.tar"
+LAYERS_TAR = "bsmaker-layers.tar"
 CODE_ZIP = "bsmaker-code.zip"
 PIP_PACKAGES = ["librosa", "soundfile", "typer", "httpx"]
 
@@ -60,6 +61,33 @@ def unpack_delta(tar: Path, work: Path) -> None:
     print(f"unpacking {tar.name} ...", flush=True)
     safe_extract(tar, data)
     marker.write_text(stamp)
+
+
+def unpack_layers(tar: Path, work: Path) -> None:
+    data = work / "data"
+    marker = data / ".layers.done"
+    st = tar.stat()
+    stamp = f"{st.st_size} {st.st_mtime_ns}"
+    if marker.is_file() and marker.read_text() == stamp:
+        print("layers data already unpacked (.layers.done), skipping")
+        return
+    print(f"unpacking {tar.name} ...", flush=True)
+    shutil.rmtree(data / "layers", ignore_errors=True)
+    safe_extract(tar, data)
+    marker.write_text(stamp)
+
+
+def check_layers(data: Path) -> None:
+    """Exit non-zero when the layers index and the events index differ in length."""
+    ev, ly = data / "events" / "index.json", data / "layers" / "index.json"
+    if not ly.is_file():
+        print("vm_setup: layers tar has no layers/index.json", flush=True)
+        raise SystemExit(1)
+    n_ev = len(json.loads(ev.read_text("utf-8"))) if ev.is_file() else 0
+    n_ly = len(json.loads(ly.read_text("utf-8")))
+    if n_ev != n_ly:
+        print(f"vm_setup: layers index has {n_ly} entries, events index {n_ev}", flush=True)
+        raise SystemExit(1)
 
 
 def unpack_code(zip_path: Path, work: Path) -> Path:
@@ -121,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     if use_delta:
         unpack_delta(delta, work)
     data = work / "data"
+    layers = drive / LAYERS_TAR
+    if layers.is_file():
+        unpack_layers(layers, work)
+        check_layers(data)
+    else:
+        print(f"note: no {LAYERS_TAR} in {drive}; layer models cannot be trained")
     check_features(data)
     code = unpack_code(zip_path, work)  # dataset_stats.json comes from the code zip only
     if not args.no_pip:

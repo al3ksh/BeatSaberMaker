@@ -31,7 +31,8 @@ def repo(tmp_path: Path) -> Path:
     (r / "tests").mkdir()
     (r / "src" / "pkg" / "a.py").write_text("x = 1\n")
     (r / "tests" / "t.py").write_text("y = 2\n")
-    for name in ("pyproject.toml", "dataset_stats.json", "playability.toml", "other.txt"):
+    for name in ("pyproject.toml", "dataset_stats.json", "layer_stats.json", "playability.toml",
+                 "other.txt"):
         (r / name).write_text("data\n")
     _git(r, "init", "-q")
     _git(r, "add", ".")
@@ -47,7 +48,7 @@ def test_bundle_contents_and_commit(repo: Path, tmp_path: Path) -> None:
     with zipfile.ZipFile(out) as zf:
         names = {n for n in zf.namelist() if not n.endswith("/")}
         assert names == {"src/pkg/a.py", "pyproject.toml", "dataset_stats.json",
-                         "playability.toml", "BUNDLE_COMMIT.txt"}
+                         "playability.toml", "layer_stats.json", "BUNDLE_COMMIT.txt"}
         assert zf.read("BUNDLE_COMMIT.txt").decode().strip() == commit
 
 
@@ -388,3 +389,97 @@ def test_vm_train_requires_the_drive_dir(tmp_path: Path, capsys) -> None:
     assert lines == [f"vm_train: drive dir not found: {gone} (is Drive mounted?)",
                      "vm_train: exit code 2"]
     assert not gone.exists()
+
+
+# ---- layers bundle, vm_setup layers tar, vm_train layer models, queue runner ----
+
+def test_layers_tar_holds_regular_files_only(tmp_path: Path) -> None:
+    import tarfile
+    mod = _load_script()
+    d = tmp_path / "d"
+    (d / "layers").mkdir(parents=True)
+    (d / "layers" / "index.json").write_text("[]")
+    (d / "layers" / "layers.npz").write_bytes(b"npz")
+    (d / "layers" / "layers.npz.tmp").write_bytes(b"t")
+    (d / "layers" / "x.partial").write_bytes(b"t")
+    (d / "layers" / ".hidden").write_bytes(b"t")
+    (d / "layers" / "sub").mkdir()
+    (d / "layers" / "sub" / "f").write_bytes(b"t")
+    out, n = mod.build_layers(d, tmp_path / "out")
+    assert out.name == "bsmaker-layers.tar" and n == 2
+    with tarfile.open(out) as tf:
+        names = {m.name for m in tf.getmembers()}
+    assert names == {"layers", "layers/index.json", "layers/layers.npz"}
+    with pytest.raises(RuntimeError, match="overwrite"):
+        mod.build_layers(d, tmp_path / "out")
+
+
+def test_layers_cli_flag(tmp_path: Path, capsys) -> None:
+    mod = _load_script()
+    d = tmp_path / "d"
+    (d / "layers").mkdir(parents=True)
+    (d / "layers" / "index.json").write_text("[]")
+    assert mod.main(["--layers", "--data-dir", str(d), "--out-dir", str(tmp_path / "o")]) == 0
+    assert (tmp_path / "o" / "bsmaker-layers.tar").is_file()
+    assert "bsmaker-layers.tar" in capsys.readouterr().out
+
+
+def _layers_tar(drive: Path, n: int) -> None:
+    _tar(drive / "bsmaker-layers.tar", {
+        "layers/index.json": json.dumps([{"map_key": str(i)} for i in range(n)]),
+        "layers/layers.npz": "x"})
+
+
+def test_vm_setup_without_layers_tar_notes(drive: Path, tmp_path: Path, capsys) -> None:
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    assert mod.main(["--drive-dir", str(drive), "--work", str(work), "--no-pip"]) == 0
+    out = capsys.readouterr().out
+    assert "no bsmaker-layers.tar" in out
+    assert not (work / "data" / "layers").exists()
+
+
+def test_vm_setup_with_layers_tar(drive: Path, tmp_path: Path, capsys) -> None:
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    _layers_tar(drive, 3)  # events index has 3 entries (a, b, c)
+    args = ["--drive-dir", str(drive), "--work", str(work), "--no-pip"]
+    assert mod.main(args) == 0
+    assert (work / "data" / "layers" / "layers.npz").is_file()
+    st = (drive / "bsmaker-layers.tar").stat()
+    assert (work / "data" / ".layers.done").read_text() == f"{st.st_size} {st.st_mtime_ns}"
+    capsys.readouterr()
+    assert mod.main(args) == 0
+    assert "layers data already unpacked" in capsys.readouterr().out
+
+
+def test_vm_setup_layers_count_mismatch_fails_before_pip(drive: Path, tmp_path: Path) -> None:
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    _layers_tar(drive, 2)
+    called = []
+    mod.run_streamed = lambda cmd: called.append(cmd) or 0
+    with pytest.raises(SystemExit) as ei:
+        mod.main(["--drive-dir", str(drive), "--work", str(work)])
+    assert ei.value.code == 1 and not called
+
+
+@pytest.mark.parametrize("model", ["ornaments", "layer-when", "layer-what"])
+def test_vm_train_layer_models_dry_run(model: str, tmp_path: Path, capsys) -> None:
+    import shlex
+    import sys as _sys
+    mod = _load_vm("vm_train")
+    drv = tmp_path / "drv"
+    assert mod.main(["--model", model, "--name", "r1", "--drive-dir", str(drv),
+                     "--work", str(tmp_path / "w"), "--dry-run", "--", "--max-steps", "5"]) == 0
+    expected = "$ " + shlex.join([_sys.executable, "-u", "-m", "bsmaker", "train", model, "--out",
+                                  str(drv / "checkpoints" / "layers" / "r1"), "--max-steps", "5"])
+    assert capsys.readouterr().out.splitlines()[0] == expected
+
+
+def test_run_queue_script_syntax() -> None:
+    script = ROOT / "scripts" / "colab" / "run_queue.sh"
+    assert script.is_file()
+    subprocess.run(["bash", "-n", str(script)], check=True)
+    text = script.read_text("utf-8")
+    assert "flush_and_unmount" in text and "RESULTS" in text and "colab" in text
