@@ -86,6 +86,7 @@ export const PL = {
     title: "Ustawienia",
     customLevelsLabel: "Folder CustomLevels",
     customLevelsInvalid: "Nie udało się zweryfikować folderu CustomLevels.",
+    detectAuto: "Wykryj automatycznie",
     deviceLabel: "Urządzenie obliczeniowe",
     devices: {
       auto: "Automatycznie",
@@ -93,8 +94,10 @@ export const PL = {
       cpu: "CPU",
     },
     cpuNotice: "Brak karty NVIDIA — generowanie na CPU będzie działać wolniej.",
+    cpuBanner: "Tryb CPU — brak karty NVIDIA, generowanie trwa dłużej.",
     gpuDetectedPrefix: "Wykryto kartę:",
     exportDirLabel: "Domyślny folder eksportu ZIP",
+    changeFolder: "Zmień",
     openLogs: "Otwórz logi",
     checkUpdates: "Sprawdź aktualizacje",
     installUpdate: "Zainstaluj aktualizację i uruchom ponownie",
