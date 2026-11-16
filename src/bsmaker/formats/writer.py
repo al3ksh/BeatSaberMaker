@@ -7,9 +7,10 @@ import struct
 import subprocess
 import zlib
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-from bsmaker.formats.model import Note
+from bsmaker.formats.model import Arc, Bomb, Chain, LightEvent, Note, Obstacle
 
 _RANK_NUMBERS = {"Easy": 1, "Normal": 3, "Hard": 5, "Expert": 7, "ExpertPlus": 9}
 _AUTHOR = "BeatSaberMaker"
@@ -42,19 +43,99 @@ def _encode_audio(src: Path, dst: Path) -> None:
         raise RuntimeError(f"ffmpeg failed (exit {res.returncode}): {lines[-1] if lines else ''}")
 
 
-def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, njs: float,
-              njs_offset: float, notes: Sequence[Note], audio_src: Path,
-              overwrite: bool = False) -> Path:
+@dataclass(frozen=True)
+class LevelData:
+    rank: str
+    njs: float
+    njs_offset: float
+    notes: Sequence[Note]
+    bombs: Sequence[Bomb] = ()
+    obstacles: Sequence[Obstacle] = ()
+    arcs: Sequence[Arc] = ()
+    chains: Sequence[Chain] = ()
+
+
+def _in_grid(x: int, y: int) -> bool:
+    return 0 <= x <= 3 and 0 <= y <= 2
+
+
+def _validate(level: LevelData) -> None:
+    for b in level.bombs:
+        if not _in_grid(b.x, b.y):
+            raise ValueError(f"{level.rank}: bomb outside the grid: ({b.x}, {b.y})")
+    for o in level.obstacles:
+        if not o.duration_s > 0 or o.w <= 0:
+            raise ValueError(f"{level.rank}: wall needs a positive duration and width: {o}")
+        if not -1 <= o.x <= 4 or not 0 <= o.y <= 2 or not 1 <= o.h <= 5:
+            raise ValueError(f"{level.rank}: wall outside the allowed range: {o}")
+    for a in level.arcs:
+        if not _in_grid(a.x, a.y) or not _in_grid(a.tx, a.ty):
+            raise ValueError(f"{level.rank}: arc outside the grid: {a}")
+    for c in level.chains:
+        if not _in_grid(c.x, c.y) or not _in_grid(c.tx, c.ty):
+            raise ValueError(f"{level.rank}: chain outside the grid: {c}")
+
+
+def _difficulty_json(level: LevelData, bpm: float, lights: Sequence[LightEvent]) -> dict:
+    def beat(t: float) -> float:
+        return t * bpm / 60.0
+
+    ordered = sorted(level.notes, key=lambda n: (n.beat, n.color, n.x, n.y))
+    return {
+        "version": "3.3.0",
+        "bpmEvents": [], "rotationEvents": [],
+        "colorNotes": [{"b": n.beat, "x": n.x, "y": n.y, "c": n.color, "d": n.direction, "a": 0}
+                       for n in ordered],
+        "bombNotes": [{"b": beat(b.time_s), "x": b.x, "y": b.y}
+                      for b in sorted(level.bombs, key=lambda b: (b.time_s, b.x, b.y))],
+        "obstacles": [{"b": beat(o.time_s), "x": o.x, "y": o.y, "d": beat(o.duration_s), "w": o.w, "h": o.h}
+                      for o in sorted(level.obstacles, key=lambda o: (o.time_s, o.x, o.y))],
+        "sliders": [{"b": beat(a.time_s), "c": a.color, "x": a.x, "y": a.y, "d": a.d, "mu": 1,
+                     "tb": beat(a.tail_time_s), "tx": a.tx, "ty": a.ty, "tc": a.td, "tmu": 1, "m": 0}
+                    for a in sorted(level.arcs, key=lambda a: (a.time_s, a.color, a.x, a.y))],
+        "burstSliders": [{"b": beat(c.time_s), "x": c.x, "y": c.y, "c": c.color, "d": c.d,
+                          "tb": beat(c.tail_time_s), "tx": c.tx, "ty": c.ty, "sc": c.segments, "s": c.squish}
+                         for c in sorted(level.chains, key=lambda c: (c.time_s, c.color, c.x, c.y))],
+        "waypoints": [],
+        "basicBeatmapEvents": [{"b": beat(e.time_s), "et": e.type, "i": e.value, "f": e.float_value}
+                               for e in sorted(lights, key=lambda e: (e.time_s, e.type))],
+        "colorBoostBeatmapEvents": [],
+        "lightColorEventBoxGroups": [], "lightRotationEventBoxGroups": [],
+        "lightTranslationEventBoxGroups": [], "vfxEventBoxGroups": [],
+        "_fxEventsCollection": {"_il": [], "_fl": []},
+        "basicEventTypesWithKeywords": {"d": []},
+        "useNormalEventsAsCompatibleEvents": True,
+    }
+
+
+def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels: Sequence[LevelData],
+                    lights: Sequence[LightEvent] = (), environment: str = "DefaultEnvironment",
+                    audio_src: Path, overwrite: bool = False) -> Path:
+    """Write one v3 difficulty file per level (ascending rank order in Info).
+
+    Layer objects are placed on the beat grid from their `time_s` and `bpm`; their own
+    `beat` fields are ignored.
+    """
     folder = Path(folder)
-    if rank not in _RANK_NUMBERS:
-        raise ValueError(f"unknown rank {rank!r}")
+    if not levels:
+        raise ValueError("at least one level is required")
+    ranks = [lv.rank for lv in levels]
+    for r in ranks:
+        if r not in _RANK_NUMBERS:
+            raise ValueError(f"unknown rank {r!r}")
+    if len(set(ranks)) != len(ranks):
+        raise ValueError(f"duplicate ranks: {ranks}")
+    if not isinstance(environment, str) or not environment:
+        raise ValueError("environment must be a non-empty string")
+    for lv in levels:
+        _validate(lv)
     if folder.exists():
         if not overwrite:
             raise FileExistsError(f"{folder} already exists")
         if not folder.name.startswith("BSM - "):
             raise ValueError(f"refusing to overwrite {folder.name!r}: name must start with 'BSM - '")
 
-    diff_name = f"{rank}Standard.dat"
+    ordered = sorted(levels, key=lambda lv: _RANK_NUMBERS[lv.rank])
     info = {
         "_version": "2.1.0",
         "_songName": title,
@@ -68,33 +149,20 @@ def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, n
         "_previewDuration": 10,
         "_songFilename": "song.egg",
         "_coverImageFilename": "cover.png",
-        "_environmentName": "DefaultEnvironment",
+        "_environmentName": environment,
         "_songTimeOffset": 0,
         "_difficultyBeatmapSets": [{
             "_beatmapCharacteristicName": "Standard",
             "_difficultyBeatmaps": [{
-                "_difficulty": rank,
-                "_difficultyRank": _RANK_NUMBERS[rank],
-                "_beatmapFilename": diff_name,
-                "_noteJumpMovementSpeed": njs,
-                "_noteJumpStartBeatOffset": njs_offset,
-            }],
+                "_difficulty": lv.rank,
+                "_difficultyRank": _RANK_NUMBERS[lv.rank],
+                "_beatmapFilename": f"{lv.rank}Standard.dat",
+                "_noteJumpMovementSpeed": lv.njs,
+                "_noteJumpStartBeatOffset": lv.njs_offset,
+            } for lv in ordered],
         }],
     }
-    ordered = sorted(notes, key=lambda n: (n.beat, n.color, n.x, n.y))
-    diff = {
-        "version": "3.3.0",
-        "bpmEvents": [], "rotationEvents": [],
-        "colorNotes": [{"b": n.beat, "x": n.x, "y": n.y, "c": n.color, "d": n.direction, "a": 0}
-                       for n in ordered],
-        "bombNotes": [], "obstacles": [], "sliders": [], "burstSliders": [], "waypoints": [],
-        "basicBeatmapEvents": [], "colorBoostBeatmapEvents": [],
-        "lightColorEventBoxGroups": [], "lightRotationEventBoxGroups": [],
-        "lightTranslationEventBoxGroups": [], "vfxEventBoxGroups": [],
-        "_fxEventsCollection": {"_il": [], "_fl": []},
-        "basicEventTypesWithKeywords": {"d": []},
-        "useNormalEventsAsCompatibleEvents": True,
-    }
+    diffs = {f"{lv.rank}Standard.dat": _difficulty_json(lv, bpm, lights) for lv in ordered}
 
     tmp = folder.with_name(folder.name + ".tmp-writing")
     if tmp.exists():
@@ -103,7 +171,8 @@ def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, n
     try:
         _encode_audio(Path(audio_src), tmp / "song.egg")
         (tmp / "Info.dat").write_text(json.dumps(info, indent=2), encoding="utf-8")
-        (tmp / diff_name).write_text(json.dumps(diff), encoding="utf-8")
+        for name, diff in diffs.items():
+            (tmp / name).write_text(json.dumps(diff), encoding="utf-8")
         (tmp / "cover.png").write_bytes(_png(256, (40, 90, 160)))
         if folder.exists():
             shutil.rmtree(folder)
@@ -112,3 +181,11 @@ def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, n
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return folder
+
+
+def write_map(folder: Path, *, title: str, artist: str, bpm: float, rank: str, njs: float,
+              njs_offset: float, notes: Sequence[Note], audio_src: Path,
+              overwrite: bool = False) -> Path:
+    return write_map_multi(folder, title=title, artist=artist, bpm=bpm,
+                           levels=[LevelData(rank, njs, njs_offset, notes)],
+                           audio_src=audio_src, overwrite=overwrite)

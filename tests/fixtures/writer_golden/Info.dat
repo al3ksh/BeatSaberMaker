@@ -1,0 +1,30 @@
+{
+  "_version": "2.1.0",
+  "_songName": "T",
+  "_songSubName": "",
+  "_songAuthorName": "A",
+  "_levelAuthorName": "BeatSaberMaker",
+  "_beatsPerMinute": 120.0,
+  "_shuffle": 0,
+  "_shufflePeriod": 0.5,
+  "_previewStartTime": 12,
+  "_previewDuration": 10,
+  "_songFilename": "song.egg",
+  "_coverImageFilename": "cover.png",
+  "_environmentName": "DefaultEnvironment",
+  "_songTimeOffset": 0,
+  "_difficultyBeatmapSets": [
+    {
+      "_beatmapCharacteristicName": "Standard",
+      "_difficultyBeatmaps": [
+        {
+          "_difficulty": "Expert",
+          "_difficultyRank": 7,
+          "_beatmapFilename": "ExpertStandard.dat",
+          "_noteJumpMovementSpeed": 16.0,
+          "_noteJumpStartBeatOffset": 0.0
+        }
+      ]
+    }
+  ]
+}
