@@ -75,7 +75,7 @@ def rule_lights(mel: np.ndarray, notes: Sequence[Note], bpm: float, offset_s: fl
             for c, typ in ((0, LEFT), (1, RIGHT)):
                 ts = times_by_hand[c]
                 if np.searchsorted(ts, t, "left") < np.searchsorted(ts, t + _BAR_BEATS * beat_s, "left"):
-                    add(t, typ, lit(t, _ON))
+                    add(t, typ, lit(t, _FADE))
     else:
         last_follow = {0: -math.inf, 1: -math.inf}
         step = _FOLLOW_STEP_BEATS[level] * beat_s

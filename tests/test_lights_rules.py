@@ -92,3 +92,5 @@ def test_level_one_is_bars_only():
         if e.type in (0, 1, 2, 3, 8, 12, 13):
             assert abs((e.time_s - 0.3) / bar_s - round((e.time_s - 0.3) / bar_s)) < 1e-9
     assert not any(e.type == 4 for e in ev)
+    # no lit-forever 'on' action (values 1 and 5) on the colour light types (speed events 12/13 use 1-7 as counts)
+    assert not any(e.type in (0, 1, 2, 3, 4) and e.value in (1, 5) for e in ev)
