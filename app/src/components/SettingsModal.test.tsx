@@ -47,10 +47,10 @@ describe("SettingsModal", () => {
         onSettingsSaved={() => {}}
       />,
     );
-    expect(screen.getByText(/brak karty nvidia|wolniej/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /otwórz logi/i }));
+    expect(screen.getByText(/no nvidia gpu|slower/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /open logs/i }));
     expect(openLogs).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /sprawdź aktualizacje/i }));
+    fireEvent.click(screen.getByRole("button", { name: /check for updates/i }));
     expect(checkForUpdates).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /cpu/i }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ device: "cpu" }));

@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { Cpu, FolderHeart, PlusCircle, Settings as SettingsIcon } from "lucide-react";
-import { PL } from "./i18n/pl";
+import appIcon from "./assets/icon.png";
+import { EN } from "./i18n/en";
 import { FirstRun } from "./components/FirstRun";
 import { LibraryView } from "./components/LibraryView";
 import { SettingsModal } from "./components/SettingsModal";
-import { Badge, Button } from "./components/ui/primitives";
+import { Badge, Button, SegmentedControl } from "./components/ui/primitives";
 import { Wizard } from "./components/wizard/Wizard";
 import type { EngineInfo, LibraryEntry, Settings, StartupState, UpdateStatus } from "./types";
 
 type Tab = "create" | "library";
+
+const GITHUB_REPO_URL = "https://github.com/al3ksh/BeatSaberMaker";
 
 export function App() {
   const [startup, setStartup] = useState<StartupState | null>(null);
@@ -38,107 +42,178 @@ export function App() {
     };
   }, []);
 
-  if (!startup || !settings) {
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-400 flex items-center justify-center text-sm">
-        {PL.common.loading}
-      </div>
-    );
-  }
-
-  if (needsFirstRun) {
-    return (
-      <FirstRun
-        startup={startup}
-        onComplete={(nextSettings, nextInfo) => {
-          setSettings(nextSettings);
-          if (nextInfo) setInfo(nextInfo);
-          setNeedsFirstRun(false);
-        }}
-      />
-    );
-  }
+  const viewKey = !startup || !settings ? "splash" : needsFirstRun ? "first-run" : "main";
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
-      <header className="border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur px-6 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-red-500 to-blue-500 flex items-center justify-center text-xs font-bold text-white shadow">
-            BS
-          </div>
-          <span className="font-semibold tracking-tight">{PL.appName}</span>
-          {info && !info.cuda_available && (
-            <Badge variant="amber">
-              <Cpu className="h-3 w-3" />
-              {PL.settings.devices.cpu}
-            </Badge>
-          )}
-        </div>
-
-        <nav className="flex items-center gap-1.5">
-          <Button
-            variant={tab === "create" ? "primary" : "ghost"}
-            size="sm"
-            onClick={() => setTab("create")}
+    <div className="h-screen overflow-hidden bg-zinc-950 bg-[radial-gradient(ellipse_80%_45%_at_50%_0%,rgba(39,39,42,0.28),transparent)] text-zinc-100 flex flex-col">
+      <AnimatePresence mode="wait">
+        {viewKey === "splash" && (
+          <motion.div
+            key="splash"
+            initial={{ opacity: 0, scale: 0.97 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.985 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="h-full w-full flex flex-col items-center justify-center gap-5 px-6"
           >
-            <PlusCircle className="h-4 w-4" />
-            {PL.nav.create}
-          </Button>
-          <Button
-            variant={tab === "library" ? "primary" : "ghost"}
-            size="sm"
-            onClick={() => setTab("library")}
-          >
-            <FolderHeart className="h-4 w-4" />
-            {PL.nav.library}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSettingsOpen(true)}
-            aria-label={PL.nav.settings}
-          >
-            <SettingsIcon className="h-4 w-4" />
-            {PL.nav.settings}
-          </Button>
-        </nav>
-      </header>
-
-      {updateStatus.state === "downloaded" && (
-        <div className="bg-blue-600/20 border-b border-blue-500/30 px-6 py-2 flex items-center justify-between text-xs text-blue-200">
-          <span>{PL.updateBanner.ready}</span>
-          <Button size="sm" onClick={() => window.bsm.installUpdate()}>
-            {PL.updateBanner.action}
-          </Button>
-        </div>
-      )}
-
-      <main className="flex-1 max-w-4xl w-full mx-auto p-6">
-        {tab === "create" ? (
-          <Wizard
-            regenerateTarget={regenerateTarget}
-            onClearRegenerate={() => setRegenerateTarget(null)}
-            onGoToLibrary={() => setTab("library")}
-          />
-        ) : (
-          <LibraryView
-            onRegenerate={(entry) => {
-              setRegenerateTarget(entry);
-              setTab("create");
-            }}
-          />
+            <motion.img
+              src={appIcon}
+              alt={EN.appName}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.28, ease: "easeOut" }}
+              className="h-16 w-16 rounded-2xl shadow-xl shadow-black/60"
+            />
+            <div className="text-center space-y-1">
+              <div className="text-base font-semibold tracking-tight text-zinc-100">
+                {EN.appName}
+              </div>
+              <div className="text-xs text-zinc-500">{EN.common.startingEngine}</div>
+            </div>
+            <div className="w-48 h-1 rounded-full bg-zinc-900 border border-zinc-800/90 overflow-hidden">
+              <motion.div
+                className="h-full w-1/2 rounded-full bg-gradient-to-r from-red-500 via-purple-500 to-blue-500"
+                initial={{ x: "-100%" }}
+                animate={{ x: "200%" }}
+                transition={{
+                  repeat: Infinity,
+                  duration: 1.3,
+                  ease: "easeInOut",
+                }}
+              />
+            </div>
+          </motion.div>
         )}
-      </main>
 
-      <SettingsModal
-        open={settingsOpen}
-        settings={settings}
-        info={info}
-        appVersion={startup.appVersion}
-        updateStatus={updateStatus}
-        onClose={() => setSettingsOpen(false)}
-        onSettingsSaved={(next) => setSettings(next)}
-      />
+        {viewKey === "first-run" && startup && (
+          <motion.div
+            key="first-run"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="h-full w-full"
+          >
+            <FirstRun
+              startup={startup}
+              onComplete={(nextSettings, nextInfo) => {
+                setSettings(nextSettings);
+                if (nextInfo) setInfo(nextInfo);
+                setNeedsFirstRun(false);
+              }}
+            />
+          </motion.div>
+        )}
+
+        {viewKey === "main" && startup && settings && (
+          <motion.div
+            key="main"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="h-full w-full flex flex-col"
+          >
+            <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/90 px-6 py-2.5 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => window.bsm?.openExternalUrl?.(GITHUB_REPO_URL)}
+                  title={GITHUB_REPO_URL}
+                  className="flex items-center gap-2.5 rounded-xl py-0.5 pr-1.5 hover:opacity-85 transition-opacity cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  <img
+                    src={appIcon}
+                    alt={EN.appName}
+                    className="h-8 w-8 rounded-lg shadow-sm"
+                  />
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-semibold tracking-tight text-zinc-100">
+                      {EN.appName}
+                    </span>
+                    <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">
+                      v{startup.appVersion}
+                    </span>
+                  </div>
+                </button>
+                {info && !info.cuda_available && (
+                  <Badge variant="amber">
+                    <Cpu className="h-3 w-3" />
+                    {EN.settings.devices.cpu}
+                  </Badge>
+                )}
+              </div>
+
+              <nav className="flex items-center gap-2">
+                <SegmentedControl
+                  size="sm"
+                  value={tab}
+                  onChange={setTab}
+                  options={[
+                    {
+                      value: "create",
+                      label: EN.nav.create,
+                      icon: <PlusCircle className="h-3.5 w-3.5" />,
+                    },
+                    {
+                      value: "library",
+                      label: EN.nav.library,
+                      icon: <FolderHeart className="h-3.5 w-3.5" />,
+                    },
+                  ]}
+                />
+
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSettingsOpen(true)}
+                  aria-label={EN.nav.settings}
+                  title={EN.nav.settings}
+                  className="rounded-xl px-2.5 h-8 w-8 p-0"
+                >
+                  <SettingsIcon className="h-4 w-4" />
+                </Button>
+              </nav>
+            </header>
+
+            {updateStatus.state === "downloaded" && (
+              <div className="shrink-0 bg-blue-600/20 border-b border-blue-500/30 px-6 py-2 flex items-center justify-between text-xs text-blue-200">
+                <span>{EN.updateBanner.ready}</span>
+                <Button size="sm" onClick={() => window.bsm.installUpdate()}>
+                  {EN.updateBanner.action}
+                </Button>
+              </div>
+            )}
+
+            <main className="flex-1 min-h-0 flex flex-col max-w-4xl w-full mx-auto px-6 py-5 overflow-hidden">
+              {tab === "create" ? (
+                <Wizard
+                  regenerateTarget={regenerateTarget}
+                  onClearRegenerate={() => setRegenerateTarget(null)}
+                  onGoToLibrary={() => setTab("library")}
+                />
+              ) : (
+                <LibraryView
+                  onRegenerate={(entry) => {
+                    setRegenerateTarget(entry);
+                    setTab("create");
+                  }}
+                  onGoToCreate={() => setTab("create")}
+                />
+              )}
+            </main>
+
+            <SettingsModal
+              open={settingsOpen}
+              settings={settings}
+              info={info}
+              appVersion={startup.appVersion}
+              updateStatus={updateStatus}
+              onClose={() => setSettingsOpen(false)}
+              onSettingsSaved={(next) => setSettings(next)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

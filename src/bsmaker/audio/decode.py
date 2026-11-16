@@ -49,7 +49,14 @@ def _run(args: list[str], path: Path, *, ffmpeg_path: Path | None = None) -> byt
     exe = str(ffmpeg_path) if ffmpeg_path is not None else "ffmpeg"
     cmd = [exe, "-hide_banner", "-loglevel", "error", *args]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=_TIMEOUT_S, shell=False, **_win_no_window())
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_TIMEOUT_S,
+            shell=False,
+            **_win_no_window(),
+        )
     except FileNotFoundError as exc:
         msg = f"ffmpeg not found: {ffmpeg_path}" if ffmpeg_path is not None else "ffmpeg not found on PATH"
         raise FfmpegMissingError(msg) from exc

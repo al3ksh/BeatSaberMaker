@@ -16,10 +16,15 @@ describe("StepSong", () => {
         thumbnail_url: null,
       },
     ]);
+    const pickCoverImage = vi.fn(async () => ({
+      path: "C:\\covers\\ghost.png",
+      dataUrl: "data:image/png;base64,abc",
+    }));
     (window as unknown as { bsm: unknown }).bsm = {
       searchYouTube,
       resolveYouTube: vi.fn(),
       pickAudioFile: vi.fn(),
+      pickCoverImage,
     };
     const onChange = vi.fn();
     const { rerender } = render(
@@ -36,8 +41,8 @@ describe("StepSong", () => {
         onNext={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: /dalej/i })).toBeDisabled();
-    fireEvent.change(screen.getByPlaceholderText(/szukaj|link/i), { target: { value: "ghost" } });
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText(/search|link/i), { target: { value: "ghost" } });
     fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(searchYouTube).toHaveBeenCalledWith("ghost"));
     fireEvent.click(await screen.findByText("Camellia - GHOST"));
@@ -64,6 +69,15 @@ describe("StepSong", () => {
         onNext={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: /dalej/i })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /next/i })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /map cover/i }));
+    await waitFor(() => expect(pickCoverImage).toHaveBeenCalled());
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        coverPath: "C:\\covers\\ghost.png",
+        thumbnailUrl: "data:image/png;base64,abc",
+      }),
+    );
   });
 });

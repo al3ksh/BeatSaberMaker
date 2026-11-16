@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   AlertTriangle,
   Archive,
+  Check,
   CheckCircle2,
   FileText,
   FolderOpen,
@@ -9,9 +10,10 @@ import {
   Loader2,
   RotateCcw,
 } from "lucide-react";
-import { ENVIRONMENT_LABELS_PL, formatErrorPl, PL, RANK_LABELS_PL } from "../../i18n/pl";
+import { ENVIRONMENT_LABELS_EN, formatErrorEn, EN, RANK_LABELS_EN } from "../../i18n/en";
 import type { GenerateOutput, ProgressEvent, StageName } from "../../types";
-import { Badge, Button, Card, ProgressBar } from "../ui/primitives";
+import { Badge, Button, Card, cn, ProgressBar } from "../ui/primitives";
+import { rankToBadgeVariant } from "./StepMap";
 
 export interface StepProgressDoneProps {
   hasDownloadStage: boolean;
@@ -55,7 +57,7 @@ export function StepProgressDone({
     setExportNote(null);
     try {
       await window.bsm.exportMapZip(result.folder, result.title);
-      setExportNote(PL.library.exportedSuccess);
+      setExportNote(EN.library.exportedSuccess);
     } catch {
       // Cancelled save dialog or error handled silently.
     }
@@ -64,42 +66,47 @@ export function StepProgressDone({
   if (status === "running") {
     const pct = progress?.pct ?? 0;
     return (
-      <Card className="p-6 space-y-6">
+      <Card className="p-6 space-y-5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <Loader2 className="h-5 w-5 text-blue-400 animate-spin" />
-            <h2 className="text-lg font-semibold">{PL.wizard.progress.title}</h2>
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center">
+              <Loader2 className="h-5 w-5 text-blue-400 animate-spin" />
+            </div>
+            <h2 className="text-lg font-semibold text-zinc-100">
+              {EN.wizard.progress.title}
+            </h2>
           </div>
-          <span className="font-mono text-sm text-blue-400">{pct}%</span>
+          <span className="font-mono text-sm font-semibold text-blue-300 bg-blue-500/10 border border-blue-500/25 rounded-lg px-2.5 py-1">
+            {pct}%
+          </span>
         </div>
 
         <ProgressBar pct={pct} />
 
-        <div className="space-y-2">
+        <div className="space-y-2 rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-4">
           {stages.map((st, idx) => {
             const done = idx < currentStageIndex;
             const active = idx === currentStageIndex;
             return (
               <div
                 key={st}
-                className={
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-2.5 py-1.5 text-sm transition-colors",
                   active
-                    ? "flex items-center gap-2.5 text-sm text-zinc-100 font-medium"
+                    ? "bg-blue-500/10 text-zinc-100 font-medium"
                     : done
-                      ? "flex items-center gap-2.5 text-sm text-emerald-400"
-                      : "flex items-center gap-2.5 text-sm text-zinc-500"
-                }
+                      ? "text-emerald-400"
+                      : "text-zinc-500",
+                )}
               >
-                <span
-                  className={
-                    active
-                      ? "h-2 w-2 rounded-full bg-blue-400"
-                      : done
-                        ? "h-2 w-2 rounded-full bg-emerald-400"
-                        : "h-2 w-2 rounded-full bg-zinc-700"
-                  }
-                />
-                <span>{PL.wizard.progress.stages[st]}</span>
+                {done ? (
+                  <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+                ) : active ? (
+                  <span className="h-2.5 w-2.5 rounded-full bg-blue-400 shadow-[0_0_8px_#60a5fa] animate-pulse shrink-0 mx-0.5" />
+                ) : (
+                  <span className="h-2 w-2 rounded-full bg-zinc-700 shrink-0 mx-1" />
+                )}
+                <span>{EN.wizard.progress.stages[st]}</span>
               </div>
             );
           })}
@@ -107,7 +114,7 @@ export function StepProgressDone({
 
         <div className="flex justify-end">
           <Button variant="danger" onClick={handleCancel} disabled={cancelling}>
-            {cancelling ? PL.wizard.progress.cancelling : PL.common.cancel}
+            {cancelling ? EN.wizard.progress.cancelling : EN.common.cancel}
           </Button>
         </div>
       </Card>
@@ -117,13 +124,15 @@ export function StepProgressDone({
   if (status === "error") {
     const code = errorCode ?? "internal";
     return (
-      <Card className="p-6 space-y-5">
-        <div className="flex items-start gap-3">
+      <Card className="p-6 space-y-5 border-red-500/25">
+        <div className="flex items-start gap-3.5">
           <div className="h-10 w-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0">
             <AlertTriangle className="h-5 w-5 text-red-400" />
           </div>
           <div className="space-y-1">
-            <p className="text-sm font-medium text-red-200">{formatErrorPl(code)}</p>
+            <p className="text-sm font-medium text-red-200 leading-relaxed">
+              {formatErrorEn(code)}
+            </p>
           </div>
         </div>
 
@@ -131,12 +140,12 @@ export function StepProgressDone({
           {code === "internal" && (
             <Button variant="secondary" onClick={() => window.bsm.openLogs()}>
               <FileText className="h-4 w-4" />
-              {PL.settings.openLogs}
+              {EN.settings.openLogs}
             </Button>
           )}
           <Button onClick={onReset}>
             <RotateCcw className="h-4 w-4" />
-            {PL.wizard.done.createAnother}
+            {EN.wizard.done.createAnother}
           </Button>
         </div>
       </Card>
@@ -152,24 +161,24 @@ export function StepProgressDone({
     (w) => /checkpoint|layer_stats/i.test(w),
   );
   if (hasLayerMissingWarning) {
-    infoNotices.push(PL.wizard.done.warnings.missingLayerModels);
+    infoNotices.push(EN.wizard.done.warnings.missingLayerModels);
   }
   if (result.used_rule_lights) {
-    infoNotices.push(PL.wizard.done.warnings.ruleLights);
+    infoNotices.push(EN.wizard.done.warnings.ruleLights);
   }
   if (!result.grid_steady) {
-    infoNotices.push(PL.wizard.done.warnings.unsteadyGrid);
+    infoNotices.push(EN.wizard.done.warnings.unsteadyGrid);
   }
 
   return (
-    <Card className="p-6 space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="h-10 w-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
-          <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+    <Card className="p-6 space-y-5 overflow-y-auto">
+      <div className="flex items-start gap-3.5">
+        <div className="h-11 w-11 rounded-xl bg-emerald-500/15 border border-emerald-500/30 shadow-[0_0_20px_-6px_rgba(16,185,129,0.6)] flex items-center justify-center shrink-0">
+          <CheckCircle2 className="h-6 w-6 text-emerald-400" />
         </div>
         <div>
           <h2 className="text-xl font-semibold text-zinc-100">
-            {PL.wizard.done.successTitle}
+            {EN.wizard.done.successTitle}
           </h2>
           <p className="text-sm text-zinc-400 mt-0.5">
             {result.title} — {result.artist}
@@ -179,32 +188,50 @@ export function StepProgressDone({
 
       <div className="flex flex-wrap gap-2">
         {result.levels.map((lv) => (
-          <Badge key={lv.rank} variant="blue">
-            {RANK_LABELS_PL[lv.rank] ?? lv.rank}: {lv.n_notes} ({lv.nps.toFixed(1)} NPS)
+          <Badge key={lv.rank} variant={rankToBadgeVariant(lv.rank)}>
+            {RANK_LABELS_EN[lv.rank] ?? lv.rank}: {lv.n_notes} ({lv.nps.toFixed(1)} NPS)
           </Badge>
         ))}
-        <Badge>
-          {PL.wizard.done.bpmLabel}: {Math.round(result.bpm)}
-        </Badge>
-        <Badge>
-          {PL.wizard.done.wallsLabel}: {result.n_walls}
-        </Badge>
-        <Badge>
-          {PL.wizard.done.bombsLabel}: {result.n_bombs}
-        </Badge>
-        <Badge>
-          {PL.wizard.done.lightsLabel}: {result.n_lights}
-        </Badge>
-        <Badge>
-          {ENVIRONMENT_LABELS_PL[result.environment] ?? result.environment}
-        </Badge>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+        <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">{EN.wizard.done.bpmLabel}</div>
+          <div className="text-sm font-semibold font-mono text-zinc-100">
+            {Math.round(result.bpm)}
+          </div>
+        </div>
+        <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">{EN.wizard.done.wallsLabel}</div>
+          <div className="text-sm font-semibold font-mono text-zinc-100">
+            {result.n_walls}
+          </div>
+        </div>
+        <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">{EN.wizard.done.bombsLabel}</div>
+          <div className="text-sm font-semibold font-mono text-zinc-100">
+            {result.n_bombs}
+          </div>
+        </div>
+        <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">{EN.wizard.done.lightsLabel}</div>
+          <div className="text-sm font-semibold font-mono text-zinc-100">
+            {result.n_lights}
+          </div>
+        </div>
+        <div className="col-span-2 sm:col-span-1 rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div className="text-[11px] text-zinc-500">{EN.wizard.map.environmentLabel}</div>
+          <div className="text-xs font-medium text-zinc-200 truncate mt-0.5">
+            {ENVIRONMENT_LABELS_EN[result.environment] ?? result.environment}
+          </div>
+        </div>
       </div>
 
       {infoNotices.length > 0 && (
         <div className="rounded-xl bg-blue-500/10 border border-blue-500/25 p-4 space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-300">
             <Info className="h-3.5 w-3.5" />
-            <span>{PL.wizard.done.warningsTitle}</span>
+            <span>{EN.wizard.done.warningsTitle}</span>
           </div>
           {infoNotices.map((notice) => (
             <p key={notice} className="text-xs text-blue-200/90">
@@ -216,30 +243,30 @@ export function StepProgressDone({
 
       {exportNote && <p className="text-xs text-emerald-400">{exportNote}</p>}
 
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
         <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
             onClick={() => window.bsm.openPath(result.folder)}
           >
             <FolderOpen className="h-4 w-4" />
-            {PL.wizard.done.openFolder}
+            {EN.wizard.done.openFolder}
           </Button>
           <Button variant="secondary" onClick={handleExportZip}>
             <Archive className="h-4 w-4" />
-            {PL.wizard.done.exportZip}
+            {EN.wizard.done.exportZip}
           </Button>
         </div>
 
         <div className="flex flex-wrap gap-2">
           {onGoToLibrary && (
             <Button variant="ghost" onClick={onGoToLibrary}>
-              {PL.wizard.done.goToLibrary}
+              {EN.wizard.done.goToLibrary}
             </Button>
           )}
           <Button onClick={onReset}>
             <RotateCcw className="h-4 w-4" />
-            {PL.wizard.done.createAnother}
+            {EN.wizard.done.createAnother}
           </Button>
         </div>
       </div>

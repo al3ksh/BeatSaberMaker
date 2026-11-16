@@ -38,19 +38,19 @@ test.describe("BeatSaberMaker Electron E2E", () => {
 
     const { electronApp, page } = await launchApp({ BSM_FAKE_DETECTED_CL: "" });
     try {
-      await expect(page.getByText("Pierwsze uruchomienie")).toBeVisible();
-      const daleButton = page.getByRole("button", { name: "Dalej" });
-      await expect(daleButton).toBeDisabled();
+      await expect(page.getByText("First-Time Setup")).toBeVisible();
+      const nextButton = page.getByRole("button", { name: "Next" });
+      await expect(nextButton).toBeDisabled();
 
       await electronApp.evaluate(async ({ dialog }, picked) => {
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [picked] });
       }, bsRoot);
 
-      await page.getByRole("button", { name: "Wybierz folder" }).click();
-      await expect(daleButton).toBeEnabled();
-      await daleButton.click();
+      await page.getByRole("button", { name: "Choose Folder" }).click();
+      await expect(nextButton).toBeEnabled();
+      await nextButton.click();
 
-      await expect(page.getByPlaceholder(/szukaj na youtube/i)).toBeVisible();
+      await expect(page.getByPlaceholder(/search youtube/i)).toBeVisible();
     } finally {
       await electronApp.close();
       fs.rmSync(tmp1, { recursive: true, force: true });
@@ -62,7 +62,7 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     fs.mkdirSync(detectedCl, { recursive: true });
     const app2 = await launchApp({ BSM_FAKE_DETECTED_CL: detectedCl });
     try {
-      await expect(app2.page.getByPlaceholder(/szukaj na youtube/i)).toBeVisible();
+      await expect(app2.page.getByPlaceholder(/search youtube/i)).toBeVisible();
     } finally {
       await app2.electronApp.close();
       fs.rmSync(tmp2, { recursive: true, force: true });
@@ -81,38 +81,38 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     });
 
     try {
-      const searchBox = page.getByPlaceholder(/szukaj na youtube/i);
+      const searchBox = page.getByPlaceholder(/search youtube/i);
       await searchBox.fill("Ghost");
       await searchBox.press("Enter");
       await page.getByText("Camellia - GHOST").click();
-      await page.getByRole("button", { name: "Dalej" }).click();
+      await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generuj mapę" }).click();
-      await expect(page.getByText("Mapa jest w grze!")).toBeVisible();
-      await expect(page.getByText(/brak modeli warstw/i)).toBeVisible();
+      await page.getByRole("button", { name: "Generate Map" }).click();
+      await expect(page.getByText("Map is in the game!")).toBeVisible();
+      await expect(page.getByText(/layer models/i)).toBeVisible();
 
       const firstFolders = fs.readdirSync(cl);
       expect(firstFolders).toHaveLength(1);
       const firstFolderPath = path.join(cl, firstFolders[0]);
 
       // Switch to Library
-      await page.getByRole("navigation").getByRole("button", { name: "Moje mapy" }).click();
+      await page.getByRole("navigation").getByRole("button", { name: "My Maps" }).click();
       await expect(page.getByText("GHOST")).toBeVisible();
 
       // Export ZIP
-      await page.getByRole("button", { name: "Eksportuj ZIP" }).click();
-      await expect(page.getByText(/zapisano archiwum zip/i)).toBeVisible();
+      await page.getByRole("button", { name: "Export ZIP" }).click();
+      await expect(page.getByText(/zip archive saved/i)).toBeVisible();
       expect(fs.existsSync(exportZip)).toBe(true);
 
       // Regenerate -> opens Step 2 with saved non-zero seed
-      await page.getByRole("button", { name: "Wygeneruj ponownie" }).click();
-      await expect(page.getByText(/trafi do kosza/i)).toBeVisible();
+      await page.getByRole("button", { name: "Regenerate" }).click();
+      await expect(page.getByText(/moved to the recycle bin/i)).toBeVisible();
       const seedInput = page.locator("#bsm-seed-input");
       const savedSeed = Number(await seedInput.inputValue());
       expect(savedSeed).toBeGreaterThan(0);
 
-      await page.getByRole("button", { name: "Generuj mapę" }).click();
-      await expect(page.getByText("Mapa jest w grze!")).toBeVisible();
+      await page.getByRole("button", { name: "Generate Map" }).click();
+      await expect(page.getByText("Map is in the game!")).toBeVisible();
 
       const afterRegenFolders = fs.readdirSync(cl);
       expect(afterRegenFolders).toHaveLength(1);
@@ -120,10 +120,10 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       expect(fs.existsSync(firstFolderPath)).toBe(false);
 
       // Delete from Library
-      await page.getByRole("navigation").getByRole("button", { name: "Moje mapy" }).click();
-      await page.getByRole("button", { name: "Usuń" }).click();
-      await page.getByRole("button", { name: "Potwierdź" }).click();
-      await expect(page.getByText(/nie wygenerowałeś jeszcze żadnej mapy/i)).toBeVisible();
+      await page.getByRole("navigation").getByRole("button", { name: "My Maps" }).click();
+      await page.getByRole("button", { name: "Delete" }).click();
+      await page.getByRole("button", { name: "Confirm" }).click();
+      await expect(page.getByText(/haven't generated any maps yet/i)).toBeVisible();
       expect(fs.readdirSync(cl)).toHaveLength(0);
     } finally {
       await electronApp.close();
@@ -142,26 +142,26 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     });
 
     try {
-      const searchBox = page.getByPlaceholder(/szukaj na youtube/i);
+      const searchBox = page.getByPlaceholder(/search youtube/i);
       await searchBox.fill("Ghost");
       await searchBox.press("Enter");
       await page.getByText("Camellia - GHOST").click();
-      await page.getByRole("button", { name: "Dalej" }).click();
+      await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generuj mapę" }).click();
-      await page.getByRole("button", { name: "Anuluj" }).click();
+      await page.getByRole("button", { name: "Generate Map" }).click();
+      await page.getByRole("button", { name: "Cancel" }).click();
 
       // Returned cleanly to Step 2
-      await expect(page.getByRole("button", { name: "Generuj mapę" })).toBeVisible();
-      await page.getByRole("button", { name: "Moje mapy" }).click();
-      await expect(page.getByText(/nie wygenerowałeś jeszcze żadnej mapy/i)).toBeVisible();
+      await expect(page.getByRole("button", { name: "Generate Map" })).toBeVisible();
+      await page.getByRole("button", { name: "My Maps" }).click();
+      await expect(page.getByText(/haven't generated any maps yet/i)).toBeVisible();
     } finally {
       await electronApp.close();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  test("4. internal engine error displays Polish message without Traceback", async () => {
+  test("4. internal engine error displays friendly message without Traceback", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bsm-e2e-err-"));
     const cl = path.join(tmp, "CustomLevels");
     fs.mkdirSync(cl, { recursive: true });
@@ -172,14 +172,14 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     });
 
     try {
-      const searchBox = page.getByPlaceholder(/szukaj na youtube/i);
+      const searchBox = page.getByPlaceholder(/search youtube/i);
       await searchBox.fill("Ghost");
       await searchBox.press("Enter");
       await page.getByText("Camellia - GHOST").click();
-      await page.getByRole("button", { name: "Dalej" }).click();
+      await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generuj mapę" }).click();
-      await expect(page.getByText(/nieoczekiwany błąd silnika/i)).toBeVisible();
+      await page.getByRole("button", { name: "Generate Map" }).click();
+      await expect(page.getByText(/unexpected engine error/i)).toBeVisible();
       const bodyText = await page.locator("body").innerText();
       expect(bodyText).not.toMatch(/traceback|secret internal error/i);
     } finally {

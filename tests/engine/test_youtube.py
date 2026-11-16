@@ -63,7 +63,10 @@ def test_search_and_resolve_with_fake_runner(tmp_path: Path) -> None:
     item = resolve_youtube("https://www.youtube.com/watch?v=9&list=PLx", ytdlp_path=exe, runner=fake_runner)
     assert item.artist == "X" and item.track_title == "Y"
     assert "--no-playlist" in seen_cmds[1]
-    assert all(kw.get("encoding") == "utf-8" and kw.get("errors") == "replace" for kw in seen_kwargs)
+    assert all(
+        kw.get("encoding") == "utf-8" and kw.get("errors") == "replace" and kw.get("stdin") == subprocess.DEVNULL
+        for kw in seen_kwargs
+    )
 
 
 def test_download_youtube_progress_and_cancel_cleanup(tmp_path: Path) -> None:

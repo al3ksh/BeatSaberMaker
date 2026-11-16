@@ -148,7 +148,9 @@ export interface BsmApi {
   validateCustomLevels(folder: string): Promise<{ valid: boolean; resolvedPath: string | null }>;
   pickFolder(title?: string): Promise<string | null>;
   pickAudioFile(): Promise<string | null>;
+  pickCoverImage(): Promise<{ path: string; dataUrl: string } | null>;
   openPath(targetPath: string): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
   openLogs(): Promise<void>;
   readCoverDataUrl(filePath: string): Promise<string | null>;
   searchYouTube(query: string): Promise<YouTubeItem[]>;

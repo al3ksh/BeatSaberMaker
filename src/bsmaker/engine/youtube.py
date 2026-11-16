@@ -114,6 +114,7 @@ def require_ytdlp(ytdlp_path: Path | None = None) -> str:
 def _subproc_kwargs(*, timeout_s: float | None = None) -> dict:
     kw: dict = {
         "shell": False,
+        "stdin": subprocess.DEVNULL,
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",

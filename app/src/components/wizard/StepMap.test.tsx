@@ -16,13 +16,13 @@ describe("StepMap", () => {
       />,
     );
     expect(screen.getByDisplayValue("12345")).toBeInTheDocument();
-    expect(screen.getByText(/kosza/i)).toBeInTheDocument();
+    expect(screen.getByText(/recycle bin/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /zaawansowane/i }));
-    fireEvent.click(screen.getByLabelText(/światła regułowe/i));
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    fireEvent.click(screen.getByLabelText(/rule-based lights/i));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ lightsRules: true }));
 
-    fireEvent.click(screen.getByRole("button", { name: /generuj/i }));
+    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
     expect(onGenerate).toHaveBeenCalled();
   });
 });

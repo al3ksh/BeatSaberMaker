@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Cpu, FileText, FolderOpen, RefreshCw } from "lucide-react";
-import { PL } from "../i18n/pl";
+import { EN } from "../i18n/en";
 import type { DevicePref, EngineInfo, Settings, UpdateStatus } from "../types";
-import { Badge, Button, Modal } from "./ui/primitives";
+import { Badge, Button, Modal, SegmentedControl } from "./ui/primitives";
 
 export interface SettingsModalProps {
   open: boolean;
@@ -27,14 +27,14 @@ export function SettingsModal({
 
   async function handlePickCustomLevels() {
     setFolderError(null);
-    const picked = await window.bsm.pickFolder(PL.settings.customLevelsLabel);
+    const picked = await window.bsm.pickFolder(EN.settings.customLevelsLabel);
     if (!picked) return;
     const res = await window.bsm.validateCustomLevels(picked);
     if (res.valid && res.resolvedPath) {
       const next = await window.bsm.saveSettings({ customLevels: res.resolvedPath });
       onSettingsSaved(next);
     } else {
-      setFolderError(PL.settings.customLevelsInvalid);
+      setFolderError(EN.settings.customLevelsInvalid);
     }
   }
 
@@ -47,12 +47,12 @@ export function SettingsModal({
       });
       onSettingsSaved(next);
     } else {
-      setFolderError(PL.settings.customLevelsInvalid);
+      setFolderError(EN.settings.customLevelsInvalid);
     }
   }
 
   async function handlePickExportDir() {
-    const picked = await window.bsm.pickFolder(PL.settings.exportDirLabel);
+    const picked = await window.bsm.pickFolder(EN.settings.exportDirLabel);
     if (!picked) return;
     const next = await window.bsm.saveSettings({ exportDir: picked });
     onSettingsSaved(next);
@@ -63,18 +63,18 @@ export function SettingsModal({
     onSettingsSaved(next);
   }
 
-  const deviceOptions: Array<{ key: DevicePref; label: string }> = [
-    { key: "auto", label: PL.settings.devices.auto },
-    { key: "cuda", label: PL.settings.devices.cuda },
-    { key: "cpu", label: PL.settings.devices.cpu },
+  const deviceOptions: Array<{ value: DevicePref; label: string }> = [
+    { value: "auto", label: EN.settings.devices.auto },
+    { value: "cuda", label: EN.settings.devices.cuda },
+    { value: "cpu", label: EN.settings.devices.cpu },
   ];
 
   return (
-    <Modal open={open} title={PL.settings.title} onClose={onClose}>
+    <Modal open={open} title={EN.settings.title} onClose={onClose}>
       <div className="space-y-5">
-        <div className="space-y-2">
-          <label className="block text-xs font-medium text-zinc-400">
-            {PL.settings.customLevelsLabel}
+        <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2.5">
+          <label className="block text-xs font-medium text-zinc-300">
+            {EN.settings.customLevelsLabel}
           </label>
           <div className="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-xs font-mono text-zinc-200 break-all">
             {settings.customLevels || "-"}
@@ -82,83 +82,71 @@ export function SettingsModal({
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" size="sm" onClick={handlePickCustomLevels}>
               <FolderOpen className="h-3.5 w-3.5" />
-              {PL.settings.changeFolder}
+              {EN.settings.changeFolder}
             </Button>
             <Button variant="ghost" size="sm" onClick={handleAutoDetect}>
-              {PL.settings.detectAuto}
+              {EN.settings.detectAuto}
             </Button>
           </div>
           {folderError && <p className="text-xs text-red-400">{folderError}</p>}
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-xs font-medium text-zinc-400">
-            {PL.settings.deviceLabel}
+        <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2.5">
+          <label className="block text-xs font-medium text-zinc-300">
+            {EN.settings.deviceLabel}
           </label>
-          <div className="grid grid-cols-3 gap-2">
-            {deviceOptions.map((opt) => {
-              const active = settings.device === opt.key;
-              return (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => handleDeviceChange(opt.key)}
-                  className={
-                    active
-                      ? "rounded-lg border border-blue-500 bg-blue-500/15 px-3 py-2 text-xs font-medium text-blue-300"
-                      : "rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
-                  }
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          <SegmentedControl
+            equalWidth
+            size="sm"
+            value={settings.device}
+            onChange={handleDeviceChange}
+            options={deviceOptions}
+          />
           {info?.cuda_available ? (
-            <div className="flex items-center gap-2 text-xs text-emerald-400">
+            <div className="flex items-center gap-2 text-xs text-emerald-400 pt-0.5">
               <Cpu className="h-3.5 w-3.5" />
               <span>
-                {PL.settings.gpuDetectedPrefix} {info.gpu_name ?? "NVIDIA CUDA"}
+                {EN.settings.gpuDetectedPrefix} {info.gpu_name ?? "NVIDIA CUDA"}
               </span>
             </div>
           ) : (
             <p className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
-              {PL.settings.cpuNotice}
+              {EN.settings.cpuNotice}
             </p>
           )}
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-xs font-medium text-zinc-400">
-            {PL.settings.exportDirLabel}
+        <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2">
+          <label className="block text-xs font-medium text-zinc-300">
+            {EN.settings.exportDirLabel}
           </label>
           <div className="flex items-center justify-between gap-2 rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2">
             <span className="text-xs font-mono text-zinc-300 truncate">
               {settings.exportDir}
             </span>
             <Button variant="ghost" size="sm" onClick={handlePickExportDir}>
-              {PL.settings.changeFolder}
+              {EN.settings.changeFolder}
             </Button>
           </div>
         </div>
 
-        <div className="border-t border-zinc-800 pt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="border-t border-zinc-800/80 pt-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
             <Badge>
-              {PL.settings.appVersionLabel}: {appVersion}
+              {EN.settings.appVersionLabel}: {appVersion}
             </Badge>
             <Badge>
-              {PL.settings.engineVersionLabel}: {info?.version ?? "-"}
+              {EN.settings.engineVersionLabel}: {info?.version ?? "-"}
             </Badge>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => window.bsm.openLogs()}>
               <FileText className="h-3.5 w-3.5" />
-              {PL.settings.openLogs}
+              {EN.settings.openLogs}
             </Button>
             {updateStatus.state === "downloaded" ? (
               <Button size="sm" onClick={() => window.bsm.installUpdate()}>
-                {PL.settings.installUpdate}
+                {EN.settings.installUpdate}
               </Button>
             ) : (
               <Button
@@ -167,14 +155,14 @@ export function SettingsModal({
                 onClick={() => window.bsm.checkForUpdates()}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                {PL.settings.checkUpdates}
+                {EN.settings.checkUpdates}
               </Button>
             )}
           </div>
         </div>
 
         {updateStatus.state !== "idle" && (
-          <p className="text-xs text-zinc-400">{PL.settings.updates[updateStatus.state]}</p>
+          <p className="text-xs text-zinc-400">{EN.settings.updates[updateStatus.state]}</p>
         )}
       </div>
     </Modal>

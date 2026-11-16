@@ -66,13 +66,13 @@ describe("FirstRun", () => {
         onComplete={onComplete}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /pobierz silnik/i }));
+    fireEvent.click(screen.getByRole("button", { name: /download engine/i }));
     await waitFor(() => expect(installEnginePack).toHaveBeenCalled());
     await waitFor(() => expect(getInfo).toHaveBeenCalled());
 
-    const cont = screen.getByRole("button", { name: /dalej/i });
+    const cont = screen.getByRole("button", { name: /next/i });
     expect(cont).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: /wybierz folder/i }));
+    fireEvent.click(screen.getByRole("button", { name: /choose folder/i }));
     await waitFor(() => expect(validateCustomLevels).toHaveBeenCalledWith("C:\\Games\\Beat Saber"));
     await waitFor(() => expect(cont).not.toBeDisabled());
     fireEvent.click(cont);

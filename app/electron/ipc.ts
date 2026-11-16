@@ -165,7 +165,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:pickFolder", async (_ev, title?: string): Promise<string | null> => {
     const win = getWindow();
     const opts = {
-      title: title || "Wybierz folder",
+      title: title || "Select folder",
       properties: ["openDirectory" as const],
     };
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
@@ -178,7 +178,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:pickAudioFile", async (): Promise<string | null> => {
     const win = getWindow();
     const opts = {
-      title: "Wybierz plik audio",
+      title: "Select audio file",
       properties: ["openFile" as const],
       filters: [
         {
@@ -194,9 +194,54 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     return res.filePaths[0];
   });
 
+  ipcMain.handle(
+    "bsm:pickCoverImage",
+    async (): Promise<{ path: string; dataUrl: string } | null> => {
+      const win = getWindow();
+      const opts = {
+        title: "Select cover image",
+        properties: ["openFile" as const],
+        filters: [
+          {
+            name: "Images",
+            extensions: ["jpg", "jpeg", "png", "webp"],
+          },
+        ],
+      };
+      const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      if (res.canceled || res.filePaths.length === 0) {
+        return null;
+      }
+      const chosen = res.filePaths[0];
+      const mime = mimeForImageExt(path.extname(chosen));
+      if (!mime) return null;
+      try {
+        const buf = await fsp.readFile(chosen);
+        return {
+          path: chosen,
+          dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+        };
+      } catch {
+        return null;
+      }
+    },
+  );
+
   ipcMain.handle("bsm:openPath", async (_ev, targetPath: string): Promise<void> => {
     if (!targetPath) return;
     await shell.openPath(path.resolve(targetPath));
+  });
+
+  ipcMain.handle("bsm:openExternalUrl", async (_ev, rawUrl: string): Promise<void> => {
+    if (!rawUrl) return;
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol === "https:") {
+        await shell.openExternal(parsed.toString());
+      }
+    } catch {
+      // Ignore malformed URLs.
+    }
   });
 
   ipcMain.handle("bsm:openLogs", async (): Promise<void> => {
@@ -364,7 +409,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       if (!outZip) {
         const win = getWindow();
         const opts = {
-          title: "Eksportuj mapę jako ZIP",
+          title: "Export map as ZIP",
           defaultPath: path.join(settings.exportDir, `${safeName}.zip`),
           filters: [{ name: "ZIP", extensions: ["zip"] }],
         };

@@ -20,12 +20,15 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "build/icon.ico",
+      "build/icon.png",
       "package.json"
     ],
     "extraResources": [
       "engine-version.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",

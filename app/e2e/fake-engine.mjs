@@ -157,7 +157,7 @@ rl.on("line", (line) => {
         id,
         type: "error",
         code: process.env.BSM_FAKE_FAIL_CODE,
-        message_pl: "Błąd",
+        message_pl: "Error",
         detail: "Traceback (most recent call last): secret internal error",
       });
       return;

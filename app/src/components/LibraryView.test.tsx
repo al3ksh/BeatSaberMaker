@@ -42,15 +42,15 @@ describe("LibraryView", () => {
     render(<LibraryView onRegenerate={onRegenerate} />);
     expect(await screen.findByText("GHOST")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /wygeneruj ponownie/i }));
+    fireEvent.click(screen.getByRole("button", { name: /regenerate/i }));
     expect(onRegenerate).toHaveBeenCalledWith(entry);
 
-    fireEvent.click(screen.getByRole("button", { name: /eksportuj zip/i }));
+    fireEvent.click(screen.getByRole("button", { name: /export zip/i }));
     await waitFor(() => expect(exportMapZip).toHaveBeenCalledWith(entry.folder, entry.title));
 
-    fireEvent.click(screen.getByRole("button", { name: /usuń/i }));
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }));
     expect(deleteLibraryEntry).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: /potwierdź/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
     await waitFor(() => expect(deleteLibraryEntry).toHaveBeenCalledWith("e1"));
   });
 });

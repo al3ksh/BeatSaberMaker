@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Download, FolderOpen, Sparkles } from "lucide-react";
-import { PL } from "../i18n/pl";
+import { ArrowRight, CheckCircle2, Download, FolderOpen } from "lucide-react";
+import appIcon from "../assets/icon.png";
+import { EN } from "../i18n/en";
 import type { EngineInfo, EnginePackProgress, Settings, StartupState } from "../types";
 import { Badge, Button, Card, ProgressBar } from "./ui/primitives";
 
@@ -46,7 +47,7 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
         setFolderError(null);
       }
     } catch {
-      setDownloadError(PL.firstRun.errorDownload);
+      setDownloadError(EN.firstRun.errorDownload);
     } finally {
       setDownloading(false);
     }
@@ -54,7 +55,7 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
 
   async function handlePickFolder() {
     setFolderError(null);
-    const picked = await window.bsm.pickFolder(PL.firstRun.folderLabel);
+    const picked = await window.bsm.pickFolder(EN.firstRun.folderLabel);
     if (!picked) return;
     const res = await window.bsm.validateCustomLevels(picked);
     if (res.valid && res.resolvedPath) {
@@ -64,7 +65,7 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
     } else {
       setFolder(picked);
       setFolderValid(false);
-      setFolderError(PL.firstRun.invalidFolder);
+      setFolderError(EN.firstRun.invalidFolder);
     }
   }
 
@@ -80,25 +81,27 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
-      <Card className="w-full max-w-xl p-6 space-y-6">
-        <div className="flex items-start gap-3">
-          <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-red-500/20 to-blue-500/20 border border-zinc-700 flex items-center justify-center shrink-0">
-            <Sparkles className="h-5 w-5 text-blue-400" />
-          </div>
+    <div className="h-screen overflow-hidden bg-zinc-950 bg-[radial-gradient(ellipse_80%_45%_at_50%_0%,rgba(39,39,42,0.28),transparent)] text-zinc-100 flex items-center justify-center p-6">
+      <Card className="w-full max-w-xl p-6 space-y-5">
+        <div className="flex items-start gap-3.5">
+          <img
+            src={appIcon}
+            alt={EN.appName}
+            className="h-11 w-11 rounded-xl shadow-sm shrink-0"
+          />
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">{PL.firstRun.title}</h1>
-            <p className="text-sm text-zinc-400 mt-1">{PL.firstRun.subtitle}</p>
+            <h1 className="text-xl font-semibold tracking-tight">{EN.firstRun.title}</h1>
+            <p className="text-sm text-zinc-400 mt-0.5">{EN.firstRun.subtitle}</p>
           </div>
         </div>
 
         <div className="rounded-xl bg-zinc-950/70 border border-zinc-800 p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-zinc-200">1. Silnik AI</span>
+            <span className="text-sm font-medium text-zinc-200">1. AI Engine</span>
             {engineReady ? (
               <Badge variant="emerald">
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                {PL.firstRun.engineReady}
+                {EN.firstRun.engineReady}
               </Badge>
             ) : (
               <Button
@@ -107,7 +110,7 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
                 size="sm"
               >
                 <Download className="h-4 w-4" />
-                {PL.firstRun.downloadEngine}
+                {EN.firstRun.downloadEngine}
               </Button>
             )}
           </div>
@@ -115,7 +118,7 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
           {downloading && packProgress && (
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs text-zinc-400">
-                <span>{PL.firstRun.stages[packProgress.stage]}</span>
+                <span>{EN.firstRun.stages[packProgress.stage]}</span>
                 <span className="font-mono">{packProgress.pct}%</span>
               </div>
               <ProgressBar pct={packProgress.pct} />
@@ -130,20 +133,20 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
         <div className="rounded-xl bg-zinc-950/70 border border-zinc-800 p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm font-medium text-zinc-200">
-              2. {PL.firstRun.folderLabel}
+              2. {EN.firstRun.folderLabel}
             </span>
             <Button variant="secondary" size="sm" onClick={handlePickFolder}>
               <FolderOpen className="h-4 w-4" />
-              {PL.firstRun.pickFolder}
+              {EN.firstRun.pickFolder}
             </Button>
           </div>
 
           <div className="rounded-lg bg-zinc-900 border border-zinc-800 px-3 py-2 text-xs font-mono text-zinc-300 break-all">
-            {folder || PL.firstRun.folderPlaceholder}
+            {folder || EN.firstRun.folderPlaceholder}
           </div>
 
           {info?.detected_custom_levels && folder === info.detected_custom_levels && (
-            <p className="text-xs text-emerald-400">{PL.firstRun.detectedHint}</p>
+            <p className="text-xs text-emerald-400">{EN.firstRun.detectedHint}</p>
           )}
           {folderError && <p className="text-xs text-red-400">{folderError}</p>}
         </div>
@@ -154,7 +157,8 @@ export function FirstRun({ startup, onComplete }: FirstRunProps) {
             disabled={!engineReady || !folderValid || saving}
             onClick={handleContinue}
           >
-            {PL.common.next}
+            <span>{EN.common.next}</span>
+            <ArrowRight className="h-4 w-4" />
           </Button>
         </div>
       </Card>

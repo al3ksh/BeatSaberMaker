@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, Menu } from "electron";
 import { createDefaultResolveLaunch, EngineManager } from "./engineManager";
@@ -22,13 +23,15 @@ let mainWindow: BrowserWindow | null = null;
 let engineManager: EngineManager | null = null;
 
 function createWindow(): BrowserWindow {
+  const iconPath = path.resolve(__dirname, "..", "build", "icon.ico");
   const win = new BrowserWindow({
-    width: 1120,
-    height: 760,
-    minWidth: 920,
+    width: 1080,
+    height: 740,
+    minWidth: 880,
     minHeight: 640,
     backgroundColor: "#09090b",
     title: "BeatSaberMaker",
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
