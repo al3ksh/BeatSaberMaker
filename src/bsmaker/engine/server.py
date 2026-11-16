@@ -13,6 +13,11 @@ from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 from typing import TextIO
 
+# Pre-load SciPy signal/BLAS before torch/CUDA and the stdin reader thread:
+# librosa lazy-loads scipy.signal at runtime, and importing scipy.linalg._fblas
+# after torch.cuda initializes can deadlock on Windows.
+import scipy.linalg.blas  # noqa: F401
+import scipy.signal  # noqa: F401
 import torch
 
 from bsmaker.audio.decode import AudioDecodeError, FfmpegMissingError
