@@ -381,11 +381,13 @@ def _light_metrics(times: np.ndarray, ch: np.ndarray, tok: np.ndarray, bpm: floa
 
 
 def _channel_tv(gen: Sequence[tuple[int, int]], hum: Sequence[tuple[int, int]]) -> float:
+    if not hum:
+        return float("nan")
     tvs = []
     for ch in range(LIGHT_CHANNELS):
         g = np.bincount([t for c, t in gen if c == ch], minlength=LIGHT_VOCAB)
         h = np.bincount([t for c, t in hum if c == ch], minlength=LIGHT_VOCAB)
-        tvs.append(float("nan") if h.sum() == 0 else _tv_counts(g, h))
+        tvs.append(_tv_counts(g, h))  # no human use of a channel scores 1.0 if generated uses it
     return _nanmean(tvs)
 
 
@@ -438,8 +440,13 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
     h_light: list[tuple[int, int]] = []
     h_share: list[float] = []
     h_onset: list[float] = []
+    prep: dict[int, tuple] = {}
     for e in chosen:
         meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
+        flux = _flux(mel)
+        bpm = float(meta["bpm"])
+        minutes = e.n_frames / FRAMES_PER_SECOND / 60.0
+        prep[e.i] = (mel, bpm, minutes, minutes * 60.0, _human_notes(layer_cache, e.i, bpm), flux)
         for v in layer_cache.ornaments(e.i)[4]:
             if v:
                 h_arc[int(v) - 1] += 1
@@ -451,19 +458,11 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
         lt, lch, ltok = layer_cache.lights(e.i)
         if meta.get("lights_ok"):
             h_light += list(zip(lch.tolist(), ltok.tolist()))
-            sh, on = _light_metrics(lt, lch, ltok, meta["bpm"], _flux(mel))
+            sh, on = _light_metrics(lt, lch, ltok, bpm, flux)
             h_share.append(sh)
             h_onset.append(on)
     out["human"] = {"lights": {"quarter_beat_share": _nanmean(h_share),
                                "onset_ratio": _nanmean(h_onset)}}
-
-    prep: dict[int, tuple] = {}
-    for e in chosen:
-        meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
-        bpm = float(meta["bpm"])
-        minutes = e.n_frames / FRAMES_PER_SECOND / 60.0
-        prep[e.i] = (mel, bpm, minutes, minutes * 60.0, _human_notes(layer_cache, e.i, bpm),
-                     _flux(mel))
 
     for level in LAYER_LEVELS:
         orn_rows: list[dict] = []
@@ -512,9 +511,8 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
                     continue
                 events, rep = generate_lights(models, mel, notes, e.nps, bpm, 0.0, duration_s,
                                               level, layer_stats, seed, device, use_rules=use_rules)
-                mapped = [(ev.time_s, *light_event_to_token(ev.type, ev.value) )
-                          if light_event_to_token(ev.type, ev.value) is not None else (ev.time_s, 99, 99)
-                          for ev in events]
+                mapped = [(ev.time_s, *m) if (m := light_event_to_token(ev.type, ev.value))
+                          else (ev.time_s, 99, 99) for ev in events]
                 arr = np.asarray(mapped, dtype=np.float64).reshape(-1, 3)
                 share, onset = _light_metrics(arr[:, 0], arr[:, 1], arr[:, 2], bpm, flux)
                 g_light[kind] += _light_tokens(events)

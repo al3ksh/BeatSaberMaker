@@ -434,3 +434,11 @@ def test_onset_ratio_uses_plus_minus_one_frame_max_and_on_flash_filter():
 
 def test_channel_tv_nan_when_human_side_empty():
     assert E._channel_tv([(0, 1)], []) != E._channel_tv([(0, 1)], [])
+
+
+def test_channel_tv_unused_human_channel_scores_one():
+    hum = [(0, 1), (0, 4)]
+    assert E._channel_tv(hum, hum) == pytest.approx(0.0)
+    # generated also uses channel 3, which humans never use: that channel scores 1.0
+    assert E._channel_tv(hum + [(3, 1)], hum) == pytest.approx(0.5)
+    assert E._channel_tv([(0, 1)], []) != E._channel_tv([(0, 1)], [])
