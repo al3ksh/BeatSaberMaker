@@ -1,3 +1,4 @@
+import os
 import importlib.util
 import json
 import re
@@ -487,3 +488,74 @@ def test_run_queue_script_syntax() -> None:
 
 def test_run_queue_script_has_lf_endings() -> None:
     assert b"\r" not in (ROOT / "scripts" / "colab" / "run_queue.sh").read_bytes()
+
+
+def _run_queue(tmp_path: Path, queue: str, code: str, results: str | None = None):
+    import shutil
+    import sys
+    bash = shutil.which("bash")
+    if bash is None or sys.platform == "win32" and "system32" in bash.lower():
+        pytest.skip("no usable bash on this machine")
+    home = tmp_path / "bsm home"
+    home.mkdir()
+    (home / "queue.txt").write_text(queue)
+    stub = tmp_path / "colab"
+    stub.write_text(
+        '#!/bin/bash\n'
+        'echo "$*" >> "$STUB_LOG"\n'
+        'case "$1" in\n'
+        '  exec) if [ "$4" = "-f" ]; then echo "vm_train: exit code $STUB_CODE"; else cat > /dev/null; fi;;\n'
+        'esac\n')
+    env = dict(os.environ, COLAB=str(stub), BSM_DIR=str(home), QUEUE_SLEEP="0",
+               STUB_LOG=str(tmp_path / "calls.log"), STUB_CODE=code)
+    args = [bash, str(ROOT / "scripts" / "colab" / "run_queue.sh")] + ([results] if results else [])
+    subprocess.run(args, env=env, check=True, capture_output=True, timeout=60)
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    return home, calls
+
+
+def test_run_queue_failing_run_retries_then_stops_queue(tmp_path: Path) -> None:
+    home, calls = _run_queue(tmp_path, "pattern bad --size s\npattern later --size s\n", "1")
+    runs = [c for c in calls if c.startswith("exec -s train -f")]
+    assert len(runs) == 3 and all("--name bad" in c for c in runs)
+    assert not any("later" in c for c in calls)
+    assert not any(c.startswith("download") for c in calls)
+    assert sum(c.startswith("stop -s train") for c in calls) == 1
+    assert any(c.startswith("exec -s train --timeout 900") for c in calls)
+    assert "FAILED bad" in (home / "queue.log").read_text()
+
+
+def test_run_queue_downloads_from_results_with_spaces(tmp_path: Path) -> None:
+    res = "/content/drive/My Drive/with space/layers"
+    home, calls = _run_queue(tmp_path, "ornaments o1 --size s\n", "0", results=res)
+    dl = [c for c in calls if c.startswith("download")]
+    assert dl == [f"download -s train {res}/o1/best.pt ckpt/o1/best.pt",
+                  f"download -s train {res}/o1/log.jsonl ckpt/o1/log.jsonl"]
+    assert (home / "ckpt" / "o1").is_dir()
+    assert calls[-1].startswith("usage") or calls[-2].startswith("stop -s train")
+
+
+def test_vm_setup_reunpacks_a_changed_layers_tar(drive: Path, tmp_path: Path, capsys) -> None:
+    import os
+    mod = _load_vm("vm_setup")
+    work = tmp_path / "work"
+    _layers_tar(drive, 3)
+    args = ["--drive-dir", str(drive), "--work", str(work), "--no-pip"]
+    assert mod.main(args) == 0
+    tar = drive / "bsmaker-layers.tar"
+    st = tar.stat()
+    os.utime(tar, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    capsys.readouterr()
+    assert mod.main(args) == 0
+    out = capsys.readouterr().out
+    assert "layers data already unpacked" not in out and "unpacking bsmaker-layers.tar" in out
+
+
+def test_vm_setup_layers_tar_without_index_fails_before_pip(drive: Path, tmp_path: Path) -> None:
+    mod = _load_vm("vm_setup")
+    _tar(drive / "bsmaker-layers.tar", {"layers/layers.npz": "x"})
+    called = []
+    mod.run_streamed = lambda cmd: called.append(cmd) or 0
+    with pytest.raises(SystemExit) as ei:
+        mod.main(["--drive-dir", str(drive), "--work", str(tmp_path / "work")])
+    assert ei.value.code == 1 and not called

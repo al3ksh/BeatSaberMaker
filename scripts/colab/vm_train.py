@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = shlex.split(os.environ["BSM_ARGS"]) if "BSM_ARGS" in os.environ else sys.argv[1:]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True, choices=["timing", "pattern", *LAYER_MODELS])
-    ap.add_argument("--name", required=True, help="run name (folder under checkpoints/gen2)")
+    ap.add_argument("--name", required=True, help="run name (folder under checkpoints/gen2, or checkpoints/layers for layer models)")
     ap.add_argument("--drive-dir", type=Path, default=Path("/content/drive/MyDrive/BeatSaberMaker"))
     ap.add_argument("--work", type=Path, default=Path("/content"))
     ap.add_argument("--dry-run", action="store_true")
