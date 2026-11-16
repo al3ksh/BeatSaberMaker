@@ -259,3 +259,154 @@ def test_cli_eval_errors(tmp_path, monkeypatch):
     none.write_text("[]")
     r = CliRunner().invoke(app, ["eval", "--device", "cpu", "--entries-from", str(none)] + ck)
     assert r.exit_code == 1 and "no val difficulty" in r.output
+
+
+# ---------------------------------------------------------------- layers
+import pytest  # noqa: E402
+
+from bsmaker.data.layers_cache import LayerCache  # noqa: E402
+from bsmaker.layers_generate import LayerModels, load_layer_models  # noqa: E402
+from test_layers_generate import LAYER_STATS, _write_all_checkpoints  # noqa: E402
+
+
+def tiny_layer_cache(cache: EventCache) -> LayerCache:
+    """Synthetic layer cache aligned with `tiny_cache` (same notes, a few walls/bombs/lights)."""
+    from bsmaker.formats.tokens import decode_token
+    times = np.arange(2.0, 32.0, 0.5, dtype=np.float64)
+    toks = np.where(np.arange(len(times)) % 2 == 0, encode_token(1, 1, 1), encode_token(2, 1, 0))
+    hand = (np.arange(len(times)) % 2).astype(np.uint8)
+    assert decode_token(int(toks[0])) == (1, 1, 1)
+    n = len(cache.entries)
+    lt = np.arange(2.0, 30.0, 0.25)
+    lch = (np.arange(len(lt)) % 9).astype(np.uint8)
+    ltok = np.where(lch <= 4, 1 + np.arange(len(lt)) % 6, np.where(lch <= 6, 17, 7)).astype(np.uint8)
+    groups = {
+        "light": {"light_t": lt, "light_ch": lch, "light_tok": ltok},
+        "wall": {"wall_t": np.array([5.0, 9.0]), "wall_side": np.array([0, 1]),
+                 "wall_tok": np.array([3, 4])},
+        "bomb": {"bomb_t": np.array([6.0, 12.0]), "bomb_mask": np.array([1, 2])},
+        "orn": {"orn_t": times, "orn_hand": hand, "orn_token": toks.astype(np.uint8),
+                "orn_chain": np.where(np.arange(len(times)) % 10 == 0, 3, 0),
+                "orn_arc_len": np.where(np.arange(len(times)) % 7 == 0, 2, 0),
+                "orn_arc_cell": np.zeros(len(times)), "orn_arc_dir": np.zeros(len(times))}}
+    data: dict[str, np.ndarray] = {}
+    for g, arrs in groups.items():
+        first = next(iter(arrs.values()))
+        data[f"{g}_offsets"] = np.arange(n + 1) * len(first)
+        for k, v in arrs.items():
+            data[k] = np.tile(v, n)
+    records = [{"i": i, "readable": True, "schema": "v2", "bpm": 120.0, "n_notes": len(times),
+                "lights_ok": True} for i in range(n)]
+    return LayerCache(records, data)
+
+
+@pytest.fixture(scope="module")
+def layer_models(tmp_path_factory):
+    d = tmp_path_factory.mktemp("lckpt")
+    _write_all_checkpoints(d)
+    models, warnings = load_layer_models(d, "cpu")
+    assert warnings == []
+    return models
+
+
+def _eval_layers(tmp_path, models, n=2, entries=None):
+    cache, feats = tiny_cache(tmp_path)
+    # tiny_cache entries are split "test"
+    return E.eval_layers(models, LAYER_STATS, None, None, cache, tiny_layer_cache(cache), feats,
+                         None, "test", n, 0, "cpu", entries)
+
+
+def test_eval_layers_structure_and_zero_violations(tmp_path, layer_models):
+    r = _eval_layers(tmp_path, layer_models)
+    assert r["n"] == 2  # one difficulty per song
+    for layer in ("ornaments", "decor", "lights"):
+        assert r[layer]["status"] == "ok"
+    for level in (1, 2, 3):
+        assert r["ornaments"]["levels"][level]["violations"] == 0
+        assert r["decor"]["levels"][level]["violations"] == 0
+    lv = r["lights"]["levels"][2]
+    assert 0.0 <= lv["model"]["quarter_beat_share"] <= 1.0
+    assert lv["model"]["onset_ratio"] > 0
+    assert 0.0 <= lv["rules"]["tv_channel_tokens"] <= 1.0
+    assert r["human"]["lights"]["quarter_beat_share"] >= 0
+    assert r["reference"] == {"quarter_beat_share": 0.76, "onset_ratio": 2.5, "tolerance_s": 0.03}
+    import json
+    json.dumps(E.json_safe(r))
+
+
+def test_eval_layers_rates_increase_with_level(tmp_path, layer_models):
+    r = _eval_layers(tmp_path, layer_models)
+    for layer, key in (("ornaments", "arcs_per_min"), ("ornaments", "chains_per_min"),
+                       ("decor", "walls_per_min"), ("decor", "bomb_groups_per_min"),
+                       ("lights", "per_min")):
+        rates = [(r[layer]["levels"][lv].get("model") or r[layer]["levels"][lv])[key]
+                 for lv in (1, 2, 3)]
+        assert rates[0] < rates[1] < rates[2], (layer, key, rates)
+
+
+def test_eval_layers_missing_layer_not_trained(tmp_path, layer_models):
+    models = LayerModels(ornaments=layer_models.ornaments)
+    r = _eval_layers(tmp_path, models)
+    assert r["ornaments"]["status"] == "ok"
+    assert r["decor"]["status"] == "not trained"
+    assert r["lights"]["status"] == "not trained"
+    assert r["lights"]["levels"][2]["rules"]["per_min"] > 0  # rule baseline still reported
+    md = E.render_layers_section(r)
+    assert "## Layers" in md and "not trained" in md
+
+
+def test_render_layers_section_empty_without_results_and_has_references(tmp_path, layer_models):
+    assert E.render_layers_section(None) == ""
+    md = E.render_layers_section(_eval_layers(tmp_path, layer_models))
+    assert "## Layers" in md and "0.76" in md and "2.5" in md and "30 ms" in md
+
+
+def _layers_cli_data(tmp_path, monkeypatch):
+    import json
+    data = _cli_setup(tmp_path, monkeypatch)
+    cache = EventCache.load(data / "events")
+    lc = tiny_layer_cache(cache)
+    ldir = data / "layers"
+    ldir.mkdir()
+    np.savez(ldir / "layers.npz", **lc._d)
+    (ldir / "index.json").write_text(json.dumps(lc.records))
+    (tmp_path / "layer_stats.json").write_text(json.dumps(LAYER_STATS))
+    _write_all_checkpoints(data / "checkpoints")
+    return data
+
+
+def test_cli_eval_layers_flag_adds_section(tmp_path, monkeypatch):
+    import json
+
+    from typer.testing import CliRunner
+
+    from bsmaker.cli import app
+    data = _layers_cli_data(tmp_path, monkeypatch)
+    args = ["eval", "--device", "cpu", "--n", "2", "--n-generated", "2", "--n-sampled", "0",
+            "--timing-ckpt", str(tmp_path / "timing-custom.pt"),
+            "--pattern-ckpt", str(tmp_path / "pattern-custom.pt")]
+    r = CliRunner().invoke(app, args)
+    assert r.exit_code == 0, r.output
+    assert "## Layers" not in (data / "reports" / "eval-val.md").read_text(encoding="utf-8")
+    assert "layers" not in json.loads((data / "reports" / "eval-val.json").read_text())
+    r = CliRunner().invoke(app, args + ["--layers", "--n-layers", "2", "--tag", "l"])
+    assert r.exit_code == 0, r.output
+    assert "## Layers" in (data / "reports" / "eval-val-l.md").read_text(encoding="utf-8")
+    js = json.loads((data / "reports" / "eval-val-l.json").read_text())
+    assert js["layers"]["ornaments"]["levels"]["1"]["violations"] == 0
+
+
+def test_cli_eval_layers_without_checkpoints_says_not_trained(tmp_path, monkeypatch):
+    import shutil
+
+    from typer.testing import CliRunner
+
+    from bsmaker.cli import app
+    data = _layers_cli_data(tmp_path, monkeypatch)
+    shutil.rmtree(data / "checkpoints" / "layers")
+    r = CliRunner().invoke(app, ["eval", "--device", "cpu", "--n", "2", "--n-generated", "2",
+                                 "--n-sampled", "0", "--layers",
+                                 "--timing-ckpt", str(tmp_path / "timing-custom.pt"),
+                                 "--pattern-ckpt", str(tmp_path / "pattern-custom.pt")])
+    assert r.exit_code == 0, r.output
+    assert "not trained" in (data / "reports" / "eval-val.md").read_text(encoding="utf-8")

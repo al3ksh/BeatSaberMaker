@@ -650,7 +650,10 @@ def eval_cmd(
             None, "--entries-from", help="index.json: evaluate only the difficulties it lists."),
         tag: str | None = typer.Option(None, "--tag", help="Report name suffix (eval-<split>-<tag>)."),
         n_sampled: int = typer.Option(40, "--n-sampled",
-                                      help="Difficulties for the sampled-pattern section; 0 skips it.")
+                                      help="Difficulties for the sampled-pattern section; 0 skips it."),
+        layers: bool = typer.Option(False, "--layers", help="Also evaluate the layers "
+                                    "(ornaments, decoration, lights) at levels 1-3."),
+        n_layers: int = typer.Option(30, "--n-layers", help="Difficulties (one per song) for --layers.")
 ) -> None:
     """Evaluate both models on held-out songs and write reports/eval-<split>[-<tag>].md and .json."""
     if split not in ("val", "test"):
@@ -736,6 +739,25 @@ def eval_cmd(
     if n_sampled > 0:
         results["pattern_sampled"] = eval_pattern_sampled(
             pattern, cache, cfg.features_dir, mask_cfg, split, n_sampled, seed, dev, pool)
+    if layers:
+        from bsmaker.data.layer_stats import load_layer_stats
+        from bsmaker.data.layers_cache import LayerCache
+        from bsmaker.evaluate import eval_layers
+        from bsmaker.layers_generate import load_layer_models
+        stats_path = cfg.base_dir / "layer_stats.json"
+        if not (cfg.layers_dir / "index.json").is_file() or not stats_path.is_file():
+            _fail(f"layer cache or layer_stats.json not found ({cfg.layers_dir}); "
+                  "run `bsmaker data build-layers`")
+        try:
+            layer_models, layer_warnings = load_layer_models(cfg.checkpoints_dir, dev)
+            for w in layer_warnings:
+                typer.echo(f"warning: {w}", err=True)
+            results["layers"] = eval_layers(
+                layer_models, load_layer_stats(stats_path), timing, pattern, cache,
+                LayerCache.load(cfg.layers_dir), cfg.features_dir, mask_cfg, split, n_layers, seed,
+                dev, pool)
+        except (ValueError, KeyError, OSError) as e:
+            _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     stem = f"eval-{split}-{tag}" if tag else f"eval-{split}"
     target = cfg.reports_dir / f"{stem}.md"

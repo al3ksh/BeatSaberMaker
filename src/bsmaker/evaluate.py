@@ -9,9 +9,19 @@ from pathlib import Path
 
 import numpy as np
 
+from bsmaker.data.align import onset_envelope
 from bsmaker.data.events_cache import Entry, EventCache
-from bsmaker.formats.events import Event, to_events
+from bsmaker.data.layer_stats import level_rate
+from bsmaker.formats.events import FRAMES_PER_SECOND, Event, to_events
+from bsmaker.formats.layer_tokens import (
+    ARC_LENGTH_BEATS, LIGHT_CHANNELS, LIGHT_VOCAB, WALL_VOCAB, arc_length_bucket, cells_to_mask,
+    light_event_to_token, wall_to_token)
+from bsmaker.formats.model import Bomb, Layers, LightEvent, Note
 from bsmaker.generate import check_exact
+from bsmaker.layers_generate import LayerModels, generate_decor, generate_lights
+from bsmaker.models.ornaments.sample import sample_ornaments
+from bsmaker.obstacles_rules import gameplay_obstacles
+from bsmaker.playability.layers import check_layers
 from bsmaker.formats.tokens import NONE_TOKEN, decode_token
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
 from bsmaker.models.timing.decode import (
@@ -300,6 +310,276 @@ def eval_pattern_sampled(pattern: LoadedPattern, cache: EventCache, features_dir
     }
 
 
+LAYER_LEVELS = (1, 2, 3)
+HUMAN_QUARTER_BEAT_SHARE = 0.76
+HUMAN_ONSET_RATIO = 2.5
+QUARTER_BEAT_TOL_S = 0.030
+
+
+def _human_notes(layer_cache, i: int, bpm: float) -> list[Note]:
+    t, hand, token = layer_cache.ornaments(i)[:3]
+    out = []
+    for a, h, tok in zip(t.tolist(), hand.tolist(), token.tolist()):
+        try:
+            x, y, d = decode_token(int(tok))
+        except ValueError:  # unencodable note stored as token 0
+            continue
+        out.append(Note(float(a), float(a) * bpm / 60.0, x, y, int(h), d))
+    return out
+
+
+def _tv_counts(gen: Sequence[float], hum: Sequence[float]) -> float:
+    """TV distance of two count vectors; 1.0 when exactly one side is empty, nan when both are."""
+    g, h = np.asarray(gen, dtype=np.float64), np.asarray(hum, dtype=np.float64)
+    if g.sum() == 0 and h.sum() == 0:
+        return float("nan")
+    if g.sum() == 0 or h.sum() == 0:
+        return 1.0
+    return tv_distance(g / g.sum(), h / h.sum())
+
+
+def _nanmean(xs: Sequence[float]) -> float:
+    a = np.asarray([x for x in xs if x == x], dtype=np.float64)
+    return float(a.mean()) if len(a) else float("nan")
+
+
+def _light_tokens(events: Sequence[LightEvent]) -> list[tuple[int, int]]:
+    return [m for ev in events if (m := light_event_to_token(ev.type, ev.value)) is not None]
+
+
+def _light_metrics(times: np.ndarray, bpm: float, env: np.ndarray) -> tuple[float, float]:
+    """(share within 30 ms of a quarter beat, mean onset strength / mean envelope) of event times."""
+    if len(times) == 0:
+        return float("nan"), float("nan")
+    q = 60.0 / bpm / 4.0
+    off = np.abs(times / q - np.round(times / q)) * q
+    share = float((off <= QUARTER_BEAT_TOL_S).mean())
+    if env.size == 0 or env.mean() <= 0:
+        return share, float("nan")
+    frames = np.clip(np.round(times * FRAMES_PER_SECOND).astype(int), 0, env.size - 1)
+    return share, float(env[frames].mean() / env.mean())
+
+
+def _channel_tv(gen: Sequence[tuple[int, int]], hum: Sequence[tuple[int, int]]) -> float:
+    tvs = []
+    for ch in range(LIGHT_CHANNELS):
+        g = np.bincount([t for c, t in gen if c == ch], minlength=LIGHT_VOCAB)
+        h = np.bincount([t for c, t in hum if c == ch], minlength=LIGHT_VOCAB)
+        tvs.append(_tv_counts(g, h))
+    return _nanmean(tvs)
+
+
+def _group_bombs(bombs: Sequence[Bomb]) -> list[int]:
+    groups: dict[float, set] = {}
+    for b in bombs:
+        groups.setdefault(round(b.time_s, 4), set()).add((b.x, b.y))
+    return [cells_to_mask(c) for c in groups.values()]
+
+
+def _mean_over(rows: Sequence[dict], key: str) -> float:
+    return _nanmean([r[key] for r in rows])
+
+
+def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_cache: EventCache,
+                layer_cache, features_dir: Path, mask_cfg, split: str, n: int, seed: int,
+                device: str, entries: Sequence[Entry] | None = None) -> dict:
+    """Generate every layer on the HUMAN notes of `n` difficulties (one per song) at levels 1-3.
+
+    Reports per layer and level the elements per minute against the human percentile for the
+    map's nps, distribution distances to the human layer, rule violations (must be 0) and rule
+    skips. `timing`, `pattern` and `mask_cfg` are accepted for interface stability: the layers
+    never touch the note models and the human notes need no mask.
+    """
+    pool = event_cache.select(split) if entries is None else list(entries)
+    pool = [e for e in pool if e.n_frames > 0 and layer_cache.meta(e.i).get("readable")
+            and layer_cache.meta(e.i).get("bpm", 0.0) > 0 and layer_cache.meta(e.i).get("n_notes", 0) > 0]
+    chosen = _spaced(_one_per_song(pool), n)
+    have_orn = models.ornaments is not None
+    have_decor = models.decor_when is not None and models.decor_what is not None
+    have_lights = models.lights_when is not None and models.lights_what is not None
+
+    def status(ok: bool) -> str:
+        return "ok" if ok else "not trained"
+
+    out: dict = {
+        "n": len(chosen), "seed": seed, "levels": list(LAYER_LEVELS),
+        "reference": {"quarter_beat_share": HUMAN_QUARTER_BEAT_SHARE,
+                      "onset_ratio": HUMAN_ONSET_RATIO, "tolerance_s": QUARTER_BEAT_TOL_S},
+        "ornaments": {"status": status(have_orn), "levels": {}},
+        "decor": {"status": status(have_decor), "levels": {}},
+        "lights": {"status": status(have_lights), "levels": {}}}
+    bomb_vocab = [int(m) for m in layer_stats.get("bomb_vocab", ())]
+    bomb_index = {m: k for k, m in enumerate(bomb_vocab)}
+
+    # human references (over the chosen difficulties)
+    h_arc = np.zeros(len(ARC_LENGTH_BEATS))
+    h_wall = np.zeros(WALL_VOCAB)
+    h_bomb = np.zeros(len(bomb_vocab))
+    h_light: list[tuple[int, int]] = []
+    h_share: list[float] = []
+    h_onset: list[float] = []
+    for e in chosen:
+        meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
+        env = onset_envelope(mel)
+        for v in layer_cache.ornaments(e.i)[4]:
+            if v:
+                h_arc[int(v) - 1] += 1
+        for v in layer_cache.walls(e.i)[2]:
+            h_wall[int(v)] += 1
+        for m in layer_cache.bombs(e.i)[1]:
+            if int(m) in bomb_index:
+                h_bomb[bomb_index[int(m)]] += 1
+        lt, lch, ltok = layer_cache.lights(e.i)
+        if meta.get("lights_ok"):
+            h_light += list(zip(lch.tolist(), ltok.tolist()))
+            sh, on = _light_metrics(np.asarray(lt, dtype=np.float64), meta["bpm"], env)
+            h_share.append(sh)
+            h_onset.append(on)
+    out["human"] = {"lights": {"quarter_beat_share": _nanmean(h_share),
+                               "onset_ratio": _nanmean(h_onset)}}
+
+    for level in LAYER_LEVELS:
+        orn_rows: list[dict] = []
+        decor_rows: list[dict] = []
+        light_rows: dict[str, list[dict]] = {"model": [], "rules": []}
+        g_arc = np.zeros(len(ARC_LENGTH_BEATS))
+        g_wall = np.zeros(WALL_VOCAB)
+        g_bomb = np.zeros(len(bomb_vocab))
+        g_light: dict[str, list[tuple[int, int]]] = {"model": [], "rules": []}
+        for e in chosen:
+            meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
+            bpm = float(meta["bpm"])
+            minutes = e.n_frames / FRAMES_PER_SECOND / 60.0
+            duration_s = minutes * 60.0
+            notes = _human_notes(layer_cache, e.i, bpm)
+            env = onset_envelope(mel)
+            if have_orn:
+                arcs, chains, rep = sample_ornaments(
+                    models.ornaments, notes, mel, e.nps, level, layer_stats, bpm, seed, device)
+                viol = check_layers(notes, Layers((), (), tuple(arcs), tuple(chains), (), False, 0))
+                for a in arcs:
+                    g_arc[arc_length_bucket(a.tail_beat - a.beat) - 1] += 1
+                orn_rows.append({
+                    "arcs_per_min": len(arcs) / minutes, "chains_per_min": len(chains) / minutes,
+                    "arcs_target": level_rate(layer_stats, "arcs", e.nps, level),
+                    "chains_target": level_rate(layer_stats, "chains", e.nps, level),
+                    "violations": len(viol),
+                    "rejected": rep.rejected_chain + rep.rejected_arc})
+            if have_decor:
+                obstacles, bombs, rep = generate_decor(
+                    models, mel, notes, e.nps, bpm, duration_s, level, layer_stats, seed, device)
+                viol = check_layers(notes, Layers(tuple(bombs), tuple(obstacles), (), (), (), False, 0))
+                gp = set(gameplay_obstacles(notes, bpm, duration_s, level, seed))
+                for ob in obstacles:
+                    m = None if ob in gp else wall_to_token(ob, bpm)
+                    if m is not None:
+                        g_wall[m[1]] += 1
+                for m in _group_bombs(bombs):
+                    if m in bomb_index:
+                        g_bomb[bomb_index[m]] += 1
+                decor_rows.append({
+                    "walls_per_min": rep["decor_walls_placed"] / minutes,
+                    "bomb_groups_per_min": rep["bomb_groups_placed"] / minutes,
+                    "walls_target": level_rate(layer_stats, "walls", e.nps, level),
+                    "bomb_groups_target": level_rate(layer_stats, "bomb_groups", e.nps, level),
+                    "violations": len(viol), "skipped_by_rules": rep["skipped_by_rules"]})
+            target = sum(level_rate(layer_stats, f"light_ch{c}", e.nps, level)
+                         for c in range(LIGHT_CHANNELS))
+            for kind, use_rules, ok in (("model", False, have_lights), ("rules", True, True)):
+                if not ok:
+                    continue
+                events, rep = generate_lights(models, mel, notes, e.nps, bpm, 0.0, duration_s,
+                                              level, layer_stats, seed, device, use_rules=use_rules)
+                share, onset = _light_metrics(
+                    np.asarray([ev.time_s for ev in events], dtype=np.float64), bpm, env)
+                g_light[kind] += _light_tokens(events)
+                light_rows[kind].append({
+                    "per_min": len(events) / minutes, "target": target,
+                    "quarter_beat_share": share, "onset_ratio": onset,
+                    "skipped_by_rules": rep["skipped_by_rules"]})
+        if have_orn:
+            out["ornaments"]["levels"][level] = {
+                **{k: _mean_over(orn_rows, k) for k in (
+                    "arcs_per_min", "chains_per_min", "arcs_target", "chains_target")},
+                "tv_arc_length": _tv_counts(g_arc, h_arc),
+                "violations": int(sum(r["violations"] for r in orn_rows)),
+                "rejected": int(sum(r["rejected"] for r in orn_rows))}
+        if have_decor:
+            out["decor"]["levels"][level] = {
+                **{k: _mean_over(decor_rows, k) for k in (
+                    "walls_per_min", "bomb_groups_per_min", "walls_target", "bomb_groups_target")},
+                "tv_wall_token": _tv_counts(g_wall, h_wall),
+                "tv_bomb_mask": _tv_counts(g_bomb, h_bomb),
+                "violations": int(sum(r["violations"] for r in decor_rows)),
+                "skipped_by_rules": int(sum(r["skipped_by_rules"] for r in decor_rows))}
+        lv: dict = {}
+        for kind, rows in light_rows.items():
+            if not rows:
+                continue
+            lv[kind] = {
+                **{k: _mean_over(rows, k) for k in (
+                    "per_min", "target", "quarter_beat_share", "onset_ratio")},
+                "tv_channel_tokens": _channel_tv(g_light[kind], h_light),
+                "skipped_by_rules": int(sum(r["skipped_by_rules"] for r in rows))}
+        out["lights"]["levels"][level] = lv
+    out["violations"] = int(
+        sum(v["violations"] for v in out["ornaments"]["levels"].values())
+        + sum(v["violations"] for v in out["decor"]["levels"].values()))
+    return out
+
+
+def render_layers_section(layers: dict | None) -> str:
+    """Markdown "Layers" section; empty string when the layers were not evaluated."""
+    if not layers:
+        return ""
+    ref = layers["reference"]
+    h = layers["human"]["lights"]
+    L = ["## Layers", "",
+         f"{layers['n']} difficulties (one per song), layers generated on the human notes at levels "
+         f"{', '.join(map(str, layers['levels']))}; per-minute rates are means over difficulties and "
+         "`human` is the train percentile (25/50/75) of the map's nps bin.", ""]
+    o = layers["ornaments"]
+    L += ["### Ornaments", ""]
+    if o["status"] != "ok":
+        L += ["not trained", ""]
+    else:
+        L += ["| level | arcs/min | human | chains/min | human | TV arc length | rule violations | "
+              "rejected notes |", "|---|---|---|---|---|---|---|---|"]
+        L += [f"| {lv} | {_f(r['arcs_per_min'], 2)} | {_f(r['arcs_target'], 2)} | "
+              f"{_f(r['chains_per_min'], 2)} | {_f(r['chains_target'], 2)} | "
+              f"{_f(r['tv_arc_length'])} | {r['violations']} | {r['rejected']} |"
+              for lv, r in o["levels"].items()] + [""]
+    d = layers["decor"]
+    L += ["### Decoration", ""]
+    if d["status"] != "ok":
+        L += ["not trained", ""]
+    else:
+        L += ["| level | walls/min | human | bomb groups/min | human | TV wall token | TV bomb mask | "
+              "rule violations | skipped by rules |", "|---|---|---|---|---|---|---|---|---|"]
+        L += [f"| {lv} | {_f(r['walls_per_min'], 2)} | {_f(r['walls_target'], 2)} | "
+              f"{_f(r['bomb_groups_per_min'], 2)} | {_f(r['bomb_groups_target'], 2)} | "
+              f"{_f(r['tv_wall_token'])} | {_f(r['tv_bomb_mask'])} | {r['violations']} | "
+              f"{r['skipped_by_rules']} |" for lv, r in d["levels"].items()] + [""]
+    li = layers["lights"]
+    L += ["### Lights", ""]
+    if li["status"] != "ok":
+        L += ["Light model: not trained (rule baseline below).", ""]
+    L += [f"Human reference: {ref['quarter_beat_share']:.2f} of events within "
+          f"{1000 * ref['tolerance_s']:.0f} ms of a quarter beat, onset strength "
+          f"{ref['onset_ratio']:.1f}x the mean (measured on these difficulties: "
+          f"{_f(h['quarter_beat_share'])} and {_f(h['onset_ratio'], 2)}).", "",
+          "| level | source | events/min | human | quarter-beat share | onset ratio | "
+          "TV channel tokens | skipped by rules |", "|---|---|---|---|---|---|---|---|"]
+    for lv, kinds in li["levels"].items():
+        for kind, r in kinds.items():
+            L.append(f"| {lv} | {kind} | {_f(r['per_min'], 1)} | {_f(r['target'], 1)} | "
+                     f"{_f(r['quarter_beat_share'])} | {_f(r['onset_ratio'], 2)} | "
+                     f"{_f(r['tv_channel_tokens'])} | {r['skipped_by_rules']} |")
+    L += ["", f"- Hard rule violations in generated ornaments and decoration: {layers['violations']} "
+              "(must be 0)", ""]
+    return "\n".join(L)
+
+
 def json_safe(x):
     """Recursively convert to JSON-serialisable values (NaN and inf become None)."""
     if isinstance(x, dict):
@@ -418,6 +698,9 @@ def render_eval_report(results: dict) -> str:
                 out.append(f"  - {key}: {json.dumps(json_safe(s[f'{kind}_{key}']), sort_keys=True)}")
         return out
 
+    section = render_layers_section(results.get("layers"))
+    if section:
+        L += section.split("\n")
     L += ["## Setup", ""] + ck("timing") + ck("pattern")
     if s.get("entries_from"):
         L.append(f"- Entries from: {s['entries_from']} (kept {s['entries_kept']} of "
