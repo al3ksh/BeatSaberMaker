@@ -77,3 +77,16 @@ Progi (okno 1 bitu, pola) mocno wpływają na podział reset/blokada.
 - Łuki zawsze zaczynają się na nucie, więc są dodatkiem do modelu wzorców, nie osobnym bytem.
 - Ściany poza siatką (x = −1, 4) w v3 trzeba albo odtwarzać, albo świadomie pominąć.
 - Korelacja liczby ścian ze światłami jest słaba (0,19).
+
+## 6. Wytyczne użytkownika (2026-11-16)
+
+- Ściany to w ok. 3/4 ozdoby. Rozgrywkowo tylko czasem: etap, w którym trzeba pokucać albo
+  przesunąć się w lewo/prawo, nic intensywnego.
+- Bomby tak samo: głównie ozdoby, przeszkodami bywają jeszcze rzadziej niż ściany.
+- Map typu „fitbeat" (ciągły ruch, ściany jako główna rozgrywka) **nie robimy** — poza zakresem.
+- Łuki i łańcuchy są fajne, ale z umiarem. Mapy „skillowe" (np. GHOST) mają ich mieć mało;
+  mapy „vibe" mogą mieć sporo ozdób. Potrzebny jest więc suwak lub tryb ilości ozdób,
+  powiązany z charakterem mapy (gęstość/styl).
+- Światła można robić już teraz: to ozdoba, a w grze da się je wyłączyć.
+- Tło mapy (środowisko, `_environmentName` w Info.dat) — do rozstrzygnięcia: wybór
+  użytkownika opcją, a domyślnie dobór według stylu/gatunku jak w ludzkich mapach.
