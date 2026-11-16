@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Cpu, FileText, FolderOpen, RefreshCw } from "lucide-react";
+import { Cpu, FileText, FolderOpen, LocateFixed, RefreshCw } from "lucide-react";
 import { EN } from "../i18n/en";
 import type { DevicePref, EngineInfo, Settings, UpdateStatus } from "../types";
-import { Badge, Button, Modal, SegmentedControl } from "./ui/primitives";
+import { Button, Modal, SegmentedControl } from "./ui/primitives";
 
 export interface SettingsModalProps {
   open: boolean;
@@ -71,22 +71,28 @@ export function SettingsModal({
 
   return (
     <Modal open={open} title={EN.settings.title} onClose={onClose}>
-      <div className="space-y-5">
+      <div className="space-y-4">
         <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2.5">
-          <label className="block text-xs font-medium text-zinc-300">
-            {EN.settings.customLevelsLabel}
-          </label>
-          <div className="rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-xs font-mono text-zinc-200 break-all">
-            {settings.customLevels || "-"}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-zinc-300">
+              {EN.settings.customLevelsLabel}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <Button variant="secondary" size="sm" onClick={handleAutoDetect}>
+                <LocateFixed className="h-3.5 w-3.5" />
+                {EN.settings.detectAuto}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={handlePickCustomLevels}>
+                <FolderOpen className="h-3.5 w-3.5" />
+                {EN.settings.changeFolder}
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" size="sm" onClick={handlePickCustomLevels}>
-              <FolderOpen className="h-3.5 w-3.5" />
-              {EN.settings.changeFolder}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={handleAutoDetect}>
-              {EN.settings.detectAuto}
-            </Button>
+          <div
+            title={settings.customLevels || "-"}
+            className="rounded-lg bg-zinc-950 border border-zinc-800/90 px-3 py-2 text-xs font-mono text-zinc-300 break-all"
+          >
+            {settings.customLevels || "-"}
           </div>
           {folderError && <p className="text-xs text-red-400">{folderError}</p>}
         </div>
@@ -104,7 +110,7 @@ export function SettingsModal({
           />
           {info?.cuda_available ? (
             <div className="flex items-center gap-2 text-xs text-emerald-400 pt-0.5">
-              <Cpu className="h-3.5 w-3.5" />
+              <Cpu className="h-3.5 w-3.5 shrink-0" />
               <span>
                 {EN.settings.gpuDetectedPrefix} {info.gpu_name ?? "NVIDIA CUDA"}
               </span>
@@ -116,31 +122,30 @@ export function SettingsModal({
           )}
         </div>
 
-        <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2">
-          <label className="block text-xs font-medium text-zinc-300">
-            {EN.settings.exportDirLabel}
-          </label>
-          <div className="flex items-center justify-between gap-2 rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2">
-            <span className="text-xs font-mono text-zinc-300 truncate">
-              {settings.exportDir}
+        <div className="rounded-xl bg-zinc-950/60 border border-zinc-800/80 p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-zinc-300">
+              {EN.settings.exportDirLabel}
             </span>
-            <Button variant="ghost" size="sm" onClick={handlePickExportDir}>
+            <Button variant="secondary" size="sm" onClick={handlePickExportDir}>
+              <FolderOpen className="h-3.5 w-3.5" />
               {EN.settings.changeFolder}
             </Button>
           </div>
+          <div
+            title={settings.exportDir}
+            className="rounded-lg bg-zinc-950 border border-zinc-800/90 px-3 py-2 text-xs font-mono text-zinc-300 truncate"
+          >
+            {settings.exportDir}
+          </div>
         </div>
 
-        <div className="border-t border-zinc-800/80 pt-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-            <Badge>
-              {EN.settings.appVersionLabel}: {appVersion}
-            </Badge>
-            <Badge>
-              {EN.settings.engineVersionLabel}: {info?.version ?? "-"}
-            </Badge>
+        <div className="border-t border-zinc-800/80 pt-3.5 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-xs font-mono text-zinc-500">
+            v{appVersion} · Engine {info?.version ?? "-"}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => window.bsm.openLogs()}>
+            <Button variant="secondary" size="sm" onClick={() => window.bsm.openLogs()}>
               <FileText className="h-3.5 w-3.5" />
               {EN.settings.openLogs}
             </Button>
