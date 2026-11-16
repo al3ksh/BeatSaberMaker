@@ -66,3 +66,26 @@ def test_missing_ffmpeg_is_not_a_decode_failure(tmp_path, monkeypatch):
     with pytest.raises(FfmpegMissingError) as info:
         decode_mono(tmp_path / "x.ogg")
     assert not isinstance(info.value, AudioDecodeError)
+
+
+def test_explicit_ffmpeg_path_used_and_missing_raises(tmp_path, monkeypatch):
+    import subprocess
+    from bsmaker.audio.decode import FfmpegMissingError, require_ffmpeg
+
+    missing = tmp_path / "bin" / "ffmpeg.exe"
+    with pytest.raises(FfmpegMissingError):
+        require_ffmpeg(missing)
+
+    fake_bin = tmp_path / "bin" / "ffmpeg.exe"
+    fake_bin.parent.mkdir()
+    fake_bin.write_bytes(b"")
+    assert require_ffmpeg(fake_bin) == str(fake_bin)
+
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"\x00\x00\x80\x3f", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    decode_mono(tmp_path / "song.wav", ffmpeg_path=fake_bin)
+    assert seen["cmd"][0] == str(fake_bin)

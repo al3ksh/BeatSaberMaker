@@ -230,3 +230,22 @@ def test_review_validation_names_object_and_index(tmp_path, kwargs, what):
 def test_invalid_light_events_rejected(tmp_path, ev):
     with pytest.raises(ValueError, match="light event 1"):
         _multi(tmp_path, [_easy()], lights=[LightEvent(0.0, 0, 1, 1, 1.0), ev])
+
+
+def test_writer_forwards_explicit_ffmpeg_path(tmp_path, monkeypatch):
+    from bsmaker.formats import writer as W
+
+    fake_bin = tmp_path / "ffmpeg.exe"
+    fake_bin.write_bytes(b"")
+    seen = {}
+
+    def fake_encode(src, dst, *, ffmpeg_path=None):
+        seen["ffmpeg_path"] = ffmpeg_path
+        dst.write_bytes(b"OggS")
+
+    monkeypatch.setattr(W, "_encode_audio", fake_encode)
+    write_map_multi(
+        tmp_path / "BSM - f", title="T", artist="A", bpm=120.0,
+        levels=[_easy()], audio_src=AUDIO, ffmpeg_path=fake_bin,
+    )
+    assert seen["ffmpeg_path"] == fake_bin

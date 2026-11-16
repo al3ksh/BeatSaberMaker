@@ -6,6 +6,7 @@ import math
 import shutil
 import struct
 import subprocess
+import sys
 import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -30,11 +31,21 @@ def _png(size: int, rgb: tuple[int, int, int]) -> bytes:
             + chunk(b"IEND", b""))
 
 
-def _encode_audio(src: Path, dst: Path) -> None:
-    cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+def _encode_audio(src: Path, dst: Path, *, ffmpeg_path: Path | None = None) -> None:
+    exe = str(ffmpeg_path) if ffmpeg_path is not None else "ffmpeg"
+    cmd = [exe, "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
            "-c:a", "libvorbis", "-q:a", "6", "-f", "ogg", str(dst)]
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": _FFMPEG_TIMEOUT_S,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=_FFMPEG_TIMEOUT_S)
+        res = subprocess.run(cmd, **kwargs)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S} s encoding song.egg") from e
     except FileNotFoundError as e:
@@ -130,7 +141,8 @@ def _difficulty_json(level: LevelData, bpm: float, lights: Sequence[LightEvent])
 
 def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels: Sequence[LevelData],
                     lights: Sequence[LightEvent] = (), environment: str = "DefaultEnvironment",
-                    audio_src: Path, overwrite: bool = False) -> Path:
+                    audio_src: Path, overwrite: bool = False,
+                    ffmpeg_path: Path | None = None) -> Path:
     """Write one v3 difficulty file per level (ascending rank order in Info).
 
     Layer objects are placed on the beat grid from their `time_s` and `bpm`; their own
@@ -192,7 +204,7 @@ def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     try:
-        _encode_audio(Path(audio_src), tmp / "song.egg")
+        _encode_audio(Path(audio_src), tmp / "song.egg", ffmpeg_path=ffmpeg_path)
         (tmp / "Info.dat").write_text(json.dumps(info, indent=2), encoding="utf-8")
         for name, diff in diffs.items():
             (tmp / name).write_text(json.dumps(diff), encoding="utf-8")

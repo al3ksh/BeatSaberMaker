@@ -11,10 +11,40 @@ class Config:
     custom_levels: Path
     data_dir: Path
     base_dir: Path = Path(".")  # folder holding bsmaker.toml
+    _checkpoints_dir: Path | None = None
+    _playability_path: Path | None = None
+    _layer_stats_path: Path | None = None
+
+    @classmethod
+    def from_paths(
+        cls,
+        custom_levels: Path,
+        *,
+        checkpoints_dir: Path,
+        playability_path: Path | None = None,
+        layer_stats_path: Path | None = None,
+        data_dir: Path | None = None,
+        base_dir: Path | None = None,
+    ) -> Config:
+        """Build a Config from explicit resource paths (used by the desktop engine)."""
+        ckpts = Path(checkpoints_dir)
+        return cls(
+            custom_levels=Path(custom_levels),
+            data_dir=Path(data_dir) if data_dir is not None else ckpts.parent,
+            base_dir=Path(base_dir) if base_dir is not None else ckpts.parent,
+            _checkpoints_dir=ckpts,
+            _playability_path=Path(playability_path) if playability_path is not None else None,
+            _layer_stats_path=Path(layer_stats_path) if layer_stats_path is not None else None,
+        )
 
     @property
     def playability_path(self) -> Path | None:
-        p = self.base_dir / "playability.toml"
+        p = self._playability_path if self._playability_path is not None else self.base_dir / "playability.toml"
+        return p if p.is_file() else None
+
+    @property
+    def layer_stats_path(self) -> Path | None:
+        p = self._layer_stats_path if self._layer_stats_path is not None else self.base_dir / "layer_stats.json"
         return p if p.is_file() else None
 
     @property
@@ -39,7 +69,7 @@ class Config:
 
     @property
     def checkpoints_dir(self) -> Path:
-        return self.data_dir / "checkpoints"
+        return self._checkpoints_dir if self._checkpoints_dir is not None else self.data_dir / "checkpoints"
 
     @property
     def reports_dir(self) -> Path:
