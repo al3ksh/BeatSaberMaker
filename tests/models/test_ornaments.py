@@ -22,6 +22,7 @@ class FakeLayers:
 
     def __init__(self, n_entries=4, n_notes=24, arcs=True, seed=0):
         rng = np.random.default_rng(seed)
+        self.has_v3 = {}
         self.rows = []
         for _ in range(n_entries):
             gaps = rng.choice([0.4, 1.5], size=n_notes)
@@ -42,7 +43,7 @@ class FakeLayers:
 
     def meta(self, i):
         r = self.rows[i]
-        return {"has_v3": True, "n_arcs": int((r[4] > 0).sum()), "n_chains": int((r[3] > 0).sum())}
+        return {"has_v3": self.has_v3.get(i, True), "n_arcs": int((r[4] > 0).sum()), "n_chains": int((r[3] > 0).sum())}
 
 
 def _entries(n, split="train"):
@@ -78,8 +79,33 @@ def test_batch_shapes_and_model_output(tmp_path):
 def test_dataset_filters_entries_without_ornaments(tmp_path):
     layers = FakeLayers(arcs=False)
     layers.rows[1] = tuple(np.zeros_like(a) for a in layers.rows[1])
+    layers.has_v3[3] = False  # has ornaments but is not a v3 difficulty
     ds = _ds(tmp_path, layers, _entries(4))
-    assert [e.i for e in ds.entries] == [0, 2, 3]
+    assert [e.i for e in ds.entries] == [0, 2]
+
+
+def test_dataset_guards_out_of_range_labels(tmp_path):
+    layers = FakeLayers(n_entries=1, n_notes=16)
+    t, hand, token, chain, arc_len, cell, d = layers.rows[0]
+    arc_len = np.zeros(16, np.uint8)
+    arc_len[[0, 1, 2, 3]] = [2, 2, 2, 9]
+    cell = np.zeros(16, np.uint8)
+    cell[[0, 1, 2, 3]] = [5, 12, 5, 5]
+    d = np.zeros(16, np.uint8)
+    d[[0, 1, 2, 3]] = [3, 3, 9, 3]
+    hand = hand.copy()
+    hand[4] = 2
+    layers.rows[0] = (t, hand, token, chain, arc_len, cell, d)
+    _features(tmp_path, 1)
+    ds = _ds(tmp_path, layers, _entries(1), fixed=True)
+    item = ds[0]
+    assert item["arc_len"][:4].tolist() == [2, 0, 0, 0]  # bad cell/dir/bucket -> no arc
+    assert not item["valid"][4] and item["hand"][4] == 0 and item["valid"][5]
+    batch = {k: v[None] for k, v in item.items()}
+    model = OrnamentModel(TINY)
+    model(batch["mel_slices"], batch["gaps"], batch["hand"], batch["token"],
+          batch["log_nps"], batch["valid"])
+    assert torch.isfinite(ornament_step(model, batch))
 
 
 def test_gaps_same_hand_and_any_hand():
@@ -140,7 +166,7 @@ def test_tagger_learns_gap_rule(tmp_path):
         loss.backward()
         opt.step()
     after = ornament_eval(model, loader)
-    assert float(loss) < first * 0.5
+    assert float(loss.detach()) < first * 0.5
     assert after["loss"] < before["loss"]
     assert after["chain_f1"] > 0.9
 
@@ -181,3 +207,18 @@ def test_cli_smoke_run(tmp_path, monkeypatch):
     assert res.exit_code == 0, res.output
     assert (data / "checkpoints" / "layers" / "ornaments" / "last.pt").is_file()
     assert "done at step 3" in res.output
+
+
+def test_cli_smoke_run_quality_weighting(tmp_path, monkeypatch):
+    data = _write_cli_setup(tmp_path, monkeypatch)
+    train_app = typer.Typer()
+    orn_cli.register(train_app)
+    train_app.command("noop")(lambda: None)
+    (tmp_path / "dataset_stats.json").write_text(
+        json.dumps({**STATS, "nps_bins": [0.0, 2.0, 4.0, 8.0, 100.0]}))
+    res = CliRunner().invoke(train_app, [
+        "ornaments", "--max-steps", "2", "--batch-size", "2", "--num-workers", "0",
+        "--device", "cpu", "--eval-every", "2", "--save-every", "2", "--weighting", "quality"])
+    assert res.exit_code == 0, res.output
+    assert "weighting: quality" in res.output
+    assert (data / "checkpoints" / "layers" / "ornaments" / "last.pt").is_file()

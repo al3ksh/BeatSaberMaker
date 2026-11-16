@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 from bsmaker.data.events_cache import Entry
 from bsmaker.data.layers_cache import LayerCache
 from bsmaker.models.common import log_nps_value
-from bsmaker.models.ornaments.model import N_GAPS
+from bsmaker.models.ornaments.model import N_ARC_CELL, N_ARC_DIR, N_ARC_LEN, N_GAPS
 from bsmaker.models.pattern.dataset import _slices
 from bsmaker.models.pattern.model import N_MELS, SLICE_FRAMES
 
@@ -108,9 +108,16 @@ class OrnamentNotes(Dataset):
             out[:n] = a[sl]
             return torch.from_numpy(out)
 
+        # defensive: out-of-range labels must never reach an embedding or a cross-entropy
+        bad_arc = (arc_dir >= N_ARC_DIR) | (arc_cell >= N_ARC_CELL) | (arc_len >= N_ARC_LEN)
+        arc_len = np.where(bad_arc, 0, arc_len)
+        arc_cell = np.where(bad_arc, 0, arc_cell)
+        arc_dir = np.where(bad_arc, 0, arc_dir)
+        bad_hand = hand > 1
+        hand = np.where(bad_hand, 0, hand)
         chain_cls = np.where(chain > 0, np.clip(chain.astype(np.int64), 3, 7) - 2, 0)
         valid = np.zeros(c, dtype=bool)
-        valid[:n] = True
+        valid[:n] = ~bad_hand[sl]
         return {"mel_slices": torch.from_numpy(slices), "gaps": torch.from_numpy(gaps),
                 "hand": pad(hand), "token": pad(token), "chain": pad(chain_cls),
                 "arc_len": pad(arc_len), "arc_cell": pad(arc_cell), "arc_dir": pad(arc_dir),

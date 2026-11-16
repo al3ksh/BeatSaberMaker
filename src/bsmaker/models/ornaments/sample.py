@@ -124,7 +124,7 @@ def _probabilities(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.ndarr
 
 
 def _softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-    z = x / temperature
+    z = np.asarray(x, dtype=np.float64) / temperature
     z = np.exp(z - z.max(-1, keepdims=True))
     return z / z.sum(-1, keepdims=True)
 

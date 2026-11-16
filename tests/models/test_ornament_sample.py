@@ -145,3 +145,14 @@ def test_load_ornaments_roundtrip(tmp_path, loaded):
     assert got.config == loaded.config and got.stats == STATS
     for a, b in zip(got.model.parameters(), loaded.model.parameters()):
         assert torch.equal(a, b)
+
+
+@pytest.mark.parametrize("n", [9, 12])
+def test_softmax_sharp_float32_logits_sum_to_one(n):
+    from bsmaker.models.ornaments.sample import _softmax
+    rng = np.random.default_rng(0)
+    x = rng.choice([-80.0, 80.0], size=(50, n)).astype(np.float32)
+    p = _softmax(x, 0.8)
+    assert p.dtype == np.float64
+    for row in p:
+        rng.choice(n, p=row)  # must not raise "probabilities do not sum to 1"
