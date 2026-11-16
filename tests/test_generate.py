@@ -246,6 +246,7 @@ def test_events_are_aligned_then_snapped_before_sampling(models, tmp_path, monke
 
     def fake_sample(loaded, times, mel, nps, styles, seed, cfg, device, **kw):
         seen.append(np.asarray(times))
+        assert not {"double_bias", "dot_brake"} & kw.keys()  # generate_map relies on the sampler defaults
         notes = [Note(round(t * 22050 / 256) * 256 / 22050, 0.0, 0, 0, 0, 1) for t in times]
         return notes, SampleReport(len(times), 0, 0, 0.0)
 
