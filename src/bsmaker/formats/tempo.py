@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,18 +16,24 @@ class TempoMap:
         by_beat: dict[float, float] = {}
         for beat, bpm in self.points:
             by_beat[beat] = bpm  # a later duplicate wins
-        object.__setattr__(self, "points", tuple(sorted(by_beat.items())))
+        pts = tuple(sorted(by_beat.items()))
+        object.__setattr__(self, "points", pts)
+        beats = [b for b, _ in pts]
+        cum: list[float] = []
+        seconds, prev, bpm = 0.0, 0.0, self.info_bpm
+        for p_beat, p_bpm in pts:
+            seconds += (p_beat - prev) * 60.0 / bpm if bpm else float("nan")
+            cum.append(seconds)
+            prev, bpm = p_beat, p_bpm
+        object.__setattr__(self, "_beats", beats)
+        object.__setattr__(self, "_cum", cum)
 
     def to_seconds(self, beat: float) -> float:
-        seconds = 0.0
-        prev_beat = 0.0
-        bpm = self.info_bpm
-        for p_beat, p_bpm in self.points:
-            if beat <= p_beat:
-                break
-            seconds += (p_beat - prev_beat) * 60.0 / bpm
-            prev_beat, bpm = p_beat, p_bpm
-        return seconds + (beat - prev_beat) * 60.0 / bpm
+        i = bisect_left(self._beats, beat)  # type: ignore[attr-defined]
+        if i == 0:
+            return beat * 60.0 / self.info_bpm
+        prev = self._beats[i - 1]  # type: ignore[attr-defined]
+        return self._cum[i - 1] + (beat - prev) * 60.0 / self.points[i - 1][1]  # type: ignore[attr-defined]
 
     def bpm_range(self) -> tuple[float, float]:
         values = [self.info_bpm] + [bpm for _, bpm in self.points]

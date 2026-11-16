@@ -109,3 +109,140 @@ def test_v4_has_no_layers(tmp_path):
     m = read_map(_write(tmp_path, info, diff), layers=True)
     assert m.difficulties[0].schema == "v4" and m.difficulties[0].layers is None
     assert m.environment == "BillieEnvironment"
+
+
+def test_v3_missing_fields_default_to_zero(tmp_path):
+    diff = {"version": "3.3.0", "colorNotes": [], "obstacles": [{"b": 4, "d": 1, "w": 1, "h": 5}],
+            "basicBeatmapEvents": [{"b": 2, "et": 1}], "bombNotes": [{"b": 1}]}
+    lay = read_map(_write(tmp_path, _v3_info(), diff), layers=True).difficulties[0].layers
+    assert (lay.obstacles[0].x, lay.obstacles[0].y) == (0, 0)
+    assert lay.lights[0].value == 0 and lay.lights[0].float_value == 1.0
+    assert lay.bombs == (Bomb(0.5, 1, 0, 0),) and lay.dropped == 0
+
+
+def test_v3_present_bad_value_still_dropped(tmp_path):
+    diff = {"version": "3.3.0", "colorNotes": [], "bombNotes": [{"b": 1, "x": "a"}, {"b": 1, "y": None}]}
+    lay = read_map(_write(tmp_path, _v3_info(), diff), layers=True).difficulties[0].layers
+    assert lay.bombs == () and lay.dropped == 2
+
+
+import pytest
+
+from bsmaker.formats.tempo import TempoMap
+
+BAD = ["str", None, float("nan"), float("inf"), True, 1e7]
+
+
+def _lay(tmp_path, diff, v2=False):
+    info = _v2_info()
+    return read_map(_write(tmp_path, info, diff), layers=True).difficulties[0].layers
+
+
+V3_OK = {
+    "obstacles": {"b": 1, "x": 0, "y": 0, "d": 1, "w": 1, "h": 3},
+    "bombNotes": {"b": 1, "x": 0, "y": 0},
+    "sliders": {"b": 1, "c": 0, "x": 0, "y": 0, "d": 1, "tb": 2, "tx": 0, "ty": 0, "tc": 1},
+    "burstSliders": {"b": 1, "c": 0, "x": 0, "y": 0, "d": 1, "tb": 2, "tx": 0, "ty": 0, "sc": 3, "s": 1},
+    "basicBeatmapEvents": {"b": 1, "et": 0, "i": 1, "f": 1},
+}
+V2_OK = {
+    "_obstacles": {"_time": 1, "_lineIndex": 0, "_type": 0, "_duration": 1, "_width": 1},
+    "_notes": {"_time": 1, "_lineIndex": 0, "_lineLayer": 0, "_type": 3, "_cutDirection": 0},
+    "_events": {"_time": 1, "_type": 0, "_value": 1},
+}
+
+
+def _bad_cases(ok):
+    for key, obj in ok.items():
+        for field in obj:
+            if field in ("_type", "_cutDirection") and key in ("_notes", "_obstacles"):
+                continue
+            for bad in BAD:
+                yield key, dict(obj, **{field: bad})
+
+
+def _count(lay):
+    return len(lay.obstacles) + len(lay.bombs) + len(lay.arcs) + len(lay.chains) + len(lay.lights)
+
+
+def test_v3_bad_values_dropped(tmp_path):
+    for key, bad in _bad_cases(V3_OK):
+        diff = {"version": "3.3.0", "colorNotes": [], key: [bad]}
+        lay = _lay(tmp_path, diff)
+        assert (_count(lay), lay.dropped) == (0, 1), (key, bad)
+
+
+def test_v2_bad_values_dropped(tmp_path):
+    for key, bad in _bad_cases(V2_OK):
+        diff = {"_version": "2.2.0", "_notes": [], key: [bad]} if key != "_notes" else \
+            {"_version": "2.2.0", "_notes": [bad]}
+        lay = _lay(tmp_path, diff)
+        # a bad _time/_lineIndex etc. may turn a bomb into a non-bomb only for _type, skipped above
+        assert (_count(lay), lay.dropped) == (0, 1), (key, bad)
+
+
+def test_non_dict_entries_and_non_list_containers(tmp_path):
+    diff = {"version": "3.3.0", "colorNotes": [], **{k: [5, "x", None] for k in V3_OK}}
+    lay = _lay(tmp_path, diff)
+    assert (_count(lay), lay.dropped) == (0, 15)
+    diff = {"version": "3.3.0", "colorNotes": [], **{k: "x" for k in V3_OK}}
+    lay = _lay(tmp_path, diff)
+    assert (_count(lay), lay.dropped) == (0, 0)
+    lay = _lay(tmp_path, {"_notes": [], "_obstacles": [3], "_events": [None], "_sliders": "x"})
+    assert lay.dropped == 2
+
+
+def test_tempo_times_all_kinds_v3(tmp_path):
+    diff = {"version": "3.3.0", "colorNotes": [], "bpmEvents": [{"b": 0, "m": 120}, {"b": 4, "m": 60}],
+            "bombNotes": [{"b": 6, "x": 1, "y": 1}],
+            "burstSliders": [{"b": 5, "c": 0, "x": 0, "y": 0, "d": 1, "tb": 7, "tx": 0, "ty": 0, "sc": 3, "s": 1}],
+            "basicBeatmapEvents": [{"b": 8, "et": 0, "i": 1}]}
+    lay = _lay(tmp_path, diff)
+    assert lay.bombs[0].time_s == 4.0
+    assert (lay.chains[0].time_s, lay.chains[0].tail_time_s) == (3.0, 5.0)
+    assert lay.lights[0].time_s == 6.0
+
+
+def test_tempo_times_v2_events(tmp_path):
+    diff = {"_notes": [], "_events": [{"_time": 4, "_type": 100, "_value": 0, "_floatValue": 60},
+                                      {"_time": 6, "_type": 2, "_value": 1}],
+            "_obstacles": [{"_time": 5, "_lineIndex": 0, "_type": 0, "_duration": 2, "_width": 1}]}
+    lay = _lay(tmp_path, diff)
+    assert lay.lights[0].time_s == 4.0 and len(lay.lights) == 1
+    assert (lay.obstacles[0].time_s, lay.obstacles[0].duration_s) == (3.0, 2.0)
+
+
+def test_rounding_and_default_float(tmp_path):
+    diff = {"version": "3.3.0", "colorNotes": [], "bombNotes": [{"b": 1, "x": 0.4, "y": 2.6}],
+            "basicBeatmapEvents": [{"b": 1, "et": 0, "i": 1}]}
+    lay = _lay(tmp_path, diff)
+    assert (lay.bombs[0].x, lay.bombs[0].y) == (0, 3) and lay.lights[0].float_value == 1.0
+    lay = _lay(tmp_path, {"_notes": [], "_events": [{"_time": 1, "_type": 0, "_value": 1}]})
+    assert lay.lights[0].float_value == 1.0
+
+
+@pytest.mark.parametrize("key", ["lightColorEventBoxGroups", "lightRotationEventBoxGroups",
+                                 "lightTranslationEventBoxGroups"])
+def test_group_lighting_each_list(tmp_path, key):
+    assert _lay(tmp_path, {"version": "3.3.0", "colorNotes": [], key: [{"b": 1}]}).group_lighting
+    assert not _lay(tmp_path, {"version": "3.3.0", "colorNotes": [], key: []}).group_lighting
+
+
+def test_bisect_matches_reference():
+    import random
+    rng = random.Random(1)
+    pts = tuple((rng.uniform(1, 200), rng.uniform(60, 240)) for _ in range(50))
+    tm = TempoMap(120.0, pts)
+
+    def ref(beat):
+        seconds, prev, bpm = 0.0, 0.0, 120.0
+        for pb, pbpm in tm.points:
+            if beat <= pb:
+                break
+            seconds += (pb - prev) * 60.0 / bpm
+            prev, bpm = pb, pbpm
+        return seconds + (beat - prev) * 60.0 / bpm
+
+    beats = [rng.uniform(-5, 250) for _ in range(200)] + [b for b, _ in tm.points] + [0.0, -1.0]
+    for b in beats:
+        assert tm.to_seconds(b) == ref(b)

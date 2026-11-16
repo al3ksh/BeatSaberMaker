@@ -6,9 +6,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any
-
-from typing import Callable
+from typing import Any, Callable
 
 from bsmaker.formats.model import (Arc, BeatMap, Bomb, Chain, Difficulty, DifficultyFlags, Layers,
                                    LightEvent, Note, Obstacle)
@@ -117,6 +115,11 @@ def _i(v: object) -> int:
     return int(round(_f(v)))
 
 
+def _g(e: dict, key: str, default: float = 0) -> object:
+    """Missing fields take the format default (v3.3+ omits zeros), like the note parser."""
+    return e.get(key, default)
+
+
 def _entries(data: dict, key: str) -> list:
     v = data.get(key)
     return v if isinstance(v, list) else []
@@ -143,52 +146,52 @@ def _parse_layers(data: dict, schema: str, to_s: Callable[[float], float]) -> La
                 dropped += 1
 
     def v2_wall(e: dict) -> None:
-        t = _f(e["_time"])
-        typ = e["_type"]
+        t = _f(_g(e, "_time"))
+        typ = e["_type"]  # needed to know the wall shape
         if typ not in (0, 1) or isinstance(typ, bool):
             raise _Bad
-        dur = _f(e["_duration"])
-        x = _i(e["_lineIndex"])
-        w = _i(e["_width"])
+        dur = _f(_g(e, "_duration"))
+        x = _i(_g(e, "_lineIndex"))
+        w = _i(_g(e, "_width"))
         obst.append(Obstacle(to_s(t), t, to_s(t + dur) - to_s(t), dur, x,
                              0 if typ == 0 else 2, w, 5 if typ == 0 else 3))
 
     def v2_bomb(e: dict) -> None:
-        t = _f(e["_time"])
-        bombs.append(Bomb(to_s(t), t, _i(e["_lineIndex"]), _i(e["_lineLayer"])))
+        t = _f(_g(e, "_time"))
+        bombs.append(Bomb(to_s(t), t, _i(_g(e, "_lineIndex")), _i(_g(e, "_lineLayer"))))
 
     def v2_event(e: dict) -> None:
-        t = _f(e["_time"])
-        typ = _i(e["_type"])
-        fv = _f(e["_floatValue"]) if "_floatValue" in e else 1.0
-        lights.append(LightEvent(to_s(t), t, typ, _i(e["_value"]), fv))
+        t = _f(_g(e, "_time"))
+        typ = _i(_g(e, "_type"))
+        fv = _f(_g(e, "_floatValue")) if "_floatValue" in e else 1.0
+        lights.append(LightEvent(to_s(t), t, typ, _i(_g(e, "_value")), fv))
 
     def v3_wall(e: dict) -> None:
-        t = _f(e["b"])
-        dur = _f(e["d"])
-        obst.append(Obstacle(to_s(t), t, to_s(t + dur) - to_s(t), dur, _i(e["x"]), _i(e["y"]),
-                             _i(e["w"]), _i(e["h"])))
+        t = _f(_g(e, "b"))
+        dur = _f(_g(e, "d"))
+        obst.append(Obstacle(to_s(t), t, to_s(t + dur) - to_s(t), dur, _i(_g(e, "x")), _i(_g(e, "y")),
+                             _i(_g(e, "w")), _i(_g(e, "h"))))
 
     def v3_bomb(e: dict) -> None:
-        t = _f(e["b"])
-        bombs.append(Bomb(to_s(t), t, _i(e["x"]), _i(e["y"])))
+        t = _f(_g(e, "b"))
+        bombs.append(Bomb(to_s(t), t, _i(_g(e, "x")), _i(_g(e, "y"))))
 
     def v3_arc(e: dict) -> None:
-        t = _f(e["b"])
-        tb = _f(e["tb"])
-        arcs.append(Arc(to_s(t), t, _i(e["c"]), _i(e["x"]), _i(e["y"]), _i(e["d"]), to_s(tb), tb,
-                        _i(e["tx"]), _i(e["ty"]), _i(e["tc"])))
+        t = _f(_g(e, "b"))
+        tb = _f(_g(e, "tb"))
+        arcs.append(Arc(to_s(t), t, _i(_g(e, "c")), _i(_g(e, "x")), _i(_g(e, "y")), _i(_g(e, "d")), to_s(tb), tb,
+                        _i(_g(e, "tx")), _i(_g(e, "ty")), _i(_g(e, "tc"))))
 
     def v3_chain(e: dict) -> None:
-        t = _f(e["b"])
-        tb = _f(e["tb"])
-        chains.append(Chain(to_s(t), t, _i(e["c"]), _i(e["x"]), _i(e["y"]), _i(e["d"]), to_s(tb),
-                            tb, _i(e["tx"]), _i(e["ty"]), _i(e["sc"]), _f(e["s"])))
+        t = _f(_g(e, "b"))
+        tb = _f(_g(e, "tb"))
+        chains.append(Chain(to_s(t), t, _i(_g(e, "c")), _i(_g(e, "x")), _i(_g(e, "y")), _i(_g(e, "d")), to_s(tb),
+                            tb, _i(_g(e, "tx")), _i(_g(e, "ty")), _i(_g(e, "sc", 1)), _f(_g(e, "s", 1.0))))
 
     def v3_event(e: dict) -> None:
-        t = _f(e["b"])
-        fv = _f(e["f"]) if "f" in e else 1.0
-        lights.append(LightEvent(to_s(t), t, _i(e["et"]), _i(e["i"]), fv))
+        t = _f(_g(e, "b"))
+        fv = _f(_g(e, "f")) if "f" in e else 1.0
+        lights.append(LightEvent(to_s(t), t, _i(_g(e, "et")), _i(_g(e, "i")), fv))
 
     group = False
     if schema == "v2":
