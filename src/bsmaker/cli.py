@@ -489,7 +489,11 @@ def generate_cmd(
         out: Path | None = typer.Option(None, "--out", help="Output folder "
                                         "(default: the CustomLevels folder)."),
         overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing BSM map."),
-        device: str | None = typer.Option(None, "--device", help="cuda or cpu.")) -> None:
+        device: str | None = typer.Option(None, "--device", help="cuda or cpu."),
+        timing_ckpt: Path | None = typer.Option(None, "--timing-ckpt", help="Timing checkpoint "
+                                                "(default: <data_dir>/checkpoints/timing/best.pt)."),
+        pattern_ckpt: Path | None = typer.Option(None, "--pattern-ckpt", help="Pattern checkpoint "
+                                                 "(default: <data_dir>/checkpoints/pattern/best.pt).")) -> None:
     """Generate a Beat Saber map folder from a song."""
     if not 0.5 <= nps <= 12:
         typer.echo("--nps must be between 0.5 and 12", err=True)
@@ -516,8 +520,8 @@ def generate_cmd(
         require_ffmpeg()
     except FfmpegMissingError as e:
         _fail(f"{e}; install ffmpeg and put it on PATH")
-    timing_ck = cfg.checkpoints_dir / "timing" / "best.pt"
-    pattern_ck = cfg.checkpoints_dir / "pattern" / "best.pt"
+    timing_ck = timing_ckpt or cfg.checkpoints_dir / "timing" / "best.pt"
+    pattern_ck = pattern_ckpt or cfg.checkpoints_dir / "pattern" / "best.pt"
     for ck in (timing_ck, pattern_ck):
         if not ck.is_file():
             _fail(f"checkpoint not found: {ck}; train the models first")
