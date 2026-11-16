@@ -483,3 +483,7 @@ def test_run_queue_script_syntax() -> None:
     subprocess.run(["bash", "-n", str(script)], check=True)
     text = script.read_text("utf-8")
     assert "flush_and_unmount" in text and "RESULTS" in text and "colab" in text
+
+
+def test_run_queue_script_has_lf_endings() -> None:
+    assert b"\r" not in (ROOT / "scripts" / "colab" / "run_queue.sh").read_bytes()
