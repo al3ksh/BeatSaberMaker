@@ -126,6 +126,7 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
     beat_s = 60.0 / bpm
     tail_cells = [_chain_tail_cell(n) for n in notes]
     can_chain = [
+        # segments=3 is a placeholder for the rule check (`chain_ok` ignores segment count).
         tc is not None and chain_ok(_build_chain(n, tc, 3, beat_s), idx)
         for n, tc in zip(notes, tail_cells)
     ]
@@ -164,7 +165,8 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
     for i in sorted(picked[0]):
         n = notes[i]
         tc = tail_cells[i]
-        assert tc is not None  # can_chain guarantees a tail cell
+        if tc is None:
+            continue
         segments = 3 + int(np.argmax(p_chain[i, 1:]))
         chains.append(_build_chain(n, tc, segments, beat_s))
     arcs = []
