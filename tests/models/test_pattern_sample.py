@@ -7,7 +7,7 @@ from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
 from bsmaker.models.pattern import sample as S
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import (
-    DEFAULT_DOUBLE_BIAS, DoubleBias, LoadedPattern, _top_p_probs, load_pattern, sample_notes,
+    DEFAULT_DOT_BRAKE, DEFAULT_DOUBLE_BIAS, DOT_TOKENS, DotBrake, DoubleBias, LoadedPattern, _top_p_probs, load_pattern, sample_notes,
     window_gaps)
 from bsmaker.playability.checker import check
 from bsmaker.playability.config import PlayabilityConfig
@@ -236,3 +236,55 @@ def test_double_bias_value_grows_with_run_and_short_gap() -> None:
     assert b.at(0.1, 0) == 1.75
     assert b.at(0.5, 2) == 1.5
     assert b.at(0.5, 9) == 2.0      # run capped at 3
+
+
+def _dot_share(notes) -> float:
+    return sum(n.direction == 8 for n in notes) / len(notes)
+
+
+def test_dot_brake_off_reproduces_unbraked_output(loaded) -> None:
+    t = _times(300)
+    plain = _run(loaded, t, seed=5, dot_brake=None)[0]
+    assert _run(loaded, t, seed=5, dot_brake=DotBrake(0.0, 4))[0] == plain
+
+
+def test_dot_brake_reduces_dot_runs(loaded) -> None:
+    t = _times(800)
+    plain = _run(loaded, t, seed=2, dot_brake=None)[0]
+    braked = _run(loaded, t, seed=2, dot_brake=DotBrake(50.0, 1))[0]
+    assert _dot_share(braked) < _dot_share(plain)
+    assert DEFAULT_DOT_BRAKE != DotBrake(0.0, 4)
+
+
+def test_dots_still_allowed_when_mask_leaves_only_dots(loaded, monkeypatch) -> None:
+    def only_dots(state, t, hand, cfg, other_token=NONE_TOKEN):
+        m = np.zeros(VOCAB_SIZE, bool)
+        m[list(DOT_TOKENS)] = True
+        return m
+    monkeypatch.setattr(S, "allowed", only_dots)
+    notes, _ = _run(loaded, _times(60), dot_brake=DotBrake(80.0, 4))
+    assert notes and all(n.direction == 8 for n in notes)
+
+
+def test_dot_brake_never_samples_masked_token(loaded, monkeypatch) -> None:
+    real = S.allowed
+
+    def no_dots(state, t, hand, cfg, other_token=NONE_TOKEN):
+        m = real(state, t, hand, cfg, other_token=other_token).copy()
+        m[list(DOT_TOKENS)] = False
+        return m
+    monkeypatch.setattr(S, "allowed", no_dots)
+    notes, _ = _run(loaded, _times(200), dot_brake=DotBrake(5.0, 4))
+    assert notes and all(n.direction != 8 for n in notes)
+
+
+@pytest.mark.parametrize("bad", [dict(per_dot=-1.0), dict(per_dot=float("nan")), dict(cap=-1),
+                                 dict(cap=1.5), dict(free=-1), dict(per_dot=float("inf"))])
+def test_dot_brake_rejects_invalid_values(bad) -> None:
+    with pytest.raises(ValueError):
+        DotBrake(**bad)
+
+
+def test_dot_brake_penalty_grows_then_caps() -> None:
+    b = DotBrake(per_dot=0.5, cap=3, free=1)
+    assert [b.penalty(r) for r in (0, 1, 2, 4, 9)] == [0.0, 0.0, 0.5, 1.5, 1.5]
