@@ -38,12 +38,64 @@ function visiblePageNumbers(current: number, total: number): Array<number | "ell
 export interface LibraryViewProps {
   onRegenerate: (entry: LibraryEntry) => void;
   onGoToCreate?: () => void;
+  initialEntries?: LibraryEntry[];
+  initialCovers?: Record<string, string>;
+  initialLoaded?: boolean;
+  onEntriesChanged?: (next: LibraryEntry[]) => void;
+  onCoversChanged?: (next: Record<string, string>) => void;
 }
 
-export function LibraryView({ onRegenerate, onGoToCreate }: LibraryViewProps) {
-  const [entries, setEntries] = useState<LibraryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [covers, setCovers] = useState<Record<string, string>>({});
+function LibrarySkeleton() {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-3.5">
+      <div className="shrink-0 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="h-6 w-24 rounded-lg bg-zinc-800/80 animate-pulse" />
+          <div className="h-5 w-8 rounded-full bg-zinc-800/70 animate-pulse" />
+        </div>
+        <div className="h-8 w-72 rounded-xl bg-zinc-900 border border-zinc-800 animate-pulse" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Card key={i} className="p-3.5 space-y-3">
+            <div className="flex gap-3">
+              <div className="h-14 w-14 rounded-xl bg-zinc-800/80 animate-pulse shrink-0" />
+              <div className="flex-1 space-y-2 py-1">
+                <div className="h-4 w-3/4 rounded bg-zinc-800/80 animate-pulse" />
+                <div className="h-3 w-1/2 rounded bg-zinc-800/60 animate-pulse" />
+                <div className="h-2.5 w-1/3 rounded bg-zinc-800/50 animate-pulse" />
+              </div>
+            </div>
+            <div className="flex gap-1.5">
+              <div className="h-5 w-12 rounded-full bg-zinc-800/70 animate-pulse" />
+              <div className="h-5 w-14 rounded-full bg-zinc-800/70 animate-pulse" />
+            </div>
+            <div className="flex justify-between pt-2 border-t border-zinc-800/80">
+              <div className="flex gap-1.5">
+                <div className="h-7 w-24 rounded-lg bg-zinc-800/70 animate-pulse" />
+                <div className="h-7 w-24 rounded-lg bg-zinc-800/70 animate-pulse" />
+              </div>
+              <div className="h-7 w-16 rounded-lg bg-zinc-800/60 animate-pulse" />
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function LibraryView({
+  onRegenerate,
+  onGoToCreate,
+  initialEntries,
+  initialCovers,
+  initialLoaded = false,
+  onEntriesChanged,
+  onCoversChanged,
+}: LibraryViewProps) {
+  const [entries, setEntries] = useState<LibraryEntry[]>(initialEntries ?? []);
+  const [loading, setLoading] = useState(!initialLoaded);
+  const [covers, setCovers] = useState<Record<string, string>>(initialCovers ?? {});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -57,6 +109,7 @@ export function LibraryView({ onRegenerate, onGoToCreate }: LibraryViewProps) {
       .then(async (list) => {
         if (!active) return;
         setEntries(list);
+        onEntriesChanged?.(list);
         const loadedCovers: Record<string, string> = {};
         for (const item of list) {
           if (item.coverCachePath) {
@@ -64,7 +117,10 @@ export function LibraryView({ onRegenerate, onGoToCreate }: LibraryViewProps) {
             if (url) loadedCovers[item.id] = url;
           }
         }
-        if (active) setCovers(loadedCovers);
+        if (active) {
+          setCovers(loadedCovers);
+          onCoversChanged?.(loadedCovers);
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -111,6 +167,7 @@ export function LibraryView({ onRegenerate, onGoToCreate }: LibraryViewProps) {
   async function handleConfirmDelete(id: string) {
     const next = await window.bsm.deleteLibraryEntry(id);
     setEntries(next);
+    onEntriesChanged?.(next);
     setConfirmDeleteId(null);
   }
 
@@ -125,7 +182,7 @@ export function LibraryView({ onRegenerate, onGoToCreate }: LibraryViewProps) {
   }
 
   if (loading) {
-    return <p className="text-sm text-zinc-400">{EN.common.loading}</p>;
+    return <LibrarySkeleton />;
   }
 
   if (entries.length === 0) {

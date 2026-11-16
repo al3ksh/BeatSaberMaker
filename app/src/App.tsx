@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Cpu, FolderHeart, PlusCircle, Settings as SettingsIcon } from "lucide-react";
 import appIcon from "./assets/icon.png";
 import { EN } from "./i18n/en";
+import { EngineForgeAnimation } from "./components/EngineForgeAnimation";
 import { FirstRun } from "./components/FirstRun";
 import { LibraryView } from "./components/LibraryView";
 import { SettingsModal } from "./components/SettingsModal";
@@ -23,6 +24,9 @@ export function App() {
   const [regenerateTarget, setRegenerateTarget] = useState<LibraryEntry | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const [libraryEntries, setLibraryEntries] = useState<LibraryEntry[]>([]);
+  const [libraryCovers, setLibraryCovers] = useState<Record<string, string>>({});
+  const [libraryLoaded, setLibraryLoaded] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -33,6 +37,21 @@ export function App() {
       setInfo(state.info);
       setNeedsFirstRun(state.needsEnginePack || !state.settings.customLevels);
     });
+    window.bsm?.listLibrary?.().then(async (list) => {
+      if (!active) return;
+      setLibraryEntries(list);
+      const nextCovers: Record<string, string> = {};
+      for (const item of list) {
+        if (item.coverCachePath) {
+          const url = await window.bsm.readCoverDataUrl?.(item.coverCachePath);
+          if (url) nextCovers[item.id] = url;
+        }
+      }
+      if (active) {
+        setLibraryCovers(nextCovers);
+        setLibraryLoaded(true);
+      }
+    }).catch(() => {});
     const unsubUpdate = window.bsm?.onUpdateStatus?.((st) => {
       setUpdateStatus(st);
     });
@@ -56,32 +75,25 @@ export function App() {
             transition={{ duration: 0.22, ease: "easeOut" }}
             className="h-full w-full flex flex-col items-center justify-center gap-5 px-6"
           >
-            <motion.img
-              src={appIcon}
-              alt={EN.appName}
+            <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.28, ease: "easeOut" }}
-              className="h-16 w-16 rounded-2xl shadow-xl shadow-black/60"
-            />
-            <div className="text-center space-y-1">
-              <div className="text-base font-semibold tracking-tight text-zinc-100">
-                {EN.appName}
-              </div>
-              <div className="text-xs text-zinc-500">{EN.common.startingEngine}</div>
-            </div>
-            <div className="w-48 h-1 rounded-full bg-zinc-900 border border-zinc-800/90 overflow-hidden">
-              <motion.div
-                className="h-full w-1/2 rounded-full bg-gradient-to-r from-red-500 via-purple-500 to-blue-500"
-                initial={{ x: "-100%" }}
-                animate={{ x: "200%" }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 1.3,
-                  ease: "easeInOut",
-                }}
+              className="flex items-center gap-3"
+            >
+              <img
+                src={appIcon}
+                alt={EN.appName}
+                className="h-11 w-11 rounded-xl shadow-lg shadow-black/60"
               />
-            </div>
+              <div>
+                <div className="text-base font-semibold tracking-tight text-zinc-100">
+                  {EN.appName}
+                </div>
+                <div className="text-xs text-zinc-500">{EN.common.startingEngine}</div>
+              </div>
+            </motion.div>
+            <EngineForgeAnimation />
           </motion.div>
         )}
 
@@ -193,6 +205,14 @@ export function App() {
                 />
               ) : (
                 <LibraryView
+                  initialEntries={libraryEntries}
+                  initialCovers={libraryCovers}
+                  initialLoaded={libraryLoaded}
+                  onEntriesChanged={(next) => {
+                    setLibraryEntries(next);
+                    setLibraryLoaded(true);
+                  }}
+                  onCoversChanged={setLibraryCovers}
                   onRegenerate={(entry) => {
                     setRegenerateTarget(entry);
                     setTab("create");
