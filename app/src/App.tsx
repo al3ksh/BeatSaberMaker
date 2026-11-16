@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { Cpu, FolderHeart, PlusCircle, Settings as SettingsIcon } from "lucide-react";
 import { PL } from "./i18n/pl";
 import { FirstRun } from "./components/FirstRun";
+import { LibraryView } from "./components/LibraryView";
 import { SettingsModal } from "./components/SettingsModal";
 import { Badge, Button } from "./components/ui/primitives";
-import type { EngineInfo, Settings, StartupState, UpdateStatus } from "./types";
+import { Wizard } from "./components/wizard/Wizard";
+import type { EngineInfo, LibraryEntry, Settings, StartupState, UpdateStatus } from "./types";
 
 type Tab = "create" | "library";
 
@@ -14,6 +16,7 @@ export function App() {
   const [info, setInfo] = useState<EngineInfo | null>(null);
   const [needsFirstRun, setNeedsFirstRun] = useState(false);
   const [tab, setTab] = useState<Tab>("create");
+  const [regenerateTarget, setRegenerateTarget] = useState<LibraryEntry | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
 
@@ -112,9 +115,18 @@ export function App() {
 
       <main className="flex-1 max-w-4xl w-full mx-auto p-6">
         {tab === "create" ? (
-          <div className="text-sm text-zinc-400">{PL.nav.create}</div>
+          <Wizard
+            regenerateTarget={regenerateTarget}
+            onClearRegenerate={() => setRegenerateTarget(null)}
+            onGoToLibrary={() => setTab("library")}
+          />
         ) : (
-          <div className="text-sm text-zinc-400">{PL.nav.library}</div>
+          <LibraryView
+            onRegenerate={(entry) => {
+              setRegenerateTarget(entry);
+              setTab("create");
+            }}
+          />
         )}
       </main>
 
