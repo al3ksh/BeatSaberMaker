@@ -1,399 +1,240 @@
 import { motion } from "framer-motion";
 
-interface BlockSpec {
-  id: string;
-  fill: string;
-  rim: string;
-  glow: string;
-  arrowPoints: string;
+const CYCLE_S = 3.0;
+const CUBE_OFFSETS = [0, 1, 2];
+
+interface IsoCubeProps {
+  variant: "light" | "muted";
   delay: number;
 }
 
-const CYCLE_S = 2.8;
+function IsoCube({ variant, delay }: IsoCubeProps) {
+  const isLight = variant === "light";
+  const topFill = isLight ? "#e4e4e7" : "#71717a";
+  const rightFill = isLight ? "#a1a1aa" : "#52525b";
+  const leftFill = isLight ? "#52525b" : "#3f3f46";
+  const stroke = isLight ? "#f4f4f5" : "#a1a1aa";
+  const arrowStroke = isLight ? "#18181b" : "#e4e4e7";
 
-const BLOCKS: BlockSpec[] = [
-  {
-    id: "red",
-    fill: "#ef4444",
-    rim: "#fca5a5",
-    glow: "#ef4444",
-    // Down-pointing Beat Saber chevron inside 28x28 cube
-    arrowPoints: "8,9 14,15 20,9 20,13.5 14,19.5 8,13.5",
-    delay: 0,
-  },
-  {
-    id: "blue",
-    fill: "#3b82f6",
-    rim: "#93c5fd",
-    glow: "#3b82f6",
-    // Up-pointing Beat Saber chevron inside 28x28 cube
-    arrowPoints: "8,19 14,13 20,19 20,14.5 14,8.5 8,14.5",
-    delay: CYCLE_S / 2,
-  },
-];
-
-function NoteArtwork({ spec, idSuffix }: { spec: BlockSpec; idSuffix: string }) {
   return (
-    <g>
-      <rect
-        x={0}
-        y={0}
-        width={28}
-        height={28}
-        rx={4}
-        fill={spec.fill}
-        stroke={spec.rim}
-        strokeWidth={1.1}
-        strokeOpacity={0.7}
+    <motion.g
+      style={{ transformOrigin: "0px -7px" }}
+      initial={{ x: 86, y: 66, rotate: 0, opacity: 0 }}
+      animate={{
+        x: [86, 102, 192, 203, 207],
+        y: [66, 74, 119, 129, 154],
+        rotate: [0, 0, 0, 14, 28],
+        opacity: [0, 1, 1, 0.85, 0],
+      }}
+      transition={{
+        duration: CYCLE_S,
+        delay,
+        repeat: Infinity,
+        ease: ["linear", "linear", "easeIn", "easeIn"],
+        times: [0, 0.1, 0.72, 0.84, 1],
+      }}
+    >
+      {/* Subtle contact shadow on belt */}
+      <polygon
+        points="0,-6 13,0.5 0,7 -13,0.5"
+        fill="#000000"
+        fillOpacity={0.35}
       />
-      {/* Inner recessed bevel */}
-      <rect
-        x={3}
-        y={3}
-        width={22}
-        height={22}
-        rx={2.5}
-        fill="#09090b"
-        fillOpacity={0.22}
+      {/* Left face */}
+      <polygon
+        points="-13,-13.5 0,-7 0,6.5 -13,0"
+        fill={leftFill}
+        stroke={stroke}
+        strokeOpacity={0.28}
+        strokeWidth={0.8}
+        strokeLinejoin="round"
       />
-      {/* Directional chevron */}
-      <polygon points={spec.arrowPoints} fill="#ffffff" fillOpacity={0.95} />
-      {/* Top specular highlight */}
-      <rect
-        x={3}
-        y={1.5}
-        width={22}
-        height={1.5}
-        rx={0.75}
-        fill="#ffffff"
-        fillOpacity={0.25}
-        data-block={idSuffix}
+      {/* Front-right face */}
+      <polygon
+        points="0,-7 13,-13.5 13,0 0,6.5"
+        fill={rightFill}
+        stroke={stroke}
+        strokeOpacity={0.35}
+        strokeWidth={0.8}
+        strokeLinejoin="round"
       />
-    </g>
-  );
-}
-
-function ForgedBlockLoop({ spec }: { spec: BlockSpec }) {
-  return (
-    <g>
-      {/* Intact block sliding out of the glowing furnace to the slicer */}
-      <motion.g
-        initial={{ x: 52, y: 55, opacity: 0 }}
-        animate={{
-          x: [52, 92, 210, 210, 210],
-          y: [55, 55, 55, 55, 55],
-          opacity: [0, 1, 1, 0, 0],
-        }}
-        transition={{
-          duration: CYCLE_S,
-          delay: spec.delay,
-          repeat: Infinity,
-          ease: ["linear", "linear", "linear", "linear"],
-          times: [0, 0.08, 0.559, 0.56, 1],
-        }}
-      >
-        <NoteArtwork spec={spec} idSuffix="whole" />
-        {/* Warm amber cooling glow fading out after leaving furnace */}
-        <motion.rect
-          x={0}
-          y={0}
-          width={28}
-          height={28}
-          rx={4}
-          fill="#fb923c"
-          initial={{ opacity: 0.7 }}
-          animate={{ opacity: [0.75, 0.35, 0, 0] }}
-          transition={{
-            duration: CYCLE_S,
-            delay: spec.delay,
-            repeat: Infinity,
-            times: [0, 0.14, 0.28, 1],
-          }}
-        />
-      </motion.g>
-
-      {/* Upper-left sliced half */}
-      <motion.g
-        style={{ transformOrigin: "14px 14px" }}
-        initial={{ x: 210, y: 55, rotate: 0, opacity: 0 }}
-        animate={{
-          x: [210, 210, 210, 272, 318],
-          y: [55, 55, 55, 48, 53],
-          rotate: [0, 0, 0, -14, -18],
-          opacity: [0, 0, 1, 0.95, 0],
-        }}
-        transition={{
-          duration: CYCLE_S,
-          delay: spec.delay,
-          repeat: Infinity,
-          ease: "easeOut",
-          times: [0, 0.559, 0.56, 0.8, 0.96],
-        }}
-      >
-        <g clipPath="url(#bsm-half-tl)">
-          <NoteArtwork spec={spec} idSuffix="tl" />
-          {/* Glowing saber cut seam */}
-          <line x1={27} y1={1} x2={1} y2={27} stroke="#ffffff" strokeWidth={1.8} />
-        </g>
-      </motion.g>
-
-      {/* Lower-right sliced half */}
-      <motion.g
-        style={{ transformOrigin: "14px 14px" }}
-        initial={{ x: 210, y: 55, rotate: 0, opacity: 0 }}
-        animate={{
-          x: [210, 210, 210, 266, 310],
-          y: [55, 55, 55, 61, 63],
-          rotate: [0, 0, 0, 11, 15],
-          opacity: [0, 0, 1, 0.95, 0],
-        }}
-        transition={{
-          duration: CYCLE_S,
-          delay: spec.delay,
-          repeat: Infinity,
-          ease: "easeOut",
-          times: [0, 0.559, 0.56, 0.8, 0.96],
-        }}
-      >
-        <g clipPath="url(#bsm-half-br)">
-          <NoteArtwork spec={spec} idSuffix="br" />
-          <line x1={27} y1={1} x2={1} y2={27} stroke="#ffffff" strokeWidth={1.8} />
-        </g>
-      </motion.g>
-
-      {/* Saber slash beam flash synced at t = 0.56 */}
-      <motion.g
-        initial={{ opacity: 0 }}
-        animate={{ opacity: [0, 0, 1, 0.9, 0, 0] }}
-        transition={{
-          duration: CYCLE_S,
-          delay: spec.delay,
-          repeat: Infinity,
-          times: [0, 0.53, 0.555, 0.59, 0.65, 1],
-        }}
-      >
-        <line
-          x1={242}
-          y1={30}
-          x2={206}
-          y2={84}
-          stroke={spec.glow}
-          strokeWidth={6}
-          strokeLinecap="round"
-          strokeOpacity={0.45}
-        />
-        <line
-          x1={242}
-          y1={30}
-          x2={206}
-          y2={84}
-          stroke="#ffffff"
-          strokeWidth={2}
-          strokeLinecap="round"
-        />
-      </motion.g>
-
-      {/* Tiny crisp sparks flying from the cut */}
-      {[
-        { dx: 18, dy: -16 },
-        { dx: 24, dy: -4 },
-        { dx: -12, dy: -18 },
-        { dx: 14, dy: 10 },
-      ].map((spark, idx) => (
-        <motion.rect
-          key={`${spec.id}-spark-${idx}`}
-          x={224}
-          y={67}
-          width={2.5}
-          height={2.5}
-          rx={0.5}
-          fill={idx % 2 === 0 ? "#ffffff" : spec.rim}
-          initial={{ x: 0, y: 0, opacity: 0 }}
-          animate={{
-            x: [0, 0, spark.dx, spark.dx * 1.4],
-            y: [0, 0, spark.dy, spark.dy * 1.3],
-            opacity: [0, 0, 1, 0],
-          }}
-          transition={{
-            duration: CYCLE_S,
-            delay: spec.delay,
-            repeat: Infinity,
-            ease: "easeOut",
-            times: [0, 0.555, 0.62, 0.74],
-          }}
-        />
-      ))}
-    </g>
+      {/* Top face */}
+      <polygon
+        points="0,-20 13,-13.5 0,-7 -13,-13.5"
+        fill={topFill}
+        stroke={stroke}
+        strokeOpacity={0.55}
+        strokeWidth={0.8}
+        strokeLinejoin="round"
+      />
+      {/* Minimal isometric chevron mark on top face pointing forward-right (+u) */}
+      <polyline
+        points="-4,-14.5 3.5,-13.5 -0.5,-10"
+        fill="none"
+        stroke={arrowStroke}
+        strokeOpacity={0.8}
+        strokeWidth={1.3}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </motion.g>
   );
 }
 
 export function EngineForgeAnimation() {
   return (
-    <div
-      className="select-none pointer-events-none"
-      aria-hidden="true"
-    >
+    <div className="select-none pointer-events-none" aria-hidden="true">
       <svg
-        width="360"
-        height="116"
-        viewBox="0 0 360 116"
+        width="260"
+        height="146"
+        viewBox="0 0 260 146"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        className="overflow-visible"
       >
         <defs>
-          {/* Clips belt & blocks cleanly inside the furnace exit through right fade */}
-          <clipPath id="bsm-conveyor-zone">
-            <rect x={76} y={16} width={270} height={82} />
+          {/* Clips cubes cleanly inside the furnace exit and belt/drop area */}
+          <clipPath id="bsm-iso-exit-clip">
+            <polygon points="88,65 122,48 240,107 240,152 170,152 88,108" />
           </clipPath>
-          <clipPath id="bsm-belt-clip">
-            <rect x={80} y={85} width={258} height={8} rx={4} />
+          {/* Clips scrolling belt ribs to top deck surface */}
+          <clipPath id="bsm-iso-belt-clip">
+            <polygon points="88,81 116,67 208,113 180,127" />
           </clipPath>
-          <clipPath id="bsm-half-tl">
-            <polygon points="0,0 28,0 0,28" />
-          </clipPath>
-          <clipPath id="bsm-half-br">
-            <polygon points="28,0 28,28 0,28" />
-          </clipPath>
-          <linearGradient id="bsm-hearth" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#9a3412" />
-            <stop offset="55%" stopColor="#ea580c" />
-            <stop offset="100%" stopColor="#fbbf24" />
-          </linearGradient>
-          <linearGradient id="bsm-hearth-spill" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#f97316" stopOpacity="0.28" />
-            <stop offset="100%" stopColor="#f97316" stopOpacity="0" />
-          </linearGradient>
-          <linearGradient id="bsm-right-fade" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#09090b" stopOpacity="0" />
-            <stop offset="100%" stopColor="#09090b" stopOpacity="1" />
+          {/* Subtle inner hearth floor glow (pure monochrome) */}
+          <linearGradient id="bsm-mono-hearth" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#52525b" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="#09090b" stopOpacity="0" />
           </linearGradient>
         </defs>
 
-        {/* Conveyor track housing */}
-        <rect
-          x={78}
-          y={84}
-          width={262}
-          height={10}
-          rx={5}
+        {/* Isometric Conveyor Slab */}
+        {/* Belt side face (left) */}
+        <polygon
+          points="88,81 180,127 180,133 88,87"
+          fill="#111114"
+          stroke="#27272a"
+          strokeWidth={0.9}
+          strokeLinejoin="round"
+        />
+        {/* Belt front drop lip */}
+        <polygon
+          points="180,127 208,113 208,119 180,133"
+          fill="#18181b"
+          stroke="#3f3f46"
+          strokeWidth={0.9}
+          strokeLinejoin="round"
+        />
+        {/* Belt top deck */}
+        <polygon
+          points="88,81 116,67 208,113 180,127"
           fill="#141418"
           stroke="#27272a"
-          strokeWidth={1}
+          strokeWidth={0.9}
+          strokeLinejoin="round"
         />
 
-        {/* Animated conveyor belt rollers */}
-        <g clipPath="url(#bsm-belt-clip)">
+        {/* Animated scrolling belt ribs */}
+        <g clipPath="url(#bsm-iso-belt-clip)">
           <motion.g
-            initial={{ x: 0 }}
-            animate={{ x: [0, 20] }}
-            transition={{ repeat: Infinity, duration: 0.45, ease: "linear" }}
+            initial={{ x: 0, y: 0 }}
+            animate={{ x: [0, 16], y: [0, 8] }}
+            transition={{ repeat: Infinity, duration: 0.55, ease: "linear" }}
           >
-            {Array.from({ length: 15 }).map((_, i) => (
-              <rect
-                key={i}
-                x={64 + i * 20}
-                y={87.5}
-                width={8}
-                height={3}
-                rx={1.5}
-                fill="#3f3f46"
-              />
-            ))}
+            {Array.from({ length: 10 }).map((_, idx) => {
+              const bx = 68 + idx * 16;
+              const by = 69 + idx * 8;
+              return (
+                <line
+                  key={idx}
+                  x1={bx - 12}
+                  y1={by + 6}
+                  x2={bx + 12}
+                  y2={by - 6}
+                  stroke="#27272a"
+                  strokeWidth={1.1}
+                />
+              );
+            })}
           </motion.g>
         </g>
 
-        {/* Subtle warm furnace spill light onto conveyor */}
-        <rect x={84} y={50} width={54} height={34} fill="url(#bsm-hearth-spill)" />
-
-        {/* Overhead saber slicer gantry */}
-        <path
-          d="M236 24 L236 16 L248 16"
-          stroke="#27272a"
-          strokeWidth={2}
-          strokeLinecap="round"
-        />
-        <rect
-          x={231}
-          y={22}
-          width={14}
-          height={9}
-          rx={2.5}
+        {/* Furnace Back/Left Casing (behind emerging cubes) */}
+        <polygon
+          points="50,34 86,16 120,33 84,51"
           fill="#18181b"
           stroke="#3f3f46"
           strokeWidth={1}
+          strokeLinejoin="round"
         />
-        <motion.circle
-          cx={238}
-          cy={26.5}
-          r={1.6}
-          fill="#f4f4f5"
-          animate={{ opacity: [0.35, 1, 0.35] }}
-          transition={{ repeat: Infinity, duration: 1.4, ease: "easeInOut" }}
+        <polygon
+          points="50,34 84,51 84,83 50,66"
+          fill="#111114"
+          stroke="#27272a"
+          strokeWidth={1}
+          strokeLinejoin="round"
+        />
+        {/* Inner furnace hearth chamber behind exit arch */}
+        <polygon
+          points="84,51 120,33 120,65 84,83"
+          fill="#09090b"
+          stroke="#27272a"
+          strokeWidth={1}
+          strokeLinejoin="round"
+        />
+        <motion.polygon
+          points="90,80 114,68 114,50 90,62"
+          fill="url(#bsm-mono-hearth)"
+          animate={{ opacity: [0.4, 0.9, 0.4] }}
+          transition={{ repeat: Infinity, duration: 2.0, ease: "easeInOut" }}
         />
 
-        {/* Emerging + sliced blocks (clipped so they emerge from inside furnace) */}
-        <g clipPath="url(#bsm-conveyor-zone)">
-          {BLOCKS.map((spec) => (
-            <ForgedBlockLoop key={spec.id} spec={spec} />
+        {/* Isometric Cubes sliding out and dropping cleanly off the belt end */}
+        <g clipPath="url(#bsm-iso-exit-clip)">
+          {CUBE_OFFSETS.map((idx) => (
+            <IsoCube
+              key={idx}
+              variant={idx % 2 === 0 ? "light" : "muted"}
+              delay={(CYCLE_S / CUBE_OFFSETS.length) * idx}
+            />
           ))}
-          {/* Smooth edge fade-out at right end of belt */}
-          <rect x={312} y={24} width={34} height={64} fill="url(#bsm-right-fade)" />
         </g>
 
-        {/* Furnace ("Piec") drawn on the left edge over block spawn point */}
-        {/* Chimney + rising heat wisps */}
-        <motion.circle
-          cx={38}
-          cy={9}
-          r={2.2}
-          fill="#fb923c"
-          animate={{ y: [0, -7], opacity: [0.45, 0], scale: [0.9, 1.3] }}
-          transition={{ repeat: Infinity, duration: 1.8, ease: "easeOut" }}
-        />
-        <motion.circle
-          cx={42}
-          cy={7}
-          r={1.6}
-          fill="#fbbf24"
-          animate={{ y: [0, -8], opacity: [0.35, 0], scale: [0.8, 1.2] }}
-          transition={{ repeat: Infinity, duration: 1.8, delay: 0.9, ease: "easeOut" }}
-        />
-        <path
-          d="M31 24 L31 13 L45 13 L45 24"
-          fill="#18181b"
-          stroke="#27272a"
-          strokeWidth={1.2}
-        />
-
-        {/* Furnace main casing */}
-        <path
-          d="M18 30 C18 26 21 24 25 24 L76 24 L86 35 L86 94 L18 94 Z"
-          fill="#18181b"
-          stroke="#27272a"
-          strokeWidth={1.2}
-        />
-        {/* Vents / industrial detail */}
-        <line x1={27} y1={35} x2={46} y2={35} stroke="#27272a" strokeWidth={1.5} strokeLinecap="round" />
-        <line x1={27} y1={40} x2={40} y2={40} stroke="#27272a" strokeWidth={1.5} strokeLinecap="round" />
-        <circle cx={29} cy={78} r={2} fill="#27272a" />
-
-        {/* Glowing oven hearth opening */}
-        <path
-          d="M54 84 L54 53 C54 46 60 42 68 42 L84 42 L84 84 Z"
-          fill="#270e07"
+        {/* Furnace Front Portal Frame (above & flanking exit so cubes emerge from inside) */}
+        {/* Upper lintel */}
+        <polygon
+          points="84,51 120,33 120,47 84,65"
+          fill="#141418"
           stroke="#3f3f46"
           strokeWidth={1}
+          strokeLinejoin="round"
         />
-        <motion.path
-          d="M56 83 L56 54 C56 48 61 44 68 44 L82 44 L82 83 Z"
-          fill="url(#bsm-hearth)"
-          animate={{ opacity: [0.68, 0.98, 0.68] }}
-          transition={{ repeat: Infinity, duration: 1.6, ease: "easeInOut" }}
+        {/* Left portal pillar */}
+        <polygon
+          points="84,65 90,62 90,80 84,83"
+          fill="#141418"
+          stroke="#3f3f46"
+          strokeWidth={1}
+          strokeLinejoin="round"
         />
-        {/* Heat-shield baffle strips at mouth */}
-        <rect x={78} y={43} width={2.5} height={14} rx={1} fill="#18181b" fillOpacity={0.85} />
-        <rect x={81.5} y={43} width={2.5} height={16} rx={1} fill="#18181b" fillOpacity={0.75} />
+        {/* Right portal pillar */}
+        <polygon
+          points="114,50 120,47 120,65 114,68"
+          fill="#141418"
+          stroke="#3f3f46"
+          strokeWidth={1}
+          strokeLinejoin="round"
+        />
+
+        {/* Minimal roof vent slot on furnace top (exact 2:1 isometric) */}
+        <line
+          x1={75}
+          y1={38.5}
+          x2={95}
+          y2={28.5}
+          stroke="#52525b"
+          strokeWidth={1.2}
+          strokeLinecap="round"
+        />
       </svg>
     </div>
   );
