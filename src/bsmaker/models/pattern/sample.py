@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,44 @@ class LoadedPattern:
 # With these values up/down is 64%, diagonals 25%, and soft-rule rates stay at the human level.
 DEFAULT_TEMPERATURE = 1.05
 DEFAULT_TOP_P = 0.99
+
+
+@dataclass(frozen=True)
+class DoubleBias:
+    """Extra logit added to the right hand's NONE token when the left hand plays a note.
+
+    It pushes against doubles (both hands on one event) and is larger where the model overdoes
+    them: right after another double (`per_run` per consecutive double, at most `run_cap`) and
+    at short gaps to the previous event (`short` below 0.25 s, `very_short` more below 0.15 s).
+    The mask is applied afterwards, so a token the mask removed stays impossible.
+    """
+    base: float = 0.0
+    short: float = 0.0
+    very_short: float = 0.0
+    per_run: float = 0.0
+    run_cap: int = 4
+
+    def __post_init__(self) -> None:
+        for name in ("base", "short", "very_short", "per_run"):
+            v = getattr(self, name)
+            if not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                raise ValueError(f"DoubleBias.{name} must be a finite number >= 0, got {v!r}")
+        if not isinstance(self.run_cap, int) or isinstance(self.run_cap, bool) or self.run_cap < 0:
+            raise ValueError(f"DoubleBias.run_cap must be an integer >= 0, got {self.run_cap!r}")
+
+    def at(self, gap_s: float, run: int) -> float:
+        """Bias for an event `gap_s` seconds after the previous kept event, after `run` doubles."""
+        b = self.base + self.per_run * min(run, self.run_cap)
+        if gap_s < 0.25:
+            b += self.short
+        if gap_s < 0.15:
+            b += self.very_short
+        return b
+
+
+# Val, 60 difficulties, human event times, seed 0: doubles 24.9% -> 17.2% (human 16.6%), runs of
+# 4+ doubles 521 -> 214 (human 277), left-hand share of notes 0.494 -> 0.501, tv_row_dir 0.061 -> 0.064.
+DEFAULT_DOUBLE_BIAS = DoubleBias(base=0.0, short=0.5, very_short=1.5, per_run=0.25, run_cap=4)
 
 
 def load_pattern(path: Path, device: str) -> LoadedPattern:
@@ -92,14 +131,15 @@ def _pick(logits: torch.Tensor, mask: np.ndarray, temperature: float, top_p: flo
 def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarray, nps: float,
                  styles: Iterable[str], seed: int, cfg: PlayabilityConfig, device: str,
                  temperature: float = DEFAULT_TEMPERATURE,
-                 top_p: float = DEFAULT_TOP_P) -> tuple[list[Note], SampleReport]:
+                 top_p: float = DEFAULT_TOP_P,
+                 double_bias: DoubleBias | None = DEFAULT_DOUBLE_BIAS) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
 
     The model works on the mel frame grid; the mask must hold both on frame times (what `to_events`
     and `check` see) and on the exact planned times (what the game plays), so two playability
     states are kept and their masks are ANDed. Returned notes carry the exact planned times.
     Events landing on an already used frame (first planned time wins) are counted as frame
-    collisions, not as skipped.
+    collisions, not as skipped. `double_bias=None` switches the double-note calibration off.
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
@@ -129,6 +169,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     state_x = initial_state()
     kept_idx: list[int] = []        # indices into `times` of kept events
     kept_tok: list[tuple[int, int]] = []
+    run = 0                         # consecutive doubles ending at the last kept event
     with torch.inference_mode():
         for i, t in enumerate(times.tolist()):
             k = min(len(kept_idx), ctx - 1)
@@ -147,6 +188,12 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             mask_l = allowed(state, t, 0, cfg) & allowed(state_x, te, 0, cfg)
             left = _pick(left_lg, mask_l, temperature, top_p, gen, masses)
             right_lg = model.right_logits(h, torch.tensor([left], device=dev))[0].float().cpu()
+            if double_bias is not None and left != NONE_TOKEN:
+                gap = t - times[kept_idx[-1]] if kept_idx else math.inf
+                bias = double_bias.at(gap, run)
+                if bias:
+                    right_lg = right_lg.clone()
+                    right_lg[NONE_TOKEN] += bias
             mask_r = (allowed(state, t, 1, cfg, other_token=left)
                       & allowed(state_x, te, 1, cfg, other_token=left))
             right = _pick(right_lg, mask_r, temperature, top_p, gen, masses)
@@ -166,6 +213,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             state_x = advance(state_x, te, left, right)
             kept_idx.append(i)
             kept_tok.append((left, right))
+            run = run + 1 if left != NONE_TOKEN and right != NONE_TOKEN else 0
     report = SampleReport(n_events, n_skipped, n_fallback,
                           float(np.mean(masses)) if masses else 0.0, n_collisions)
     return notes, report
