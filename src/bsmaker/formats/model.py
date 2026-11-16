@@ -16,6 +16,77 @@ class Note:
 
 
 @dataclass(frozen=True)
+class Obstacle:
+    time_s: float
+    beat: float
+    duration_s: float
+    duration_beats: float
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+@dataclass(frozen=True)
+class Bomb:
+    time_s: float
+    beat: float
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class Arc:
+    time_s: float
+    beat: float
+    color: int
+    x: int
+    y: int
+    d: int
+    tail_time_s: float
+    tail_beat: float
+    tx: int
+    ty: int
+    td: int
+
+
+@dataclass(frozen=True)
+class Chain:
+    time_s: float
+    beat: float
+    color: int
+    x: int
+    y: int
+    d: int
+    tail_time_s: float
+    tail_beat: float
+    tx: int
+    ty: int
+    segments: int
+    squish: float
+
+
+@dataclass(frozen=True)
+class LightEvent:
+    time_s: float
+    beat: float
+    type: int
+    value: int
+    float_value: float
+
+
+@dataclass(frozen=True)
+class Layers:
+    bombs: tuple[Bomb, ...]
+    obstacles: tuple[Obstacle, ...]
+    arcs: tuple[Arc, ...]
+    chains: tuple[Chain, ...]
+    lights: tuple[LightEvent, ...]
+    group_lighting: bool
+    dropped: int
+
+
+@dataclass(frozen=True)
 class DifficultyFlags:
     has_bpm_changes: bool
     has_offgrid_notes: bool
@@ -39,6 +110,7 @@ class Difficulty:
     n_arcs: int
     n_chains: int
     flags: DifficultyFlags
+    layers: Layers | None = None
 
 
 @dataclass(frozen=True)
@@ -54,3 +126,4 @@ class BeatMap:
     suggestions: tuple[str, ...]
     difficulties: tuple[Difficulty, ...]
     problems: tuple[str, ...]
+    environment: str = ""
