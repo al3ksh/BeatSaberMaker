@@ -88,8 +88,8 @@ export function EngineForgeAnimation() {
   return (
     <div className="select-none pointer-events-none" aria-hidden="true">
       <svg
-        width="260"
-        height="176"
+        width="390"
+        height="264"
         viewBox="0 0 260 176"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"

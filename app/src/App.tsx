@@ -73,24 +73,24 @@ export function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.985 }}
             transition={{ duration: 0.22, ease: "easeOut" }}
-            className="h-full w-full flex flex-col items-center justify-center gap-5 px-6"
+            className="h-full w-full flex flex-col items-center justify-center gap-7 px-6"
           >
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.28, ease: "easeOut" }}
-              className="flex items-center gap-3"
+              className="flex items-center gap-4"
             >
               <img
                 src={appIcon}
                 alt={EN.appName}
-                className="h-11 w-11 rounded-xl shadow-lg shadow-black/60"
+                className="h-16 w-16 rounded-2xl shadow-xl shadow-black/60"
               />
               <div>
-                <div className="text-base font-semibold tracking-tight text-zinc-100">
+                <div className="text-2xl font-semibold tracking-tight text-zinc-100">
                   {EN.appName}
                 </div>
-                <div className="text-xs text-zinc-500">{EN.common.startingEngine}</div>
+                <div className="text-sm text-zinc-400">{EN.common.startingEngine}</div>
               </div>
             </motion.div>
             <EngineForgeAnimation />
