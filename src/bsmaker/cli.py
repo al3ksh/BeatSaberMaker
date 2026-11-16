@@ -186,6 +186,39 @@ def build_events() -> None:
     print(f"wrote {cfg.base_dir / 'dataset_stats.json'}")
 
 
+@data_app.command("build-layers")
+def build_layers() -> None:
+    """Pack lights, walls, bombs and ornaments into the layer cache; write layer_stats.json."""
+    from bsmaker.data.events_cache import EventCache
+    from bsmaker.data.layer_stats import compute_layer_stats, write_layer_stats
+    from bsmaker.data.layers_cache import LayerCache, build_layer_cache
+    from bsmaker.data.stats import load_stats
+
+    cfg = load_config()
+    stats_path = cfg.base_dir / "dataset_stats.json"
+    if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
+        _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
+    if not stats_path.is_file():
+        _fail(f"{stats_path} not found; run `bsmaker data build-events`")
+    conn = open_manifest(cfg.manifest_path)
+    t = build_layer_cache(conn, cfg.layers_dir, cfg.events_dir, progress_every=500)
+    ls = compute_layer_stats(LayerCache.load(cfg.layers_dir), EventCache.load(cfg.events_dir),
+                             load_stats(stats_path))
+    out = cfg.base_dir / "layer_stats.json"
+    write_layer_stats(ls, out)
+    print(f"difficulties: {t['entries']}, v4 skipped: {t['v4']}, unreadable or missing: {t['empty']}")
+    print(f"arcs: {t['n_arcs']} (unmatched {t['arcs_unmatched']}), chains: {t['n_chains']} "
+          f"(unmatched {t['chains_unmatched']}), walls: {t['n_walls']}, "
+          f"bomb groups: {t['n_bomb_groups']}, light events: {t['n_lights']}")
+    print(f"wall classes: flash {t['wall_flash']}, side {t['wall_side']}, centre {t['wall_centre']}; "
+          f"unsupported flash/side shapes: {t['walls_unsupported']}")
+    print(f"dropped objects: {t['dropped']}, light events skipped: {t['lights_skipped']}, "
+          f"duplicate light events: {t['lights_duplicate']}")
+    print(f"lightshow-eligible difficulties: {t['lights_ok']}")
+    print(f"bomb vocabulary: {len(ls['bomb_vocab'])} masks, coverage {ls['bomb_coverage']:.3f}")
+    print(f"wrote {out}")
+
+
 @data_app.command("fetch-metadata")
 def fetch_metadata_cmd() -> None:
     """Fetch BeatSaver metadata (tags, ratings, flags) for indexed maps; safe to repeat."""

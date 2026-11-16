@@ -34,6 +34,10 @@ class Config:
         return self.data_dir / "events"
 
     @property
+    def layers_dir(self) -> Path:
+        return self.data_dir / "layers"
+
+    @property
     def checkpoints_dir(self) -> Path:
         return self.data_dir / "checkpoints"
 
