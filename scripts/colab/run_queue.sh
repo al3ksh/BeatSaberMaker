@@ -11,6 +11,7 @@ finished=0
 finish() {  # flush Drive and stop the paid runtime; runs once on the normal path, again (harmlessly) from the trap
   [ "$finished" = 1 ] && return
   finished=1
+  trap '' INT TERM HUP  # a second Ctrl-C must not skip colab stop
   printf '%s\n' 'from google.colab import drive' 'drive.flush_and_unmount()' 'print("drive flushed")' | "$C" exec -s train --timeout 900 >> queue.log 2>&1
   "$C" stop -s train >> queue.log 2>&1
   echo "$(date -u +%FT%TZ) QUEUE DONE ($1) $("$C" usage | head -1)" >> queue.log

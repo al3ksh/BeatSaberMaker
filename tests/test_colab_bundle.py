@@ -498,14 +498,15 @@ def _run_queue(tmp_path: Path, queue: str, code: str, results: str | None = None
         pytest.skip("no usable bash on this machine")
     home = tmp_path / "bsm home"
     home.mkdir()
-    (home / "queue.txt").write_text(queue)
+    (home / "queue.txt").write_text(queue, newline="\n")
     stub = tmp_path / "colab"
     stub.write_text(
         '#!/bin/bash\n'
         'echo "$*" >> "$STUB_LOG"\n'
         'case "$1" in\n'
         '  exec) if [ "$4" = "-f" ]; then echo "vm_train: exit code $STUB_CODE"; else cat > /dev/null; fi;;\n'
-        'esac\n')
+        'esac\n', newline="\n")
+    stub.chmod(0o755)
     env = dict(os.environ, COLAB=str(stub), BSM_DIR=str(home), QUEUE_SLEEP="0",
                STUB_LOG=str(tmp_path / "calls.log"), STUB_CODE=code)
     args = [bash, str(ROOT / "scripts" / "colab" / "run_queue.sh")] + ([results] if results else [])
@@ -532,7 +533,7 @@ def test_run_queue_downloads_from_results_with_spaces(tmp_path: Path) -> None:
     assert dl == [f"download -s train {res}/o1/best.pt ckpt/o1/best.pt",
                   f"download -s train {res}/o1/log.jsonl ckpt/o1/log.jsonl"]
     assert (home / "ckpt" / "o1").is_dir()
-    assert calls[-1].startswith("usage") or calls[-2].startswith("stop -s train")
+    assert sum(c.startswith("stop -s train") for c in calls) == 1
 
 
 def test_vm_setup_reunpacks_a_changed_layers_tar(drive: Path, tmp_path: Path, capsys) -> None:
