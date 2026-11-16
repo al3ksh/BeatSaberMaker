@@ -9,7 +9,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-PATHS = ["src", "pyproject.toml", "dataset_stats.json", "playability.toml"]
+PATHS = ["src", "pyproject.toml", "dataset_stats.json", "layer_stats.json",
+         "playability.toml"]
 DEFAULT_OUT = Path(r"F:\BeatSaberMakerData\upload\bsmaker-code.zip")
 
 
@@ -85,6 +86,31 @@ def build_delta(base_index: Path, data_dir: Path, out_dir: Path) -> tuple[Path, 
     return out, len(new_keys)
 
 
+def build_layers(data_dir: Path, out_dir: Path) -> tuple[Path, int]:
+    """Write bsmaker-layers.tar holding layers/ (regular files only); returns (path, file count)."""
+    out = out_dir / "bsmaker-layers.tar"
+    if out.exists():
+        raise RuntimeError(f"refusing to overwrite {out}")
+    src = data_dir / "layers"
+    if not (src / "index.json").is_file():
+        raise RuntimeError(f"no layer cache in {src}")
+    files = sorted(f for f in src.iterdir()
+                   if f.is_file() and not f.is_symlink() and not f.name.startswith(".")
+                   and not f.name.endswith((".tmp", ".partial")))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        with tarfile.open(tmp, "w") as tf:
+            tf.add(src, arcname="layers", recursive=False)
+            for f in files:
+                tf.add(f, arcname=f"layers/{f.name}")
+        tmp.replace(out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return out, len(files)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -92,7 +118,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base-index", type=Path, help="events/index.json of the base tar")
     ap.add_argument("--data-dir", type=Path)
     ap.add_argument("--out-dir", type=Path)
+    ap.add_argument("--layers", action="store_true", help="build the layers data tar instead")
     args = ap.parse_args(argv)
+    if args.layers:
+        if not (args.data_dir and args.out_dir):
+            ap.error("--layers needs --data-dir and --out-dir")
+        try:
+            out, n = build_layers(args.data_dir, args.out_dir)
+        except (RuntimeError, OSError) as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(f"{out}  {n} files  {out.stat().st_size / 1e6:.2f} MB")
+        return 0
     if args.delta:
         if not (args.base_index and args.data_dir and args.out_dir):
             ap.error("--delta needs --base-index, --data-dir and --out-dir")

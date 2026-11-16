@@ -83,3 +83,23 @@ rerun the setup if it is gone), then re-run exactly the same training command: t
     colab usage                                  # record after
 
 Checkpoints are already on Drive; fetch them to the PC from there.
+
+## Layer models and the queue runner
+
+Layer data: `python scripts/make_colab_bundle.py --layers --data-dir <data> --out-dir <out>` writes
+`bsmaker-layers.tar` (the `layers/` cache); put it on Drive next to the other tars. `vm_setup.py`
+unpacks it when present (marker `.layers.done`) and refuses a layers index whose length differs from
+the events index. `layer_stats.json` travels in the code zip.
+
+Layer runs: `vm_train.py --model ornaments|layer-when|layer-what --name RUN` writes to
+`<drive-dir>/checkpoints/layers/RUN` (copy the winner to `<data_dir>/checkpoints/layers/<name>/best.pt`
+with `<name>` one of `ornaments`, `decor-when`, `decor-what`, `lights-when`, `lights-what`).
+
+Queue: `scripts/colab/run_queue.sh [RESULTS]` (copy it to `~/bsm-colab` on the Pi next to
+`vm_train.py`). `queue.txt` holds one run per line, `<model> <run-name> <options...>`; each run gets up
+to three tries, then `best.pt` and `log.jsonl` are downloaded to `ckpt/<run>/`, Drive is flushed
+(`drive.flush_and_unmount()`) and the session stopped (`colab stop`). `RESULTS` is the remote results
+folder (default `.../checkpoints/gen2`; pass `.../checkpoints/layers` for layer runs). Before starting
+the queue, mount Drive once; only the user can do this:
+
+    BROWSER=echo colab drivemount -s train
