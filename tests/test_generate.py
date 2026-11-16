@@ -9,17 +9,25 @@ import torch
 
 from bsmaker import generate as G
 from bsmaker.formats.events import to_events
-from bsmaker.formats.model import Note
+from bsmaker.formats.layer_tokens import WALL_VOCAB
+from bsmaker.formats.model import Bomb, Layers, Note, Obstacle
 from bsmaker.formats.reader import read_map
 from bsmaker.generate import (
-    GenerateError, base_half_jump_beats, generate_map, pick_njs, pick_rank, reaction_offset,
-    safe_title)
+    GenerateError, auto_ornaments_level, base_half_jump_beats, generate_map, pick_njs,
+    pick_rank, reaction_offset, safe_title)
+from bsmaker.layers_generate import LayerModels
+from bsmaker.models.layers.spec import LIGHTS, channel_mask, decor_spec
+from bsmaker.models.layers.what import LoadedWhat, WhatConfig, WhatModel
+from bsmaker.models.layers.when import LoadedWhen, WhenConfig, WhenModel
+from bsmaker.models.ornaments.model import OrnamentConfig, OrnamentModel
+from bsmaker.models.ornaments.sample import LoadedOrnaments
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import LoadedPattern, SampleReport
 from bsmaker.models.timing.decode import LoadedTiming
 from bsmaker.models.timing.model import TimingConfig, TimingModel
-from bsmaker.playability.checker import check
+from bsmaker.playability.checker import Violation, check
 from bsmaker.playability.config import PlayabilityConfig
+from bsmaker.playability.layers import check_layers
 
 STATS = {
     "mel_mean": 0.0, "mel_std": 1.0, "coverage_median": 0.8, "nps_bins": [0.0, 3.0, 100.0],
@@ -271,3 +279,215 @@ def test_reaction_offset_clamps_outside_the_bins_and_at_the_game_minimum():
     # 30 BPM: 0.483 s is 0.24 beats, below the game's 0.25-beat floor
     off = reaction_offset(10.0, 21.0, 30.0)
     assert base_half_jump_beats(30.0, 21.0) + off == pytest.approx(0.25, abs=1e-3)
+
+
+GOLDEN_GEN = Path(__file__).parent / "fixtures" / "generate_golden"
+BOMB_VOCAB = [1, 2, 1 << 5]
+LAYER_STATS = {
+    "nps_bins": [0.0, 100.0],
+    "bomb_vocab": BOMB_VOCAB,
+    "rates": {
+        "arcs": [[6.0, 12.0, 18.0]],
+        "chains": [[6.0, 12.0, 18.0]],
+        "walls": [[6.0, 12.0, 18.0]],
+        "bomb_groups": [[4.0, 8.0, 12.0]],
+        **{f"light_ch{c}": [[4.0, 8.0, 12.0]] for c in range(9)},
+    },
+}
+
+
+def make_layer_models(seed: int = 0) -> LayerModels:
+    torch.manual_seed(seed)
+    ocfg = OrnamentConfig(d_model=16, n_layers=1, n_heads=2, context=16, dropout=0.0)
+    orn = LoadedOrnaments(OrnamentModel(ocfg).eval(), ocfg, STATS)
+
+    dspec = decor_spec(LAYER_STATS)
+    dstats = dict(STATS, bomb_masks=BOMB_VOCAB)
+    dw_cfg = WhenConfig(n_channels=dspec.n_channels, d_model=16, n_layers=1, n_heads=2, window=128, dropout=0.0)
+    dv_cfg = WhatConfig(n_channels=dspec.n_channels, vocab_size=dspec.vocab_size,
+                        d_model=16, n_layers=1, n_heads=2, context=16, dropout=0.0)
+    lw_cfg = WhenConfig(n_channels=LIGHTS.n_channels, d_model=16, n_layers=1, n_heads=2, window=128, dropout=0.0)
+    lv_cfg = WhatConfig(n_channels=LIGHTS.n_channels, vocab_size=LIGHTS.vocab_size,
+                        d_model=16, n_layers=1, n_heads=2, context=16, dropout=0.0)
+    return LayerModels(
+        ornaments=orn,
+        decor_when=LoadedWhen(WhenModel(dw_cfg).eval(), dw_cfg, dstats, "decor", BOMB_VOCAB),
+        decor_what=LoadedWhat(WhatModel(dv_cfg, channel_mask(dspec)).eval(), dv_cfg, dstats, "decor", BOMB_VOCAB),
+        lights_when=LoadedWhen(WhenModel(lw_cfg).eval(), lw_cfg, STATS, "lights", None),
+        lights_what=LoadedWhat(WhatModel(lv_cfg, channel_mask(LIGHTS)).eval(), lv_cfg, STATS, "lights", None),
+    )
+
+
+def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path):
+    audio = write_audio(tmp_path / "My Song.wav")
+    res_default = _gen(models, audio, tmp_path / "out_default")
+    for name in ("Info.dat", "HardStandard.dat"):
+        assert (res_default.folder / name).read_bytes() == (GOLDEN_GEN / name).read_bytes()
+
+    lm = make_layer_models()
+    res_off = _gen(
+        models, audio, tmp_path / "out_off",
+        ornaments=0, lights=0, environment="DefaultEnvironment",
+        layer_models=lm, layer_stats=LAYER_STATS,
+    )
+    for name in ("Info.dat", "HardStandard.dat"):
+        assert (res_off.folder / name).read_bytes() == (GOLDEN_GEN / name).read_bytes()
+
+
+def test_multi_level_produces_two_files_and_one_info(models, tmp_path):
+    audio = write_audio(tmp_path / "My Song.wav")
+    res = generate_map(
+        audio, levels=("ExpertPlus", "easy"), styles=("tech",), seed=1,
+        out_dir=tmp_path / "out", timing=models[0], pattern=models[1],
+        mask_cfg=MASK, stats=STATS, device="cpu", environment="NiceEnvironment",
+    )
+    assert res.folder.name == "BSM - My Song [Easy+ExpertPlus, tech]"
+    assert {p.name for p in res.folder.iterdir()} == {
+        "Info.dat", "EasyStandard.dat", "ExpertPlusStandard.dat", "song.egg", "cover.png",
+    }
+    assert [lv.rank for lv in res.levels] == ["Easy", "ExpertPlus"]
+    assert [lv.target_nps for lv in res.levels] == [1.0, 6.0]
+
+    info = json.loads((res.folder / "Info.dat").read_text(encoding="utf-8"))
+    assert info["_environmentName"] == "NiceEnvironment"
+    bms = info["_difficultyBeatmapSets"][0]["_difficultyBeatmaps"]
+    assert [bm["_difficulty"] for bm in bms] == ["Easy", "ExpertPlus"]
+    assert bms[0]["_noteJumpMovementSpeed"] == 12.0
+    assert bms[1]["_noteJumpMovementSpeed"] == 16.0
+
+    # Same seed on single-level matches the corresponding difficulty's notes
+    single_easy = _gen(models, audio, tmp_path / "single", nps=1.0, seed=1)
+    multi_map = read_map(res.folder, layers=True)
+    single_map = read_map(single_easy.folder, layers=True)
+    assert multi_map.difficulties[0].notes == single_map.difficulties[0].notes
+
+
+def test_all_layers_present_and_rule_clean_with_tiny_models(models, tmp_path):
+    audio = write_audio(tmp_path / "My Song.wav", seconds=60.0)
+    lm = make_layer_models()
+    res = generate_map(
+        audio, levels=("Easy", "Hard"), styles=("tech",), seed=2,
+        out_dir=tmp_path / "out", timing=models[0], pattern=models[1],
+        mask_cfg=MASK, stats=STATS, device="cpu",
+        ornaments=None, lights=2, environment="BigMirrorEnvironment",
+        layer_models=lm, layer_stats=LAYER_STATS,
+    )
+    m = read_map(res.folder, layers=True)
+    assert m.environment == "BigMirrorEnvironment" and not m.problems
+    assert len(m.difficulties) == 2
+    for d in m.difficulties:
+        assert d.layers is not None
+        assert check_layers(d.notes, d.layers) == []
+        assert len(d.layers.arcs) > 0 and len(d.layers.chains) > 0
+        assert len(d.layers.obstacles) > 0 and len(d.layers.bombs) > 0
+        assert len(d.layers.lights) > 0
+    assert m.difficulties[0].layers.obstacles == m.difficulties[1].layers.obstacles
+    assert m.difficulties[0].layers.bombs == m.difficulties[1].layers.bombs
+    assert m.difficulties[0].layers.lights == m.difficulties[1].layers.lights
+    assert res.n_walls == len(m.difficulties[0].layers.obstacles)
+    assert res.n_bombs == len(m.difficulties[0].layers.bombs)
+    assert res.n_lights == len(m.difficulties[0].layers.lights)
+    assert res.lights_report is not None and res.lights_report["used_rules"] is False
+
+
+def test_auto_ornaments_level_and_per_level_ornaments(models, tmp_path):
+    assert auto_ornaments_level(0.5) == 2
+    assert auto_ornaments_level(4.49) == 2
+    assert auto_ornaments_level(4.5) == 1
+    assert auto_ornaments_level(7.0) == 1
+    assert auto_ornaments_level(7.01) == 0
+
+    stats_hi = {
+        **STATS,
+        "rank_median_nps": {"Easy": 2.0, "ExpertPlus": 8.0},
+    }
+    audio = write_audio(tmp_path / "My Song.wav", seconds=45.0)
+    lm = make_layer_models()
+    res = generate_map(
+        audio, levels=("Easy", "ExpertPlus"), styles=("tech",), seed=1,
+        out_dir=tmp_path / "out", timing=models[0], pattern=models[1],
+        mask_cfg=MASK, stats=stats_hi, device="cpu",
+        ornaments=None, lights=0, layer_models=lm, layer_stats=LAYER_STATS,
+    )
+    by_rank = {lv.rank: lv for lv in res.levels}
+    assert by_rank["Easy"].n_arcs > 0 and by_rank["Easy"].n_chains > 0
+    # ExpertPlus is > 7.0 nps -> auto ornaments level 0 (both ornaments and shared decor)
+    assert by_rank["ExpertPlus"].n_arcs == 0 and by_rank["ExpertPlus"].n_chains == 0
+    assert res.n_walls == 0 and res.n_bombs == 0
+
+
+def test_generate_map_validation_errors(models, tmp_path):
+    audio = write_audio(tmp_path / "a.wav")
+    base = dict(styles=("tech",), seed=0, out_dir=tmp_path / "out", timing=models[0],
+                pattern=models[1], mask_cfg=MASK, stats=STATS, device="cpu")
+    with pytest.raises(ValueError):
+        generate_map(audio, **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, nps=3.0, levels=("Hard",), **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, levels=(), **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, levels=("Hard", "hard"), **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, levels=("Insane",), **base)
+    with pytest.raises(GenerateError):
+        generate_map(audio, levels=("Normal",), **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, nps=3.0, environment="SpaceEnvironment", **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, nps=3.0, ornaments=4, **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, nps=3.0, lights=4, **base)
+
+
+def test_lights_rules_flag_and_check_layers_guard(models, tmp_path, monkeypatch):
+    audio = write_audio(tmp_path / "a.wav")
+    lm = make_layer_models()
+    res = _gen(models, audio, tmp_path / "out_rules",
+               lights=2, lights_rules=True, layer_models=lm, layer_stats=LAYER_STATS)
+    assert res.lights_report is not None and res.lights_report["used_rules"] is True
+    assert res.n_lights > 0
+
+    monkeypatch.setattr(G, "check_layers", lambda notes, layers: [Violation(1.0, -1, "wall_on_note")])
+    with pytest.raises(RuntimeError, match="layer rule"):
+        _gen(models, audio, tmp_path / "out_bad", ornaments=0, lights=0)
+
+
+def test_multi_level_filters_shared_decor_colliding_with_other_level(models, tmp_path, monkeypatch):
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    lm = make_layer_models()
+
+    # Probe Easy notes by generating once, then force generate_decor to emit a wall/bomb hitting an Easy note
+    easy_res = _gen(models, audio, tmp_path / "probe", nps=1.0, seed=1)
+    easy_note = read_map(easy_res.folder).difficulties[0].notes[5]
+    bad_wall = Obstacle(max(0.0, easy_note.time_s - 0.05), 0.0, 0.2, 0.4, easy_note.x, 0, 1, 5)
+    safe_wall = Obstacle(1.0, 2.0, 0.2, 0.4, -1, 0, 1, 5)
+    bad_bomb = Bomb(easy_note.time_s, easy_note.beat, easy_note.x, easy_note.y)
+    safe_bomb = Bomb(0.2, 0.4, 3, 2)
+
+    def fake_decor(*a, **k):
+        return (
+            [safe_wall, bad_wall],
+            [safe_bomb, bad_bomb],
+            {
+                "walls_requested": 2, "bomb_groups_requested": 2,
+                "walls_placed": 2, "decor_walls_placed": 2, "gameplay_walls_placed": 0,
+                "bomb_groups_placed": 2, "bombs_placed": 2,
+                "walls_skipped": 0, "bombs_skipped": 0, "skipped_by_rules": 0,
+                "dropped_by_gameplay": 0, "missing_models": False, "missing_stats": False,
+            },
+        )
+
+    monkeypatch.setattr(G, "generate_decor", fake_decor)
+    res = generate_map(
+        audio, levels=("Easy", "ExpertPlus"), styles=("tech",), seed=1,
+        out_dir=tmp_path / "out", timing=models[0], pattern=models[1],
+        mask_cfg=MASK, stats=STATS, device="cpu",
+        ornaments=2, lights=0, layer_models=lm, layer_stats=LAYER_STATS,
+    )
+    assert res.n_walls == 1
+    assert res.decor_report["walls_placed"] == 1
+    assert res.decor_report["walls_skipped"] == 1
+    m = read_map(res.folder, layers=True)
+    for d in m.difficulties:
+        assert check_layers(d.notes, d.layers) == []

@@ -14,3 +14,10 @@ def test_train_help_lists_ornament_and_layer_commands() -> None:
     assert result.exit_code == 0, result.output
     for cmd in ("timing", "pattern", "ornaments", "layer-when", "layer-what"):
         assert cmd in result.output
+
+
+def test_generate_help_lists_layer_and_level_options() -> None:
+    result = CliRunner().invoke(app, ["generate", "--help"])
+    assert result.exit_code == 0, result.output
+    for opt in ("--levels", "--ozdoby", "--swiatla", "--tlo", "--swiatla-reguly"):
+        assert opt in result.output

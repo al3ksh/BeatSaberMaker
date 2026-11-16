@@ -1,3 +1,4 @@
+import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -5,10 +6,14 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from bsmaker.cli import app
+from bsmaker.data.layer_stats import write_layer_stats
+from bsmaker.formats.reader import read_map
 from bsmaker.models.common import save_checkpoint
+from bsmaker.playability.layers import check_layers
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_generate import STATS, make_models, write_audio  # noqa: E402
+from test_generate import (  # noqa: E402
+    BOMB_VOCAB, LAYER_STATS, STATS, make_layer_models, make_models, write_audio)
 
 
 def _project(tmp_path: Path, monkeypatch, checkpoints: bool = True) -> Path:
@@ -128,3 +133,141 @@ def test_resplit_runs_and_warns_only_on_change(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["data", "resplit"])
     assert r.exit_code == 0, r.output
     assert "WARNING" not in r.output
+
+
+def _write_layer_assets(tmp_path: Path, *, skip: set[str] = (), write_stats: bool = True) -> None:
+    lm = make_layer_models()
+    layers_dir = tmp_path / "data" / "checkpoints" / "layers"
+    if "ornaments" not in skip:
+        save_checkpoint(layers_dir / "ornaments" / "best.pt", {
+            "model": lm.ornaments.model.state_dict(),
+            "model_config": asdict(lm.ornaments.config),
+            "stats": STATS,
+        })
+    specs = (
+        ("decor-when", lm.decor_when, "decor", dict(STATS, bomb_masks=BOMB_VOCAB)),
+        ("decor-what", lm.decor_what, "decor", dict(STATS, bomb_masks=BOMB_VOCAB)),
+        ("lights-when", lm.lights_when, "lights", STATS),
+        ("lights-what", lm.lights_what, "lights", STATS),
+    )
+    for name, loaded, layer, st in specs:
+        if name not in skip:
+            save_checkpoint(layers_dir / name / "best.pt", {
+                "model": loaded.model.state_dict(),
+                "model_config": asdict(loaded.config),
+                "stats": st,
+                "train_options": {"layer": layer},
+            })
+    if write_stats:
+        write_layer_stats(LAYER_STATS, tmp_path / "layer_stats.json")
+
+
+def test_cli_generate_option_validation_errors(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch, checkpoints=False)
+    audio = write_audio(tmp_path / "a.wav")
+    bad_invocations = [
+        ["generate", str(audio)],
+        ["generate", str(audio), "--nps", "3", "--levels", "hard"],
+        ["generate", str(audio), "--levels", "hard,Hard"],
+        ["generate", str(audio), "--levels", "easy,insane"],
+        ["generate", str(audio), "--levels", "hard,"],
+        ["generate", str(audio), "--nps", "3", "--ozdoby", "4"],
+        ["generate", str(audio), "--nps", "3", "--ozdoby", "-1"],
+        ["generate", str(audio), "--nps", "3", "--swiatla", "4"],
+        ["generate", str(audio), "--nps", "3", "--swiatla", "-1"],
+        ["generate", str(audio), "--nps", "3", "--tlo", "Space"],
+        ["generate", str(audio), "--nps", "3", "--tlo", "DefaultEnvironment"],
+    ]
+    for args in bad_invocations:
+        r = CliRunner().invoke(app, args)
+        assert r.exit_code == 2, (args, r.output)
+
+
+def test_cli_generate_multi_level_with_layers_and_summary(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    _write_layer_assets(tmp_path)
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    out = tmp_path / "out"
+    r = CliRunner().invoke(app, [
+        "generate", str(audio), "--levels", "hard,expertplus", "--tlo", "nice",
+        "--ozdoby", "2", "--swiatla", "2", "--out", str(out), "--device", "cpu",
+    ])
+    assert r.exit_code == 0, r.output
+    folder = out / "BSM - a [Hard+ExpertPlus, unknown]"
+    assert (folder / "HardStandard.dat").is_file()
+    assert (folder / "ExpertPlusStandard.dat").is_file()
+    info = json.loads((folder / "Info.dat").read_text(encoding="utf-8"))
+    assert info["_environmentName"] == "NiceEnvironment"
+    m = read_map(folder, layers=True)
+    assert len(m.difficulties) == 2
+    for d in m.difficulties:
+        assert d.layers is not None
+        assert check_layers(d.notes, d.layers) == []
+        assert d.layers.arcs and d.layers.chains and d.layers.obstacles and d.layers.bombs and d.layers.lights
+    summary = r.output.strip().splitlines()[-1]
+    for token in ("Hard:", "ExpertPlus:", "notes", "nps", "arcs", "chains",
+                  "walls", "bombs", "light events", "NiceEnvironment"):
+        assert token in summary, summary
+
+
+def test_cli_generate_layers_off_and_rule_lights_suppress_missing_warnings(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    (tmp_path / "playability.toml").write_text("[mask]\n[data]\n", encoding="utf-8")
+    audio = write_audio(tmp_path / "a.wav")
+    out1 = tmp_path / "out1"
+    r1 = CliRunner().invoke(app, [
+        "generate", str(audio), "--nps", "3", "--ozdoby", "0", "--swiatla", "0",
+        "--out", str(out1), "--device", "cpu",
+    ])
+    assert r1.exit_code == 0, r1.output
+    layer_warns1 = [ln for ln in r1.output.splitlines()
+                    if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
+    assert layer_warns1 == []
+    d1 = read_map(out1 / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    assert d1.layers is not None
+    assert (d1.layers.arcs, d1.layers.chains, d1.layers.obstacles, d1.layers.bombs, d1.layers.lights) == ((), (), (), (), ())
+
+    out2 = tmp_path / "out2"
+    r2 = CliRunner().invoke(app, [
+        "generate", str(audio), "--nps", "3", "--ozdoby", "0", "--swiatla", "2",
+        "--swiatla-reguly", "--out", str(out2), "--device", "cpu",
+    ])
+    assert r2.exit_code == 0, r2.output
+    layer_warns2 = [ln for ln in r2.output.splitlines()
+                    if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
+    assert layer_warns2 == []
+    d2 = read_map(out2 / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    assert len(d2.layers.lights) > 0
+
+
+def test_cli_missing_checkpoints_and_stats_warn_once_each_and_write_map(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch)
+    (tmp_path / "playability.toml").write_text("[mask]\n[data]\n", encoding="utf-8")
+    _write_layer_assets(tmp_path, skip={"ornaments", "lights-what"})
+    audio = write_audio(tmp_path / "a.wav")
+    out = tmp_path / "out"
+    r = CliRunner().invoke(app, [
+        "generate", str(audio), "--nps", "3", "--out", str(out), "--device", "cpu",
+    ])
+    assert r.exit_code == 0, r.output
+    warns = [ln for ln in r.output.splitlines()
+             if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
+    assert len(warns) == 2
+    assert any("ornaments" in w for w in warns)
+    assert any("lights-what" in w for w in warns)
+    d = read_map(out / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    assert d.layers.arcs == () and d.layers.chains == ()
+    assert len(d.layers.lights) > 0  # fell back to rule lights
+
+    # Missing layer_stats.json prints one warning and still writes map
+    _write_layer_assets(tmp_path, write_stats=False)
+    (tmp_path / "layer_stats.json").unlink()
+    out2 = tmp_path / "out2"
+    r2 = CliRunner().invoke(app, [
+        "generate", str(audio), "--nps", "3", "--out", str(out2), "--device", "cpu",
+    ])
+    assert r2.exit_code == 0, r2.output
+    warns2 = [ln for ln in r2.output.splitlines()
+              if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
+    assert len(warns2) == 1 and "layer_stats.json" in warns2[0]
+    assert (out2 / "BSM - a [nps 3, unknown]" / "Info.dat").is_file()

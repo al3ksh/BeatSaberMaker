@@ -540,21 +540,55 @@ def train_pattern(
 @app.command("generate")
 def generate_cmd(
         audio: Path = typer.Argument(..., help="Song file (mp3, ogg, wav, ...)."),
-        nps: float = typer.Option(..., "--nps", help="Target notes per second (0.5-12)."),
+        nps: float | None = typer.Option(None, "--nps", help="Target notes per second (0.5-12)."),
+        levels: str | None = typer.Option(
+            None, "--levels",
+            help="Comma-separated difficulties (easy, normal, hard, expert, expertplus)."),
         style: list[str] = typer.Option([], "--style", help="Style tag; repeat for several."),
         seed: int = typer.Option(0, "--seed"),
         out: Path | None = typer.Option(None, "--out", help="Output folder "
                                         "(default: the CustomLevels folder)."),
         overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing BSM map."),
         device: str | None = typer.Option(None, "--device", help="cuda or cpu."),
+        ozdoby: int | None = typer.Option(
+            None, "--ozdoby", help="Ornaments and decor level 0-3 (default: auto from nps)."),
+        swiatla: int = typer.Option(2, "--swiatla", help="Lights level 0-3 (default: 2)."),
+        tlo: str = typer.Option("Default", "--tlo", help="Environment name (default: Default)."),
+        swiatla_reguly: bool = typer.Option(
+            False, "--swiatla-reguly", help="Force rule-based lightshow instead of models."),
         timing_ckpt: Path | None = typer.Option(None, "--timing-ckpt", help="Timing checkpoint "
                                                 "(default: <data_dir>/checkpoints/timing/best.pt)."),
         pattern_ckpt: Path | None = typer.Option(None, "--pattern-ckpt", help="Pattern checkpoint "
                                                  "(default: <data_dir>/checkpoints/pattern/best.pt).")) -> None:
     """Generate a Beat Saber map folder from a song."""
-    if not 0.5 <= nps <= 12:
+    from bsmaker.generate import (
+        GenerateError, auto_ornaments_level, generate_map, parse_environment, parse_levels,
+        require_stats)
+
+    if (nps is None) == (levels is None):
+        typer.echo("pass either --nps or --levels", err=True)
+        raise typer.Exit(2)
+    if nps is not None and not 0.5 <= nps <= 12:
         typer.echo("--nps must be between 0.5 and 12", err=True)
         raise typer.Exit(2)
+    parsed_levels: tuple[str, ...] | None = None
+    if levels is not None:
+        try:
+            parsed_levels = parse_levels(levels)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(2) from None
+    if ozdoby is not None and ozdoby not in (0, 1, 2, 3):
+        typer.echo("--ozdoby must be 0, 1, 2, or 3", err=True)
+        raise typer.Exit(2)
+    if swiatla not in (0, 1, 2, 3):
+        typer.echo("--swiatla must be 0, 1, 2, or 3", err=True)
+        raise typer.Exit(2)
+    try:
+        environment = parse_environment(tlo)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from None
     if device not in (None, "cuda", "cpu"):
         typer.echo("--device must be cuda or cpu", err=True)
         raise typer.Exit(2)
@@ -566,7 +600,8 @@ def generate_cmd(
     import torch
 
     from bsmaker.audio.decode import AudioDecodeError
-    from bsmaker.generate import GenerateError, generate_map, require_stats
+    from bsmaker.data.layer_stats import load_layer_stats
+    from bsmaker.layers_generate import LayerModels, load_layer_models
     from bsmaker.models.pattern.sample import load_pattern
     from bsmaker.models.timing.decode import load_timing
 
@@ -591,23 +626,79 @@ def generate_cmd(
         mask_cfg = load_playability_config(cfg.playability_path, "mask")
         require_stats(timing.stats)
         require_stats(pattern.stats, ("mel_mean", "mel_std"))
-        extra = ()
+        extra: list[str] = []
         if cfg.playability_path is None:
-            extra = (_NO_PLAYABILITY_WARNING,)
+            extra.append(_NO_PLAYABILITY_WARNING)
             typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
+
+        if parsed_levels is not None:
+            medians = timing.stats.get("rank_median_nps", {})
+            missing_r = [r for r in parsed_levels if r not in medians]
+            if missing_r:
+                raise GenerateError(f"checkpoint stats missing median nps for rank(s): {', '.join(missing_r)}")
+            target_nps_list = [float(medians[r]) for r in parsed_levels]
+        else:
+            assert nps is not None
+            target_nps_list = [float(nps)]
+
+        need_orn_decor = (ozdoby > 0) if ozdoby is not None else any(
+            auto_ornaments_level(x) > 0 for x in target_nps_list
+        )
+        need_lights_model = swiatla > 0 and not swiatla_reguly
+        need_layer_stats = need_orn_decor or need_lights_model
+
+        layer_models: LayerModels | None = None
+        if need_orn_decor or need_lights_model:
+            loaded_lm, ckpt_warnings = load_layer_models(cfg.checkpoints_dir, dev)
+            layer_models = LayerModels(
+                ornaments=loaded_lm.ornaments if need_orn_decor else None,
+                decor_when=loaded_lm.decor_when if need_orn_decor else None,
+                decor_what=loaded_lm.decor_what if need_orn_decor else None,
+                lights_when=loaded_lm.lights_when if need_lights_model else None,
+                lights_what=loaded_lm.lights_what if need_lights_model else None,
+            )
+            needed_slots = (
+                (("ornaments", "decor-when", "decor-what") if need_orn_decor else ())
+                + (("lights-when", "lights-what") if need_lights_model else ())
+            )
+            for w in ckpt_warnings:
+                if any(
+                    w.startswith((f"missing {slot} checkpoint:", f"{slot} checkpoint "))
+                    for slot in needed_slots
+                ):
+                    extra.append(w)
+
+        layer_stats: dict | None = None
+        if need_layer_stats:
+            ls_path = cfg.base_dir / "layer_stats.json"
+            if ls_path.is_file():
+                layer_stats = load_layer_stats(ls_path)
+            else:
+                extra.append(f"missing layer_stats.json: {ls_path}; learned layers switched off")
+
         result = generate_map(
             audio, nps=nps, styles=tuple(style), seed=seed,
             out_dir=out if out is not None else cfg.custom_levels, timing=timing,
             pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
-            overwrite=overwrite, extra_warnings=extra)
+            overwrite=overwrite, extra_warnings=extra,
+            levels=parsed_levels, ornaments=ozdoby, lights=swiatla,
+            environment=environment, layer_models=layer_models,
+            layer_stats=layer_stats, lights_rules=swiatla_reguly)
     except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     for w in result.warnings:
         typer.echo(f"warning: {w}")
     typer.echo(f"wrote {result.folder}")
-    typer.echo(f"{result.n_notes} notes, {result.nps:.2f} nps, {result.rank}, "
-               f"{result.bpm:.1f} bpm (grid {'steady' if result.grid_steady else 'not steady'}), "
-               f"{result.density_rounds} density round(s)")
+    per_level = "; ".join(
+        f"{lv.rank}: {lv.n_notes} notes, {lv.nps:.2f} nps, {lv.n_arcs} arcs, {lv.n_chains} chains "
+        f"({lv.density_rounds} density round(s))"
+        for lv in result.levels
+    )
+    typer.echo(
+        f"{per_level} | {result.n_walls} walls, {result.n_bombs} bombs, "
+        f"{result.n_lights} light events, {result.environment}, "
+        f"{result.bpm:.1f} bpm (grid {'steady' if result.grid_steady else 'not steady'})"
+    )
 
 
 @app.command()
