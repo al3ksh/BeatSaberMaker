@@ -1,0 +1,140 @@
+export type DevicePref = "auto" | "cuda" | "cpu";
+export type StageName = "downloading" | "analyzing" | "notes" | "layers" | "writing";
+
+export interface Settings {
+  customLevels: string;
+  device: DevicePref;
+  exportDir: string;
+  engineVersionInstalled: string | null;
+}
+
+export interface YouTubeItem {
+  id: string;
+  url: string;
+  title: string;
+  artist: string;
+  track_title: string;
+  channel: string;
+  duration_s: number | null;
+  thumbnail_url: string | null;
+}
+
+export interface EngineInfo {
+  version: string;
+  cuda_available: boolean;
+  gpu_name: string | null;
+  active_device: string;
+  detected_custom_levels: string | null;
+  has_layer_models: boolean;
+  missing_layer_models: string[];
+  environments: string[];
+  styles: string[];
+}
+
+export interface MapGenerationConfig {
+  mode: "pack" | "custom";
+  levels: string[] | null;
+  nps: number | null;
+  styles: string[];
+  ornaments: number | null;
+  lights: number;
+  environment: string;
+  seed: number;
+  lightsRules: boolean;
+}
+
+export interface StartGenerationRequest {
+  sourceType: "youtube" | "file" | "cached";
+  sourcePathOrUrl: string;
+  title: string;
+  artist: string;
+  coverPath: string | null;
+  config: MapGenerationConfig;
+  regenerateId?: string;
+}
+
+export interface LevelSummary {
+  rank: string;
+  target_nps: number;
+  n_notes: number;
+  nps: number;
+  n_arcs: number;
+  n_chains: number;
+}
+
+export interface GenerateOutput {
+  folder: string;
+  title: string;
+  artist: string;
+  bpm: number;
+  grid_steady: boolean;
+  n_notes: number;
+  nps: number;
+  rank: string;
+  levels: LevelSummary[];
+  n_walls: number;
+  n_bombs: number;
+  n_lights: number;
+  environment: string;
+  warnings: string[];
+  used_rule_lights: boolean;
+  device_used: string;
+}
+
+export interface LibraryEntry {
+  id: string;
+  title: string;
+  artist: string;
+  folder: string;
+  createdAt: string;
+  bpm: number;
+  levels: Array<{
+    rank: string;
+    nps: number;
+    nNotes: number;
+    nArcs: number;
+    nChains: number;
+  }>;
+  nWalls: number;
+  nBombs: number;
+  nLights: number;
+  environment: string;
+  audioCachePath: string;
+  coverCachePath: string | null;
+  config: MapGenerationConfig;
+}
+
+export interface ProgressEvent {
+  stage: StageName;
+  pct: number;
+}
+
+export interface EnginePackProgress {
+  stage: "downloading" | "verifying" | "extracting";
+  pct: number;
+  bytesDownloaded: number;
+  totalBytes: number;
+  partIndex: number;
+  partCount: number;
+}
+
+export interface UpdateStatus {
+  state:
+    | "idle"
+    | "checking"
+    | "available"
+    | "not-available"
+    | "downloading"
+    | "downloaded"
+    | "error";
+  version?: string;
+  pct?: number;
+}
+
+export interface StartupState {
+  needsEnginePack: boolean;
+  engineVersion: string;
+  appVersion: string;
+  settings: Settings;
+  info: EngineInfo | null;
+}
