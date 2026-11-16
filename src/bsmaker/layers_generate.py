@@ -42,21 +42,29 @@ def load_layer_models(checkpoints_dir: Path, device: str) -> tuple[LayerModels, 
     """Load layer checkpoints from `<checkpoints_dir>/layers/<name>/best.pt`, warning if missing."""
     layers_dir = Path(checkpoints_dir) / "layers"
     specs = (
-        ("ornaments", "ornaments", load_ornaments),
-        ("decor_when", "decor-when", load_when),
-        ("decor_what", "decor-what", load_what),
-        ("lights_when", "lights-when", load_when),
-        ("lights_what", "lights-what", load_what),
+        ("ornaments", "ornaments", load_ornaments, None),
+        ("decor_when", "decor-when", load_when, "decor"),
+        ("decor_what", "decor-what", load_what, "decor"),
+        ("lights_when", "lights-when", load_when, "lights"),
+        ("lights_what", "lights-what", load_what, "lights"),
     )
     loaded: dict[str, object] = {}
     warnings: list[str] = []
-    for field, name, loader in specs:
+    for field, name, loader, expected_layer in specs:
         ckpt = layers_dir / name / "best.pt"
         if not ckpt.is_file():
             warnings.append(f"missing {name} checkpoint: {ckpt}")
             loaded[field] = None
+            continue
+        model = loader(ckpt, device)
+        actual_layer = getattr(model, "layer", "")
+        if expected_layer is not None and actual_layer != expected_layer:
+            warnings.append(
+                f"{name} checkpoint has layer {actual_layer!r}, expected {expected_layer!r}: {ckpt}"
+            )
+            loaded[field] = None
         else:
-            loaded[field] = loader(ckpt, device)
+            loaded[field] = model
     return LayerModels(**loaded), warnings  # type: ignore[arg-type]
 
 
@@ -134,6 +142,7 @@ def _decor_report(
     bombs_skipped: int = 0,
     dropped_by_gameplay: int = 0,
     missing_models: bool = False,
+    missing_stats: bool = False,
 ) -> dict:
     return {
         "walls_requested": walls_requested,
@@ -148,6 +157,7 @@ def _decor_report(
         "skipped_by_rules": walls_skipped + bombs_skipped,
         "dropped_by_gameplay": dropped_by_gameplay,
         "missing_models": missing_models,
+        "missing_stats": missing_stats,
     }
 
 
@@ -158,6 +168,7 @@ def _lights_report(
     skipped_by_rules: int = 0,
     used_rules: bool = False,
     missing_models: bool = False,
+    missing_stats: bool = False,
 ) -> dict:
     return {
         "requested": requested,
@@ -165,6 +176,7 @@ def _lights_report(
         "skipped_by_rules": skipped_by_rules,
         "used_rules": used_rules,
         "missing_models": missing_models,
+        "missing_stats": missing_stats,
     }
 
 
@@ -185,10 +197,19 @@ def generate_decor(
     _check_level(level)
     if level == 0:
         return [], [], _decor_report()
-    if models.decor_when is None or models.decor_what is None or layer_stats is None:
-        return [], [], _decor_report(missing_models=True)
+    missing_models = models.decor_when is None or models.decor_what is None
+    missing_stats = layer_stats is None
     if bpm <= 0 or duration_s <= 0:
-        return [], [], _decor_report()
+        return [], [], _decor_report(missing_models=missing_models, missing_stats=missing_stats)
+
+    gp_walls = gameplay_obstacles(notes, bpm, duration_s, level, seed)
+    if missing_models or missing_stats:
+        obstacles = sorted(gp_walls, key=lambda o: (o.time_s, o.x, o.y))
+        return obstacles, [], _decor_report(
+            gameplay_walls_placed=len(gp_walls),
+            missing_models=missing_models,
+            missing_stats=missing_stats,
+        )
 
     minutes = duration_s / 60.0
     total_walls = int(round(level_rate(layer_stats, "walls", nps, level) * minutes))
@@ -241,7 +262,6 @@ def generate_decor(
             for x, y in mask_to_cells(cell_mask):
                 bombs.append(Bomb(t, beat, x, y))
 
-    gp_walls = gameplay_obstacles(notes, bpm, duration_s, level, seed)
     kept_decor = [w for w in decor_walls if not _overlaps_gameplay(w, gp_walls)]
     dropped_by_gameplay = len(decor_walls) - len(kept_decor)
     obstacles = sorted([*kept_decor, *gp_walls], key=lambda o: (o.time_s, o.x, o.y))
@@ -291,16 +311,22 @@ def generate_lights(
     _check_level(level)
     if level == 0:
         return [], _lights_report()
-    missing = models.lights_when is None or models.lights_what is None
+    missing_models = models.lights_when is None or models.lights_what is None
+    missing_stats = layer_stats is None
     if bpm <= 0 or duration_s <= 0:
-        return [], _lights_report(used_rules=use_rules or missing, missing_models=missing)
-    if use_rules or missing or layer_stats is None:
+        return [], _lights_report(
+            used_rules=use_rules or missing_models or missing_stats,
+            missing_models=missing_models,
+            missing_stats=missing_stats,
+        )
+    if use_rules or missing_models or missing_stats:
         events = rule_lights(mel, notes, bpm, offset_s, duration_s, level, seed)
         return events, _lights_report(
             requested=len(events),
             placed=len(events),
             used_rules=True,
-            missing_models=missing,
+            missing_models=missing_models,
+            missing_stats=missing_stats,
         )
 
     minutes = duration_s / 60.0

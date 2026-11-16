@@ -11,6 +11,7 @@ from bsmaker.formats.layer_tokens import CHANNEL_TYPES, WALL_VOCAB
 from bsmaker.formats.model import Layers, LightEvent, Note, Obstacle
 from bsmaker.layers_generate import LayerModels, generate_decor, generate_lights, load_layer_models
 from bsmaker.lights_rules import rule_lights
+from bsmaker.obstacles_rules import gameplay_obstacles
 from bsmaker.models.common import save_checkpoint
 from bsmaker.models.layers.spec import LIGHTS, channel_mask, decor_spec
 from bsmaker.models.layers.what import WhatConfig, WhatModel
@@ -151,33 +152,149 @@ def test_load_layer_models_all_and_missing(tmp_path):
     assert len(p_warnings) == 1 and "lights-what" in p_warnings[0]
 
 
+def test_load_layer_models_rejects_mismatched_layer_field(tmp_path):
+    _write_all_checkpoints(tmp_path)
+    layers_dir = tmp_path / "layers"
+
+    # Put a lights checkpoint in decor-what, a decor checkpoint in lights-when, and empty layer in decor-when
+    lv_cfg = WhatConfig(n_channels=LIGHTS.n_channels, vocab_size=LIGHTS.vocab_size, **TINY_WHAT)
+    save_checkpoint(
+        layers_dir / "decor-what" / "best.pt",
+        {
+            "model": WhatModel(lv_cfg, channel_mask(LIGHTS)).state_dict(),
+            "model_config": asdict(lv_cfg),
+            "stats": STATS,
+            "train_options": {"layer": "lights"},
+        },
+    )
+    dspec = decor_spec(LAYER_STATS)
+    dw_cfg = WhenConfig(n_channels=dspec.n_channels, **TINY_WHEN)
+    save_checkpoint(
+        layers_dir / "lights-when" / "best.pt",
+        {
+            "model": WhenModel(dw_cfg).state_dict(),
+            "model_config": asdict(dw_cfg),
+            "stats": dict(STATS, bomb_masks=BOMB_VOCAB),
+            "train_options": {"layer": "decor"},
+        },
+    )
+    save_checkpoint(
+        layers_dir / "decor-when" / "best.pt",
+        {
+            "model": WhenModel(dw_cfg).state_dict(),
+            "model_config": asdict(dw_cfg),
+            "stats": dict(STATS, bomb_masks=BOMB_VOCAB),
+            "train_options": {},
+        },
+    )
+
+    models, warnings = load_layer_models(tmp_path, "cpu")
+    assert models.ornaments is not None
+    assert models.lights_what is not None
+    assert models.decor_what is None
+    assert models.lights_when is None
+    assert models.decor_when is None
+    assert len(warnings) == 3
+    assert any("decor-what" in w for w in warnings)
+    assert any("lights-when" in w for w in warnings)
+    assert any("decor-when" in w for w in warnings)
+
+
 def test_level_zero_returns_empty(all_models):
     mel = _mel(40.0)
     notes = _side_notes(40.0)
     obs, bombs, drep = generate_decor(all_models, mel, notes, 2.0, BPM, 40.0, 0, LAYER_STATS, 0, "cpu")
     lights, lrep = generate_lights(all_models, mel, notes, 2.0, BPM, 0.0, 40.0, 0, LAYER_STATS, 0, "cpu")
     assert obs == [] and bombs == []
-    assert drep["walls_requested"] == 0 and drep["walls_placed"] == 0 and drep["missing_models"] is False
+    assert (
+        drep["walls_requested"] == 0
+        and drep["walls_placed"] == 0
+        and drep["missing_models"] is False
+        and drep["missing_stats"] is False
+    )
     assert lights == []
-    assert lrep["requested"] == 0 and lrep["placed"] == 0
+    assert lrep["requested"] == 0 and lrep["placed"] == 0 and lrep["missing_stats"] is False
 
 
 def test_missing_models_behaviour(all_models):
     mel = _mel(60.0)
     notes = _side_notes(60.0)
 
-    # Missing decor models: empty decor with report flag (even at level 3 where gameplay walls could run)
+    # Missing decor models: level 1 has no gameplay walls; levels 2-3 still emit rule gameplay obstacles
     only_lights = LayerModels(lights_when=all_models.lights_when, lights_what=all_models.lights_what)
-    obs, bombs, drep = generate_decor(only_lights, mel, notes, 2.0, BPM, 60.0, 3, LAYER_STATS, 1, "cpu")
-    assert obs == [] and bombs == []
-    assert drep["missing_models"] is True
+    obs1, bombs1, drep1 = generate_decor(only_lights, mel, notes, 2.0, BPM, 60.0, 1, LAYER_STATS, 1, "cpu")
+    assert obs1 == [] and bombs1 == []
+    assert drep1["missing_models"] is True and drep1["missing_stats"] is False
+
+    obs3, bombs3, drep3 = generate_decor(only_lights, mel, notes, 2.0, BPM, 60.0, 3, LAYER_STATS, 1, "cpu")
+    expected_gp = gameplay_obstacles(notes, BPM, 60.0, 3, 1)
+    assert len(expected_gp) > 0
+    assert obs3 == expected_gp and bombs3 == []
+    assert drep3["gameplay_walls_placed"] == len(expected_gp)
+    assert drep3["decor_walls_placed"] == 0
+    assert drep3["walls_placed"] == len(expected_gp)
+    assert drep3["missing_models"] is True and drep3["missing_stats"] is False
+    assert check_layers(notes, Layers(tuple(bombs3), tuple(obs3), (), (), (), False, 0)) == []
 
     # Missing lights models: falls back to rule_lights
     only_decor = LayerModels(decor_when=all_models.decor_when, decor_what=all_models.decor_what)
     lights, lrep = generate_lights(only_decor, mel, notes, 2.0, BPM, 0.25, 60.0, 2, LAYER_STATS, 1, "cpu")
     expected = rule_lights(mel, notes, BPM, 0.25, 60.0, 2, 1)
     assert lights == expected and len(lights) > 0
-    assert lrep["used_rules"] is True and lrep["missing_models"] is True
+    assert lrep["used_rules"] is True and lrep["missing_models"] is True and lrep["missing_stats"] is False
+
+
+def test_missing_layer_stats_sets_missing_stats_and_runs_rules(all_models):
+    mel = _mel(60.0)
+    notes = _side_notes(60.0)
+
+    obs, bombs, drep = generate_decor(all_models, mel, notes, 2.0, BPM, 60.0, 2, None, 1, "cpu")
+    expected_gp = gameplay_obstacles(notes, BPM, 60.0, 2, 1)
+    assert len(expected_gp) > 0
+    assert obs == expected_gp and bombs == []
+    assert drep["missing_stats"] is True and drep["missing_models"] is False
+    assert drep["gameplay_walls_placed"] == len(expected_gp)
+
+    lights, lrep = generate_lights(all_models, mel, notes, 2.0, BPM, 0.25, 60.0, 2, None, 1, "cpu")
+    assert lights == rule_lights(mel, notes, BPM, 0.25, 60.0, 2, 1) and len(lights) > 0
+    assert lrep["used_rules"] is True
+    assert lrep["missing_stats"] is True
+    assert lrep["missing_models"] is False
+
+
+def test_predict_layer_events_receives_expected_per_channel_counts(all_models, monkeypatch):
+    import bsmaker.layers_generate as lg
+
+    stats = {
+        "nps_bins": [0.0, 4.0, 10.0],
+        "bomb_vocab": BOMB_VOCAB,
+        "rates": {
+            "walls": [[7.0, 11.0, 15.0], [2.0, 4.0, 6.0]],
+            "bomb_groups": [[3.0, 5.0, 9.0], [1.0, 2.0, 3.0]],
+            **{f"light_ch{c}": [[float(c + 1), float(2 * c + 3), float(3 * c + 5)], [1.0, 2.0, 3.0]]
+               for c in range(9)},
+        },
+    }
+    captured: list[tuple[int, ...]] = []
+    orig_predict = lg.predict_layer_events
+
+    def spy_predict(loaded, mel, notes, nps, counts, device):
+        captured.append(tuple(int(x) for x in counts))
+        return orig_predict(loaded, mel, notes, nps, counts, device)
+
+    monkeypatch.setattr(lg, "predict_layer_events", spy_predict)
+    mel = _mel(60.0)
+    notes = _side_notes(60.0)
+
+    _, _, drep = generate_decor(all_models, mel, notes, 2.0, BPM, 60.0, 2, stats, 0, "cpu")
+    _, lrep = generate_lights(all_models, mel, notes, 2.0, BPM, 0.0, 60.0, 2, stats, 0, "cpu")
+
+    # nps=2.0 -> bin 0, level=2, 60 s -> walls=11 -> (5, 6, 5), lights=[2*c+3]
+    assert captured[0] == (11 // 2, 11 - 11 // 2, 5)
+    assert drep["walls_requested"] == 11 and drep["bomb_groups_requested"] == 5
+    expected_lights = tuple(int(round(stats["rates"][el][0][1])) for el in LIGHTS.rate_elements)
+    assert captured[1] == expected_lights
+    assert lrep["requested"] == sum(expected_lights)
 
 
 def test_use_rules_forces_rule_lights_with_models_present(all_models):
@@ -301,10 +418,20 @@ def test_decor_gameplay_obstacles_never_overlap_decor_walls_on_same_side(tmp_pat
             np.zeros(0, dtype=np.float64),
         ],
     )
+
+    # Force deterministic wall tokens via sampler spy (channel 0 -> x=0 token 0; channel 1 -> x=4 token 12)
+    def spy_sample(loaded, times, channels, mel, notes, nps, seed, device, allowed=None, **kw):
+        toks = np.array([0 if ch == 0 else 12 for ch in channels], dtype=np.int64)
+        for i, (t, ch, tok) in enumerate(zip(times, channels, toks)):
+            assert allowed(i, float(t), int(ch))[tok]
+        return toks, 0
+
+    monkeypatch.setattr(lg, "sample_layer_values", spy_sample)
     obs, bombs, rep = generate_decor(models, mel, notes, 2.0, BPM, 100.0, 2, LAYER_STATS, 0, "cpu")
     assert bombs == []
     assert rep["gameplay_walls_placed"] == len(gp)
     assert rep["dropped_by_gameplay"] == 1
+    assert rep["decor_walls_placed"] + rep["walls_skipped"] == 4 - rep["dropped_by_gameplay"]
     assert rep["decor_walls_placed"] == 3
 
     # Verify the kept right-side wall at `mid` survived, while the left-side wall at `mid` was dropped
@@ -343,8 +470,17 @@ def test_decor_duck_obstacle_drops_overlapping_decor_walls_on_both_sides(all_mod
             np.zeros(0, dtype=np.float64),
         ],
     )
+
+    def spy_sample(loaded, times, channels, mel, notes, nps, seed, device, allowed=None, **kw):
+        toks = np.full(len(channels), 12, dtype=np.int64)  # x=-1 / x=4 outside grid
+        for i, (t, ch, tok) in enumerate(zip(times, channels, toks)):
+            assert allowed(i, float(t), int(ch))[tok]
+        return toks, 0
+
+    monkeypatch.setattr(lg, "sample_layer_values", spy_sample)
     obs, _, rep = generate_decor(all_models, mel, notes, 2.0, BPM, 70.0, 2, LAYER_STATS, 0, "cpu")
     assert rep["dropped_by_gameplay"] == 2
+    assert rep["decor_walls_placed"] + rep["walls_skipped"] == 4 - rep["dropped_by_gameplay"]
     assert rep["decor_walls_placed"] == 2
     assert all(abs(o.time_s - 4.0) < 1e-9 for o in obs if o not in gp)
 
