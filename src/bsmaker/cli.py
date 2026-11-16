@@ -812,3 +812,62 @@ def eval_cmd(
             os.unlink(tmp_name)
     typer.echo(render_summary(results))
     typer.echo(f"wrote {target}")
+
+
+@app.command("engine")
+def engine_cmd(
+    checkpoints_dir: Path | None = typer.Option(
+        None, "--checkpoints-dir", help="Checkpoints root directory."
+    ),
+    playability: Path | None = typer.Option(
+        None, "--playability", help="Path to playability.toml."
+    ),
+    layer_stats: Path | None = typer.Option(
+        None, "--layer-stats", help="Path to layer_stats.json."
+    ),
+    ffmpeg: Path | None = typer.Option(
+        None, "--ffmpeg", help="Explicit path to ffmpeg executable."
+    ),
+    ytdlp: Path | None = typer.Option(
+        None, "--ytdlp", help="Explicit path to yt-dlp executable."
+    ),
+    device: str = typer.Option("auto", "--device", help="auto, cuda, or cpu."),
+    log_file: Path | None = typer.Option(
+        None, "--log-file", help="Log file for internal engine errors."
+    ),
+) -> None:
+    """Start the UTF-8 JSON-lines desktop engine server over stdin/stdout."""
+    import sys
+
+    from bsmaker.engine.server import EngineConfig, run_engine
+
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+    if device not in ("auto", "cuda", "cpu"):
+        typer.echo("--device must be auto, cuda, or cpu", err=True)
+        raise typer.Exit(2)
+
+    if checkpoints_dir is None:
+        cfg = load_config()
+        ckpts = cfg.checkpoints_dir
+        play_path = playability if playability is not None else cfg.playability_path
+        ls_path = layer_stats if layer_stats is not None else cfg.layer_stats_path
+    else:
+        ckpts = checkpoints_dir
+        play_path = playability
+        ls_path = layer_stats
+
+    code = run_engine(
+        EngineConfig(
+            checkpoints_dir=ckpts,
+            playability_path=play_path,
+            layer_stats_path=ls_path,
+            ffmpeg_path=ffmpeg,
+            ytdlp_path=ytdlp,
+            device=None if device == "auto" else device,
+            log_path=log_file,
+        )
+    )
+    raise typer.Exit(code)
