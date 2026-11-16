@@ -31,10 +31,7 @@ def _png(size: int, rgb: tuple[int, int, int]) -> bytes:
             + chunk(b"IEND", b""))
 
 
-def _encode_audio(src: Path, dst: Path, *, ffmpeg_path: Path | None = None) -> None:
-    exe = str(ffmpeg_path) if ffmpeg_path is not None else "ffmpeg"
-    cmd = [exe, "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
-           "-c:a", "libvorbis", "-q:a", "6", "-f", "ogg", str(dst)]
+def _run_ffmpeg(cmd: list[str], what: str) -> None:
     kwargs: dict = {
         "capture_output": True,
         "text": True,
@@ -47,12 +44,26 @@ def _encode_audio(src: Path, dst: Path, *, ffmpeg_path: Path | None = None) -> N
     try:
         res = subprocess.run(cmd, **kwargs)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S} s encoding song.egg") from e
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_TIMEOUT_S} s {what}") from e
     except FileNotFoundError as e:
-        raise RuntimeError("ffmpeg not found on PATH; cannot encode song.egg") from e
+        raise RuntimeError(f"ffmpeg not found on PATH; cannot {what}") from e
     if res.returncode != 0:
         lines = res.stderr.strip().splitlines()
         raise RuntimeError(f"ffmpeg failed (exit {res.returncode}): {lines[-1] if lines else ''}")
+
+
+def _encode_audio(src: Path, dst: Path, *, ffmpeg_path: Path | None = None) -> None:
+    exe = str(ffmpeg_path) if ffmpeg_path is not None else "ffmpeg"
+    cmd = [exe, "-nostdin", "-y", "-loglevel", "error", "-i", str(src), "-vn",
+           "-c:a", "libvorbis", "-q:a", "6", "-f", "ogg", str(dst)]
+    _run_ffmpeg(cmd, "encoding song.egg")
+
+
+def _convert_cover(src: Path, dst: Path, *, ffmpeg_path: Path | None = None) -> None:
+    exe = str(ffmpeg_path) if ffmpeg_path is not None else "ffmpeg"
+    cmd = [exe, "-nostdin", "-y", "-loglevel", "error", "-i", str(src),
+           "-frames:v", "1", "-q:v", "2", str(dst)]
+    _run_ffmpeg(cmd, "converting cover.jpg")
 
 
 @dataclass(frozen=True)
@@ -142,6 +153,7 @@ def _difficulty_json(level: LevelData, bpm: float, lights: Sequence[LightEvent])
 def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels: Sequence[LevelData],
                     lights: Sequence[LightEvent] = (), environment: str = "DefaultEnvironment",
                     audio_src: Path, overwrite: bool = False,
+                    cover_src: Path | None = None,
                     ffmpeg_path: Path | None = None) -> Path:
     """Write one v3 difficulty file per level (ascending rank order in Info).
 
@@ -159,6 +171,14 @@ def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels
         raise ValueError(f"duplicate ranks: {ranks}")
     if not isinstance(environment, str) or not environment:
         raise ValueError("environment must be a non-empty string")
+    if cover_src is not None:
+        cover_path = Path(cover_src)
+        if not cover_path.is_file():
+            raise ValueError(f"cover file not found: {cover_src}")
+        cover_name = "cover.jpg"
+    else:
+        cover_path = None
+        cover_name = "cover.png"
     for lv in levels:
         _validate(lv)
     for i, e in enumerate(lights):
@@ -183,7 +203,7 @@ def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels
         "_previewStartTime": 12,
         "_previewDuration": 10,
         "_songFilename": "song.egg",
-        "_coverImageFilename": "cover.png",
+        "_coverImageFilename": cover_name,
         "_environmentName": environment,
         "_songTimeOffset": 0,
         "_difficultyBeatmapSets": [{
@@ -208,7 +228,13 @@ def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels
         (tmp / "Info.dat").write_text(json.dumps(info, indent=2), encoding="utf-8")
         for name, diff in diffs.items():
             (tmp / name).write_text(json.dumps(diff), encoding="utf-8")
-        (tmp / "cover.png").write_bytes(_png(256, (40, 90, 160)))
+        if cover_path is not None:
+            if cover_path.suffix.lower() in (".jpg", ".jpeg"):
+                shutil.copyfile(cover_path, tmp / "cover.jpg")
+            else:
+                _convert_cover(cover_path, tmp / "cover.jpg", ffmpeg_path=ffmpeg_path)
+        else:
+            (tmp / "cover.png").write_bytes(_png(256, (40, 90, 160)))
         if folder.exists():
             shutil.rmtree(folder)
         tmp.rename(folder)

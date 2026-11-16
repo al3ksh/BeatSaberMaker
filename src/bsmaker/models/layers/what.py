@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from bsmaker.audio.mel import N_MELS
 from bsmaker.data.events_cache import Entry, EventCache
 from bsmaker.data.layers_cache import LayerCache
+from bsmaker.errors import GenerateCancelled
 from bsmaker.formats.model import Note
 from bsmaker.models.common import load_checkpoint, log_nps_value
 from bsmaker.models.layers.spec import LayerSpec, get_spec
@@ -237,7 +238,8 @@ def sample_layer_values(loaded: LoadedWhat, times: Sequence[float], channels: Se
                         mel: np.ndarray, notes: Sequence[Note], nps: float, seed: int,
                         device: str,
                         allowed: Callable[[int, float, int], np.ndarray] | None = None,
-                        temperature: float = 1.0, top_p: float = 0.99
+                        temperature: float = 1.0, top_p: float = 0.99,
+                        is_cancelled: Callable[[], bool] | None = None,
                         ) -> tuple[np.ndarray, int]:
     """Token per event (int64, in the order given; -1 for a skipped event) and the number of
     events skipped because `allowed(event_index, time_s, channel)` left no token on the channel.
@@ -247,6 +249,8 @@ def sample_layer_values(loaded: LoadedWhat, times: Sequence[float], channels: Se
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     cfg = loaded.config
     t_in = np.asarray(times, dtype=np.float64)
     ch_in = np.asarray(channels, dtype=np.int64)
@@ -277,6 +281,8 @@ def sample_layer_values(loaded: LoadedWhat, times: Sequence[float], channels: Se
     masses: list[float] = []
     with torch.inference_mode():
         for i in range(len(t)):
+            if i % 32 == 0 and is_cancelled is not None and is_cancelled():
+                raise GenerateCancelled("cancelled")
             mask = cmask[ch[i]].copy()
             if allowed is not None:
                 extra = np.asarray(allowed(int(order[i]), float(t[i]), int(ch[i])), dtype=bool)
@@ -300,6 +306,8 @@ def sample_layer_values(loaded: LoadedWhat, times: Sequence[float], channels: Se
             kept_idx.append(i)
             kept_t.append(float(t[i]))
             kept_tok.append(tok)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     return out, skipped
 
 

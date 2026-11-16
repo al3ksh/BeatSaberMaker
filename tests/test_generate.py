@@ -491,3 +491,100 @@ def test_multi_level_filters_shared_decor_colliding_with_other_level(models, tmp
     m = read_map(res.folder, layers=True)
     for d in m.difficulties:
         assert check_layers(d.notes, d.layers) == []
+
+
+def test_generate_map_artist_cover_unique_folder_and_progress(models, tmp_path):
+    audio = write_audio(tmp_path / "My Song.wav")
+    cover = tmp_path / "art.jpg"
+    cover.write_bytes(b"\xff\xd8\xff\xe0thumb")
+    events: list[tuple[str, int]] = []
+
+    res1 = _gen(
+        models, audio, tmp_path / "out",
+        title="My: Song?", artist="Cool/Band", cover_src=cover,
+        unique_folder=True, progress=lambda s, p: events.append((s, p)),
+    )
+    info = json.loads((res1.folder / "Info.dat").read_text(encoding="utf-8"))
+    assert info["_songAuthorName"] == "Cool/Band"
+    assert info["_coverImageFilename"] == "cover.jpg"
+    assert (res1.folder / "cover.jpg").read_bytes() == cover.read_bytes()
+    stages = [s for s, _ in events]
+    assert stages[0] == "analyzing" and "notes" in stages and "layers" in stages and stages[-1] == "writing"
+    pcts = [p for _, p in events]
+    assert pcts == sorted(pcts) and pcts[0] >= 0 and pcts[-1] == 100
+
+    res2 = _gen(
+        models, audio, tmp_path / "out",
+        title="My: Song?", artist="Cool/Band", unique_folder=True,
+    )
+    assert res2.folder != res1.folder
+    assert res2.folder.name == f"{res1.folder.name} (2)"
+    assert res1.folder.is_dir() and res2.folder.is_dir()
+
+
+def test_generate_map_cancel_mid_sampling_cleans_up(models, tmp_path):
+    from bsmaker.generate import GenerateCancelled
+
+    audio = write_audio(tmp_path / "a.wav")
+    out = tmp_path / "out"
+    calls = 0
+
+    def cancel_after_notes_start() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > 4
+
+    with pytest.raises(GenerateCancelled):
+        _gen(models, audio, out, is_cancelled=cancel_after_notes_start)
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_generate_map_monotonic_progress_across_density_rounds_and_layer_cancel(models, tmp_path, monkeypatch):
+    from bsmaker import generate as G
+    from bsmaker.generate import GenerateCancelled
+    from bsmaker.models.layers import what as W
+    from bsmaker.models.pattern.sample import SampleReport
+
+    audio = write_audio(tmp_path / "rounds.wav")
+    orig_sample = G.sample_notes
+    calls = 0
+
+    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None):
+        nonlocal calls
+        calls += 1
+        if on_progress is not None:
+            on_progress(1, 2)
+            on_progress(2, 2)
+        notes, rep = orig_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device)
+        if calls == 1:
+            return notes[:2], SampleReport(len(planned), len(notes[:2]), 0, 0, 0)
+        return notes, rep
+
+    monkeypatch.setattr(G, "sample_notes", two_round_sample)
+    events: list[tuple[str, int]] = []
+    _gen(models, audio, tmp_path / "out_rounds", progress=lambda s, p: events.append((s, p)))
+    pcts = [p for _, p in events]
+    assert calls >= 2
+    assert pcts == sorted(pcts)
+
+    seen_cancel_args = []
+    monkeypatch.setattr(G, "sample_notes", orig_sample)
+    orig_generate_lights = G.generate_lights
+
+    def spy_lights(*a, is_cancelled=None, **kw):
+        seen_cancel_args.append(is_cancelled)
+        if is_cancelled and is_cancelled():
+            raise GenerateCancelled("cancelled")
+        return orig_generate_lights(*a, is_cancelled=is_cancelled, **kw)
+
+    monkeypatch.setattr(G, "generate_lights", spy_lights)
+    cancel_fn = lambda: True
+    # Also verify sample_layer_values raises GenerateCancelled directly when cancelled
+    import numpy as np
+    from bsmaker.models.layers.what import sample_layer_values
+    lm = make_layer_models()
+    with pytest.raises(GenerateCancelled):
+        sample_layer_values(
+            lm.lights_what, np.array([1.0]), np.array([0]), np.zeros((100, 80), dtype=np.float32),
+            [], 3.0, 0, "cpu", is_cancelled=cancel_fn,
+        )

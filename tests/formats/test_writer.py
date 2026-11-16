@@ -249,3 +249,33 @@ def test_writer_forwards_explicit_ffmpeg_path(tmp_path, monkeypatch):
         levels=[_easy()], audio_src=AUDIO, ffmpeg_path=fake_bin,
     )
     assert seen["ffmpeg_path"] == fake_bin
+
+
+def test_writer_custom_jpg_cover_and_non_jpg_conversion(tmp_path, monkeypatch):
+    jpg = tmp_path / "thumb.jpg"
+    jpg.write_bytes(b"\xff\xd8\xff\xe0fakejpg")
+    folder = write_map_multi(
+        tmp_path / "BSM - cov", title="Title", artist="Artist", bpm=120.0,
+        levels=[_easy()], audio_src=AUDIO, cover_src=jpg,
+    )
+    info = json.loads((folder / "Info.dat").read_text(encoding="utf-8"))
+    assert info["_songAuthorName"] == "Artist"
+    assert info["_coverImageFilename"] == "cover.jpg"
+    assert (folder / "cover.jpg").read_bytes() == jpg.read_bytes()
+    assert not (folder / "cover.png").exists()
+
+    png = tmp_path / "thumb.webp"
+    png.write_bytes(b"RIFFfakewebp")
+    from bsmaker.formats import writer as W
+    monkeypatch.setattr(W, "_convert_cover", lambda src, dst, ffmpeg_path=None: dst.write_bytes(b"\xff\xd8converted"))
+    folder2 = write_map_multi(
+        tmp_path / "BSM - cov2", title="Title", artist="Artist", bpm=120.0,
+        levels=[_easy()], audio_src=AUDIO, cover_src=png,
+    )
+    assert (folder2 / "cover.jpg").read_bytes() == b"\xff\xd8converted"
+
+    with pytest.raises(ValueError, match="cover"):
+        write_map_multi(
+            tmp_path / "BSM - badcov", title="T", artist="A", bpm=120.0,
+            levels=[_easy()], audio_src=AUDIO, cover_src=tmp_path / "missing.jpg",
+        )

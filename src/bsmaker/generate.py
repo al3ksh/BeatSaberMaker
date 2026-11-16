@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -12,6 +12,7 @@ from bsmaker.audio.beats import Grid, align_grid, detect_grid, snap_times, to_be
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
+from bsmaker.errors import GenerateCancelled
 from bsmaker.formats.events import Event, to_events
 from bsmaker.formats.layer_tokens import SUPPORTED_ENVIRONMENTS
 from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
@@ -43,6 +44,27 @@ MIN_HALF_JUMP_BEATS = 0.25  # the game's own lower limit
 
 class GenerateError(Exception):
     """The song cannot be turned into a map (too short, no usable events, ...)."""
+
+
+ProgressCallback = Callable[[str, int], None]
+CancelCheck = Callable[[], bool]
+
+
+def _check_cancel(is_cancelled: CancelCheck | None) -> None:
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
+
+
+class _ProgressTracker:
+    def __init__(self, callback: ProgressCallback | None) -> None:
+        self._callback = callback
+        self._last_pct = 0
+
+    def emit(self, stage: str, pct: int) -> None:
+        clamped = max(self._last_pct, min(100, int(pct)))
+        self._last_pct = clamped
+        if self._callback is not None:
+            self._callback(stage, clamped)
 
 
 @dataclass(frozen=True)
@@ -216,14 +238,19 @@ def _generate_level_notes(
     pattern: LoadedPattern,
     mask_cfg: PlayabilityConfig,
     device: str,
+    *,
+    is_cancelled: CancelCheck | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[Note], Grid, SampleReport, int, str, float]:
     count_scale = 1.0
     best = None  # (relative error, notes, planned, report, aligned grid)
     rounds = 0
     early_stop = ""
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
+        _check_cancel(is_cancelled)
         rounds = rnd
         events = predict_events(timing, mel, target_nps, styles, device, count_scale)
+        _check_cancel(is_cancelled)
         if len(events) < MIN_EVENTS:
             if best is None:
                 raise GenerateError(f"only {len(events)} events found; the audio looks silent "
@@ -232,7 +259,10 @@ def _generate_level_notes(
             break
         round_grid = align_grid(base_grid, events)
         planned = snap_times(events, round_grid)
-        notes, report = sample_notes(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device)
+        notes, report = sample_notes(
+            pattern, planned, mel, target_nps, styles, seed, mask_cfg, device,
+            is_cancelled=is_cancelled, on_progress=on_progress,
+        )
         measured = _measured_nps(notes)
         err = abs(measured / target_nps - 1.0) if measured > 0 else float("inf")
         if best is None or err < best[0]:
@@ -312,7 +342,10 @@ def generate_map(
     stats: dict,
     device: str,
     overwrite: bool = False,
+    unique_folder: bool = False,
     title: str | None = None,
+    artist: str = "Unknown",
+    cover_src: Path | None = None,
     extra_warnings: Sequence[str] = (),
     levels: Sequence[str] | None = None,
     ornaments: int | None = 0,
@@ -321,6 +354,9 @@ def generate_map(
     layer_models: LayerModels | None = None,
     layer_stats: dict | None = None,
     lights_rules: bool = False,
+    ffmpeg_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+    is_cancelled: CancelCheck | None = None,
 ) -> GenerateResult:
     if (nps is None) == (levels is None):
         raise ValueError("pass either nps or levels, not both or neither")
@@ -348,29 +384,55 @@ def generate_map(
         assert nps is not None
         targets = [(pick_rank(nps, stats), float(nps))]
 
+    tracker = _ProgressTracker(progress)
+    _check_cancel(is_cancelled)
+    tracker.emit("analyzing", 0)
+
     audio_path = Path(audio_path)
-    audio = decode_mono(audio_path)
+    audio = decode_mono(audio_path, ffmpeg_path=ffmpeg_path)
+    _check_cancel(is_cancelled)
+    tracker.emit("analyzing", 5)
+
     duration_s = len(audio) / SAMPLE_RATE
     if duration_s < MIN_AUDIO_S:
         raise GenerateError(f"audio is shorter than {MIN_AUDIO_S:g} s")
     if float(np.abs(audio).max()) < SILENCE_PEAK:
         raise GenerateError("audio is silent")
     mel = log_mel(audio)
+    _check_cancel(is_cancelled)
+    tracker.emit("analyzing", 10)
+
     base_grid: Grid = detect_grid(audio)
+    _check_cancel(is_cancelled)
+    tracker.emit("analyzing", 15)
 
     models = layer_models or LayerModels()
     built: list[_BuiltLevel] = []
-    for rank, target_nps in targets:
+    n_targets = len(targets)
+    for idx, (rank, target_nps) in enumerate(targets):
+        _check_cancel(is_cancelled)
+        band_start = 15 + int(round(60 * idx / n_targets))
+        band_end = 15 + int(round(60 * (idx + 1) / n_targets))
+        tracker.emit("notes", band_start)
+
+        def _on_note_progress(done: int, total: int, *, _s=band_start, _e=band_end) -> None:
+            if total > 0:
+                tracker.emit("notes", _s + int(round((_e - _s) * done / total)))
+
         notes, grid, report, rounds, early_stop, measured = _generate_level_notes(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
+            is_cancelled=is_cancelled, on_progress=_on_note_progress,
         )
+        tracker.emit("notes", band_end)
+
         njs, _ = pick_njs(target_nps, stats)
         njs_offset = reaction_offset(target_nps, njs, grid.bpm)
         orn_level = auto_ornaments_level(target_nps) if ornaments is None else ornaments
+        _check_cancel(is_cancelled)
         if orn_level > 0 and models.ornaments is not None and layer_stats is not None:
             arcs, chains, orn_rep = sample_ornaments(
                 models.ornaments, notes, mel, target_nps, orn_level,
-                layer_stats, grid.bpm, seed, device,
+                layer_stats, grid.bpm, seed, device, is_cancelled=is_cancelled,
             )
         else:
             arcs, chains, orn_rep = [], [], OrnamentReport(0, 0, 0, 0, 0, 0)
@@ -381,20 +443,25 @@ def generate_map(
             ornament_report=orn_rep,
         ))
 
+    _check_cancel(is_cancelled)
+    tracker.emit("layers", 80)
+
     densest = max(built, key=lambda lv: (lv.measured_nps, _RANK_ORDER[lv.rank]))
     decor_level = auto_ornaments_level(densest.target_nps) if ornaments is None else ornaments
     obstacles, bombs, decor_rep = generate_decor(
         models, mel, densest.notes, densest.target_nps, base_grid.bpm, duration_s,
-        decor_level, layer_stats, seed, device,
+        decor_level, layer_stats, seed, device, is_cancelled=is_cancelled,
     )
     if len(built) > 1 and (obstacles or bombs):
         other_idxs = [NoteIndex(lv.notes) for lv in built if lv is not densest]
         obstacles, bombs, decor_rep = _filter_shared_decor(obstacles, bombs, decor_rep, other_idxs)
+    tracker.emit("layers", 86)
 
+    _check_cancel(is_cancelled)
     light_events, lights_rep = generate_lights(
         models, mel, densest.notes, densest.target_nps, base_grid.bpm,
         densest.grid.offset_s, duration_s, lights, layer_stats, seed, device,
-        use_rules=lights_rules,
+        use_rules=lights_rules, is_cancelled=is_cancelled,
     )
 
     for lv in built:
@@ -404,6 +471,7 @@ def generate_map(
         )
         if check_layers(lv.notes, lv_layers):
             raise RuntimeError(f"generated map ({lv.rank}) breaks a hard layer rule (bug)")
+    tracker.emit("layers", 92)
 
     warnings: list[str] = list(extra_warnings)
     if not base_grid.steady:
@@ -428,9 +496,16 @@ def generate_map(
 
     raw = title or audio_path.stem
     name = re.sub(r"[\x00-\x1f\x7f]", "", raw).strip()[:120] or "untitled"
+    clean_artist = re.sub(r"[\x00-\x1f\x7f]", "", artist).strip()[:120] or "Unknown"
     style = "+".join(styles) or "unknown"
     tag = f"nps {nps:g}" if levels is None else "+".join(lv.rank for lv in built)
-    folder = Path(out_dir) / f"BSM - {safe_title(name)} [{tag}, {style}]"
+    base_name = f"BSM - {safe_title(name)} [{tag}, {style}]"
+    folder = Path(out_dir) / base_name
+    if unique_folder and not overwrite and folder.exists():
+        n = 2
+        while (Path(out_dir) / f"{base_name} ({n})").exists():
+            n += 1
+        folder = Path(out_dir) / f"{base_name} ({n})"
     level_data = [
         LevelData(
             rank=lv.rank, njs=lv.njs, njs_offset=lv.njs_offset, notes=lv.notes,
@@ -438,16 +513,20 @@ def generate_map(
         )
         for lv in built
     ]
+    _check_cancel(is_cancelled)
+    tracker.emit("writing", 92)
     try:
         write_map_multi(
-            folder, title=name, artist="Unknown", bpm=base_grid.bpm,
+            folder, title=name, artist=clean_artist, bpm=base_grid.bpm,
             levels=level_data, lights=light_events, environment=environment,
             audio_src=audio_path, overwrite=overwrite,
+            cover_src=cover_src, ffmpeg_path=ffmpeg_path,
         )
     except FileExistsError:
         raise
     except OSError as e:
         raise GenerateError(f"cannot write the map to {out_dir}: {e}") from e
+    tracker.emit("writing", 100)
 
     level_results = tuple(
         LevelResult(

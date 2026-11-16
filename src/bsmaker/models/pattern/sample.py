@@ -1,13 +1,15 @@
 """Sample notes from the pattern model while the playability mask removes every rule-breaking token."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
+
+from bsmaker.errors import GenerateCancelled
 
 from bsmaker.formats.events import FRAMES_PER_SECOND
 from bsmaker.formats.model import Note
@@ -132,7 +134,9 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                  styles: Iterable[str], seed: int, cfg: PlayabilityConfig, device: str,
                  temperature: float = DEFAULT_TEMPERATURE,
                  top_p: float = DEFAULT_TOP_P,
-                 double_bias: DoubleBias | None = DEFAULT_DOUBLE_BIAS) -> tuple[list[Note], SampleReport]:
+                 double_bias: DoubleBias | None = DEFAULT_DOUBLE_BIAS,
+                 is_cancelled: Callable[[], bool] | None = None,
+                 on_progress: Callable[[int, int], None] | None = None) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
 
     The model works on the mel frame grid; the mask must hold both on frame times (what `to_events`
@@ -143,6 +147,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     planned_in = np.sort(np.asarray(event_times_s, dtype=np.float64))
     n_events = len(planned_in)
     all_frames = np.round(planned_in * FRAMES_PER_SECOND).astype(np.int64)
@@ -170,8 +176,11 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     kept_idx: list[int] = []        # indices into `times` of kept events
     kept_tok: list[tuple[int, int]] = []
     run = 0                         # consecutive doubles ending at the last kept event
+    total_times = len(times)
     with torch.inference_mode():
         for i, t in enumerate(times.tolist()):
+            if i % 32 == 0 and is_cancelled is not None and is_cancelled():
+                raise GenerateCancelled("cancelled")
             k = min(len(kept_idx), ctx - 1)
             win = kept_idx[len(kept_idx) - k:] + [i]
             gaps = window_gaps([times[j] for j in kept_idx], t, times[i + 1:i + 1 + N_NEXT],
@@ -202,6 +211,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                 mask_r[NONE_TOKEN] = False
                 if not mask_r.any():
                     n_skipped += 1
+                    if on_progress is not None and (i % 16 == 0 or i + 1 == total_times):
+                        on_progress(i + 1, total_times)
                     continue
                 right = _pick(right_lg, mask_r, temperature, top_p, gen, masses)
                 n_fallback += 1
@@ -214,6 +225,10 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             kept_idx.append(i)
             kept_tok.append((left, right))
             run = run + 1 if left != NONE_TOKEN and right != NONE_TOKEN else 0
+            if on_progress is not None and (i % 16 == 0 or i + 1 == total_times):
+                on_progress(i + 1, total_times)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     report = SampleReport(n_events, n_skipped, n_fallback,
                           float(np.mean(masses)) if masses else 0.0, n_collisions)
     return notes, report

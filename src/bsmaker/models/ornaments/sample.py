@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +12,7 @@ import torch
 from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.audio.mel import HOP
 from bsmaker.data.layer_stats import level_rate
+from bsmaker.errors import GenerateCancelled
 from bsmaker.formats.layer_tokens import ARC_LENGTH_BEATS
 from bsmaker.formats.model import Arc, Chain, Note
 from bsmaker.formats.tokens import encode_token
@@ -79,8 +80,11 @@ def _build_arc(note: Note, length_beats: float, tx: int, ty: int, td: int, beat_
 
 @torch.no_grad()
 def _probabilities(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.ndarray, nps: float,
-                   device: str) -> dict[str, np.ndarray]:
+                   device: str,
+                   is_cancelled: Callable[[], bool] | None = None) -> dict[str, np.ndarray]:
     """Per-note softmax of every head (chunks of `context` notes, true gaps across chunks)."""
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     t = np.array([n.time_s for n in notes], dtype=np.float64)
     hand = np.array([n.color for n in notes], dtype=np.int64)
     token = np.array([encode_token(n.x, n.y, n.direction) for n in notes], dtype=np.int64)
@@ -89,6 +93,8 @@ def _probabilities(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.ndarr
     outs: dict[str, list[np.ndarray]] = {k: [] for k in ("chain", "arc_len", "arc_cell", "arc_dir")}
     log_nps = torch.tensor([log_nps_value(nps)], dtype=torch.float32, device=device)
     for a in range(0, len(notes), ctx):
+        if is_cancelled is not None and is_cancelled():
+            raise GenerateCancelled("cancelled")
         sl = slice(a, a + ctx)
         n = len(t[sl])
         out = loaded.model(
@@ -108,12 +114,15 @@ def _softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
 
 def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.ndarray, nps: float,
                      level: int, layer_stats: dict, bpm: float, seed: int,
-                     device: str) -> tuple[list[Arc], list[Chain], OrnamentReport]:
+                     device: str,
+                     is_cancelled: Callable[[], bool] | None = None) -> tuple[list[Arc], list[Chain], OrnamentReport]:
     """Chains and arcs for `notes`; counts follow the level's human rate for the map's nps.
 
     Every returned object satisfies the hard rules; when too few notes qualify the result has
     fewer objects than requested (a warning is logged), never a rule violation.
     """
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     notes = sorted(notes, key=lambda n: (n.time_s, n.color))
     if level == 0 or not notes or not bpm > 0:
         return [], [], OrnamentReport(0, 0, 0, 0, 0, 0)
@@ -125,22 +134,26 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
     idx = NoteIndex(notes)
     beat_s = 60.0 / bpm
     tail_cells = [_chain_tail_cell(n) for n in notes]
-    can_chain = [
+    can_chain = []
+    for i, (n, tc) in enumerate(zip(notes, tail_cells)):
+        if i % 32 == 0 and is_cancelled is not None and is_cancelled():
+            raise GenerateCancelled("cancelled")
         # segments=3 is a placeholder for the rule check (`chain_ok` ignores segment count).
-        tc is not None and chain_ok(_build_chain(n, tc, 3, beat_s), idx)
-        for n, tc in zip(notes, tail_cells)
-    ]
-    arc_buckets = [
-        [k + 1 for k, beats in enumerate(ARC_LENGTH_BEATS)
-         if arc_ok(_build_arc(n, beats, n.x, n.y, n.direction, beat_s), idx)]
-        for n in notes
-    ]
+        can_chain.append(tc is not None and chain_ok(_build_chain(n, tc, 3, beat_s), idx))
+    arc_buckets = []
+    for i, n in enumerate(notes):
+        if i % 32 == 0 and is_cancelled is not None and is_cancelled():
+            raise GenerateCancelled("cancelled")
+        arc_buckets.append([
+            k + 1 for k, beats in enumerate(ARC_LENGTH_BEATS)
+            if arc_ok(_build_arc(n, beats, n.x, n.y, n.direction, beat_s), idx)
+        ])
     rejected_chain = len(notes) - sum(can_chain)
     rejected_arc = sum(1 for b in arc_buckets if not b)
     if want_arcs + want_chains == 0:
         return [], [], OrnamentReport(0, 0, 0, 0, rejected_chain, rejected_arc)
 
-    probs = _probabilities(loaded, notes, mel, nps, device)
+    probs = _probabilities(loaded, notes, mel, nps, device, is_cancelled=is_cancelled)
     p_chain = _softmax(probs["chain"])
     p_arc = _softmax(probs["arc_len"])
     cands = []  # (-p, time, kind, index)
@@ -162,7 +175,9 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
 
     rng = np.random.default_rng(seed)
     chains = []
-    for i in sorted(picked[0]):
+    for idx_pos, i in enumerate(sorted(picked[0])):
+        if idx_pos % 32 == 0 and is_cancelled is not None and is_cancelled():
+            raise GenerateCancelled("cancelled")
         n = notes[i]
         tc = tail_cells[i]
         if tc is None:
@@ -170,7 +185,9 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
         segments = 3 + int(np.argmax(p_chain[i, 1:]))
         chains.append(_build_chain(n, tc, segments, beat_s))
     arcs = []
-    for i in sorted(picked[1]):
+    for idx_pos, i in enumerate(sorted(picked[1])):
+        if idx_pos % 32 == 0 and is_cancelled is not None and is_cancelled():
+            raise GenerateCancelled("cancelled")
         n = notes[i]
         allowed = arc_buckets[i]
         cls = 1 + int(np.argmax(p_arc[i, 1:]))
@@ -178,6 +195,8 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
         cell = int(rng.choice(12, p=_softmax(probs["arc_cell"][i], TEMPERATURE)))
         direction = int(rng.choice(9, p=_softmax(probs["arc_dir"][i], TEMPERATURE)))
         arcs.append(_build_arc(n, ARC_LENGTH_BEATS[cls - 1], cell % 4, cell // 4, direction, beat_s))
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     report = OrnamentReport(want_arcs, want_chains, len(arcs), len(chains), rejected_chain,
                             rejected_arc)
     if len(arcs) < want_arcs or len(chains) < want_chains:

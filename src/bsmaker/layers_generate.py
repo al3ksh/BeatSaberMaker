@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from bsmaker.data.layer_stats import level_rate
+from bsmaker.errors import GenerateCancelled
 from bsmaker.formats.layer_tokens import (
     WALL_VOCAB, mask_to_cells, token_to_light_event, token_to_wall)
 from bsmaker.formats.model import Bomb, LightEvent, Note, Obstacle
@@ -192,9 +193,13 @@ def generate_decor(
     layer_stats: dict | None,
     seed: int,
     device: str,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[Obstacle], list[Bomb], dict]:
     """Generate rule-safe decorative walls, bomb groups and gameplay obstacles."""
     _check_level(level)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     if level == 0:
         return [], [], _decor_report()
     missing_models = models.decor_when is None or models.decor_what is None
@@ -218,7 +223,11 @@ def generate_decor(
     n_right = total_walls - n_left
     counts = (n_left, n_right, n_bombs)
 
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     times_per_ch = predict_layer_events(models.decor_when, mel, notes, nps, counts, device)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     times, channels = _flatten_events(times_per_ch)
     bomb_vocab = (
         [int(m) for m in models.decor_what.bomb_masks]
@@ -239,6 +248,7 @@ def generate_decor(
         seed,
         device,
         allowed=lambda idx, _t, _ch: allowed_masks[idx],
+        is_cancelled=is_cancelled,
     )
 
     decor_walls: list[Obstacle] = []
@@ -306,9 +316,13 @@ def generate_lights(
     seed: int,
     device: str,
     use_rules: bool = False,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[LightEvent], dict]:
     """Generate lightshow events via the learned models or `rule_lights` fallback."""
     _check_level(level)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     if level == 0:
         return [], _lights_report()
     missing_models = models.lights_when is None or models.lights_what is None
@@ -334,10 +348,15 @@ def generate_lights(
         int(round(level_rate(layer_stats, el, nps, level) * minutes))
         for el in LIGHTS.rate_elements
     ]
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     times_per_ch = predict_layer_events(models.lights_when, mel, notes, nps, counts, device)
+    if is_cancelled is not None and is_cancelled():
+        raise GenerateCancelled("cancelled")
     times, channels = _flatten_events(times_per_ch)
     tokens, skipped = sample_layer_values(
-        models.lights_what, times, channels, mel, notes, nps, seed, device
+        models.lights_what, times, channels, mel, notes, nps, seed, device,
+        is_cancelled=is_cancelled,
     )
 
     events: list[LightEvent] = []
