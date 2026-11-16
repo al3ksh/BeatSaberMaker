@@ -1,10 +1,12 @@
 import path from "node:path";
 import { app, BrowserWindow, Menu } from "electron";
 import { createDefaultResolveLaunch, EngineManager } from "./engineManager";
+import { defaultManifestUrl, EnginePackInstaller, resolveExpectedEngineVersion } from "./enginePack";
 import { registerIpcHandlers } from "./ipc";
 import { LibraryStore } from "./library";
 import { createLogger } from "./logger";
 import { SettingsStore } from "./store";
+import { setupUpdater } from "./updater";
 
 app.setName("BeatSaberMaker");
 if (process.env.BSM_USER_DATA_DIR) {
@@ -84,16 +86,29 @@ if (gotLock) {
       },
     });
 
+    const expectedEngineVersion = resolveExpectedEngineVersion(app.getAppPath());
+    const enginePack = new EnginePackInstaller({
+      engineDir: path.join(userDataDir, "engine"),
+      downloadDir: path.join(userDataDir, "engine-downloads"),
+      expectedVersion: expectedEngineVersion,
+      manifestUrl: defaultManifestUrl(app.getVersion()),
+    });
+    const updater = setupUpdater(() => mainWindow, logger);
+
     registerIpcHandlers({
       appVersion: app.getVersion(),
       appPath: app.getAppPath(),
       userDataDir,
       mediaDir,
       engine: engineManager,
+      enginePack,
+      expectedEngineVersion,
       settingsStore,
       libraryStore,
       logger,
       getWindow: () => mainWindow,
+      checkForUpdates: updater.checkForUpdates,
+      installUpdate: updater.installUpdate,
     });
 
     mainWindow = createWindow();

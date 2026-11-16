@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { EngineError, EngineManager } from "./engineManager";
+import type { EnginePackInstaller } from "./enginePack";
 import type { LibraryStore } from "./library";
 import type { AppLogger } from "./logger";
 import type { SettingsStore } from "./store";
@@ -58,24 +59,6 @@ export async function validateCustomLevelsFolder(
   return { valid: false, resolvedPath: null };
 }
 
-function readEngineVersion(appPath: string): string {
-  const candidates = [
-    path.join(appPath, "engine-version.json"),
-    path.resolve(__dirname, "..", "engine-version.json"),
-  ];
-  for (const cand of candidates) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(cand, "utf8")) as { engineVersion?: string };
-      if (typeof parsed.engineVersion === "string" && parsed.engineVersion) {
-        return parsed.engineVersion;
-      }
-    } catch {
-      // Try next candidate.
-    }
-  }
-  return "1";
-}
-
 function wrapIpcError(err: unknown, logger: AppLogger): never {
   if (err instanceof EngineError) {
     throw new Error(`BSM_CODE:${err.code}`);
@@ -104,11 +87,12 @@ export interface IpcDeps {
   userDataDir: string;
   mediaDir: string;
   engine: EngineManager;
+  enginePack: EnginePackInstaller;
+  expectedEngineVersion: string;
   settingsStore: SettingsStore;
   libraryStore: LibraryStore;
   logger: AppLogger;
   getWindow: () => BrowserWindow | null;
-  installEnginePack?: () => Promise<void>;
   checkForUpdates?: () => Promise<void>;
   installUpdate?: () => void;
 }
@@ -116,33 +100,22 @@ export interface IpcDeps {
 export function registerIpcHandlers(deps: IpcDeps): void {
   const {
     appVersion,
-    appPath,
     userDataDir,
     mediaDir,
     engine,
+    enginePack,
+    expectedEngineVersion,
     settingsStore,
     libraryStore,
     logger,
     getWindow,
   } = deps;
 
-  const engineVersion = readEngineVersion(appPath);
   const tmpDownloadsRoot = path.join(userDataDir, "tmp-downloads");
-
-  function computeNeedsEnginePack(installedVersion: string | null): boolean {
-    if (installedVersion !== engineVersion) {
-      return true;
-    }
-    if (process.env.BSM_ENGINE_CMD) {
-      return false;
-    }
-    const engineExe = path.join(userDataDir, "engine", "bsmaker-engine", "bsmaker-engine.exe");
-    return !fs.existsSync(engineExe);
-  }
 
   ipcMain.handle("bsm:getStartupState", async (): Promise<StartupState> => {
     const settings = await settingsStore.load();
-    const needsEnginePack = computeNeedsEnginePack(settings.engineVersionInstalled);
+    const needsEnginePack = await enginePack.needsInstall();
     let info: EngineInfo | null = null;
     if (!needsEnginePack) {
       try {
@@ -157,7 +130,7 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     }
     return {
       needsEnginePack,
-      engineVersion,
+      engineVersion: expectedEngineVersion,
       appVersion,
       settings,
       info,
@@ -165,12 +138,11 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle("bsm:installEnginePack", async (): Promise<void> => {
-    if (!deps.installEnginePack) {
-      throw new Error("BSM_CODE:internal");
-    }
     await engine.stop();
-    await deps.installEnginePack();
-    await settingsStore.save({ engineVersionInstalled: engineVersion });
+    await enginePack.install((progress) => {
+      getWindow()?.webContents.send("bsm:enginePackProgress", progress);
+    });
+    await settingsStore.save({ engineVersionInstalled: expectedEngineVersion });
   });
 
   ipcMain.handle("bsm:getInfo", async (): Promise<EngineInfo> => {
