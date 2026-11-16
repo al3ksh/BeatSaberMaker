@@ -288,3 +288,46 @@ def test_dot_brake_rejects_invalid_values(bad) -> None:
 def test_dot_brake_penalty_grows_then_caps() -> None:
     b = DotBrake(per_dot=0.5, cap=3, free=1)
     assert [b.penalty(r) for r in (0, 1, 2, 4, 9)] == [0.0, 0.0, 0.5, 1.5, 1.5]
+
+
+def _scripted_logits(loaded, script, dot_brake, monkeypatch):
+    """Logits seen by `_pick` (left, right per event) while the tokens are forced to `script`."""
+    seen, queue = [], [tok for pair in script for tok in pair]
+
+    def fake_pick(logits, mask, temperature, top_p, gen, masses):
+        seen.append(logits.clone())
+        return queue.pop(0)
+    monkeypatch.setattr(S, "_pick", fake_pick)
+    times = 2.0 + np.arange(len(script)) * 1.0
+    _run(loaded, times, double_bias=None, dot_brake=dot_brake)
+    return seen
+
+
+def test_dot_brake_run_state_per_hand(loaded, monkeypatch) -> None:
+    dot, plain, none = DOT_TOKENS[0], 1, NONE_TOKEN
+    script = [(dot, none), (none, dot), (dot, dot), (dot, plain), (none, dot), (dot, plain)]
+    brake = DotBrake(2.0, cap=2, free=1)
+    base = _scripted_logits(loaded, script, None, monkeypatch)
+    braked = _scripted_logits(loaded, script, brake, monkeypatch)
+    # runs of (left, right) before each event:
+    # (0,0) (1,0) (1,1) (2,2) (3,0) (3,1); penalty = 2 * min(max(run - 1, 0), 2)
+    expect = [(0, 0), (0, 0), (0, 0), (2, 2), (4, 0), (4, 0)]
+    assert len(braked) == 12
+    for i, (pl, pr) in enumerate(expect):
+        for call, pen in ((2 * i, pl), (2 * i + 1, pr)):
+            delta = base[call] - braked[call]
+            want = torch.zeros(VOCAB_SIZE)
+            want[list(DOT_TOKENS)] = pen
+            torch.testing.assert_close(delta, want, atol=1e-5, rtol=0)
+
+
+def test_sample_notes_defaults_use_default_dot_brake_and_double_bias() -> None:
+    import inspect
+    params = inspect.signature(sample_notes).parameters
+    assert params["dot_brake"].default is DEFAULT_DOT_BRAKE
+    assert params["double_bias"].default is DEFAULT_DOUBLE_BIAS
+
+
+def test_dot_brake_rejects_bool_per_dot() -> None:
+    with pytest.raises(ValueError):
+        DotBrake(per_dot=True)

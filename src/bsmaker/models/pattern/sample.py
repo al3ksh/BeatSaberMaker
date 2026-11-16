@@ -76,10 +76,10 @@ DEFAULT_DOUBLE_BIAS = DoubleBias(base=0.0, short=0.5, very_short=1.5, per_run=0.
 class DotBrake:
     """Negative logit on the dot tokens of a hand after that hand's consecutive dot notes.
 
-    `per_dot` is subtracted per consecutive dot note of the hand beyond the first `free` ones (at
-    most `cap` of them; events
-    where the hand plays nothing neither extend nor reset the run). Applied before the mask,
-    so masked tokens stay masked and dots stay possible when the mask leaves only dots.
+    `per_dot` is subtracted per consecutive dot note of the hand beyond the first `free` ones, for
+    at most `cap` of them. Events where the hand plays nothing neither extend nor reset the run.
+    Applied before the mask, so masked tokens stay masked and dots stay possible when the mask
+    leaves only dots.
     """
     per_dot: float = 0.0
     cap: int = 4
@@ -87,7 +87,8 @@ class DotBrake:
 
     def __post_init__(self) -> None:
         v = self.per_dot
-        if not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        if (not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v)
+                or v < 0):
             raise ValueError(f"DotBrake.per_dot must be a finite number >= 0, got {v!r}")
         for name in ("cap", "free"):
             n = getattr(self, name)
@@ -100,6 +101,8 @@ class DotBrake:
 
 DOT_DIRECTION = 8
 DOT_TOKENS = tuple(1 + x * 27 + y * 9 + DOT_DIRECTION for x in range(4) for y in range(3))
+_DOT_SET = frozenset(DOT_TOKENS)
+_DOT_IDX = list(DOT_TOKENS)
 # GHOST seed 0 (nps 6): 39% dots, runs up to 109 -> 4.6%, longest run 6. Val, 60 difficulties: dots 2.9% (human
 # 3.9%), dot runs of 4+ 90 (human 105), doubles .172 -> .169, tv_row_dir .064 -> .069.
 DEFAULT_DOT_BRAKE = DotBrake(per_dot=2.0, cap=3, free=3)
@@ -173,7 +176,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     and `check` see) and on the exact planned times (what the game plays), so two playability
     states are kept and their masks are ANDed. Returned notes carry the exact planned times.
     Events landing on an already used frame (first planned time wins) are counted as frame
-    collisions, not as skipped. `double_bias=None` switches the double-note calibration off.
+    collisions, not as skipped. `double_bias=None` and `dot_brake=None` switch the double-note calibration and the dot-run brake
+    off.
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
@@ -221,14 +225,16 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             left_lg = model.left_logits(h)[0].float().cpu()
             te = float(exact[i])
             mask_l = allowed(state, t, 0, cfg) & allowed(state_x, te, 0, cfg)
-            if dot_brake is not None and dot_brake.penalty(dot_run[0]):
+            pen_l = dot_brake.penalty(dot_run[0]) if dot_brake is not None else 0.0
+            if pen_l:
                 left_lg = left_lg.clone()
-                left_lg[list(DOT_TOKENS)] -= dot_brake.penalty(dot_run[0])
+                left_lg[_DOT_IDX] -= pen_l
             left = _pick(left_lg, mask_l, temperature, top_p, gen, masses)
             right_lg = model.right_logits(h, torch.tensor([left], device=dev))[0].float().cpu()
-            if dot_brake is not None and dot_brake.penalty(dot_run[1]):
+            pen_r = dot_brake.penalty(dot_run[1]) if dot_brake is not None else 0.0
+            if pen_r:
                 right_lg = right_lg.clone()
-                right_lg[list(DOT_TOKENS)] -= dot_brake.penalty(dot_run[1])
+                right_lg[_DOT_IDX] -= pen_r
             if double_bias is not None and left != NONE_TOKEN:
                 gap = t - times[kept_idx[-1]] if kept_idx else math.inf
                 bias = double_bias.at(gap, run)
@@ -256,7 +262,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             kept_tok.append((left, right))
             for hand, token in enumerate((left, right)):
                 if token != NONE_TOKEN:
-                    dot_run[hand] = dot_run[hand] + 1 if token in DOT_TOKENS else 0
+                    dot_run[hand] = dot_run[hand] + 1 if token in _DOT_SET else 0
             run = run + 1 if left != NONE_TOKEN and right != NONE_TOKEN else 0
     report = SampleReport(n_events, n_skipped, n_fallback,
                           float(np.mean(masses)) if masses else 0.0, n_collisions)
