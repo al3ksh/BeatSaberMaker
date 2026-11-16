@@ -22,6 +22,7 @@ export function App() {
   const [needsFirstRun, setNeedsFirstRun] = useState(false);
   const [tab, setTab] = useState<Tab>("create");
   const [regenerateTarget, setRegenerateTarget] = useState<LibraryEntry | null>(null);
+  const [regenerateImmediate, setRegenerateImmediate] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
   const [libraryEntries, setLibraryEntries] = useState<LibraryEntry[]>([]);
@@ -200,7 +201,11 @@ export function App() {
               {tab === "create" ? (
                 <Wizard
                   regenerateTarget={regenerateTarget}
-                  onClearRegenerate={() => setRegenerateTarget(null)}
+                  regenerateImmediate={regenerateImmediate}
+                  onClearRegenerate={() => {
+                    setRegenerateTarget(null);
+                    setRegenerateImmediate(false);
+                  }}
                   onGoToLibrary={() => setTab("library")}
                 />
               ) : (
@@ -213,8 +218,9 @@ export function App() {
                     setLibraryLoaded(true);
                   }}
                   onCoversChanged={setLibraryCovers}
-                  onRegenerate={(entry) => {
+                  onRegenerate={(entry, immediate) => {
                     setRegenerateTarget(entry);
+                    setRegenerateImmediate(Boolean(immediate));
                     setTab("create");
                   }}
                   onGoToCreate={() => setTab("create")}

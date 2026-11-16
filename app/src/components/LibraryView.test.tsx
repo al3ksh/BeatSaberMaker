@@ -59,6 +59,26 @@ describe("LibraryView", () => {
     await waitFor(() => expect(deleteLibraryEntry).toHaveBeenCalledWith("e1"));
   });
 
+  it("bypasses confirmations on Shift+Click for Delete and Regenerate", async () => {
+    const entry = makeEntry("e1", "GHOST");
+    const deleteLibraryEntry = vi.fn(async () => []);
+    (window as unknown as { bsm: unknown }).bsm = {
+      listLibrary: vi.fn(async () => [entry]),
+      deleteLibraryEntry,
+      exportMapZip: vi.fn(),
+      readCoverDataUrl: vi.fn(async () => null),
+    };
+    const onRegenerate = vi.fn();
+    render(<LibraryView onRegenerate={onRegenerate} />);
+    expect(await screen.findByText("GHOST")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /regenerate/i }), { shiftKey: true });
+    expect(onRegenerate).toHaveBeenCalledWith(entry, true);
+
+    fireEvent.click(screen.getByRole("button", { name: /delete/i }), { shiftKey: true });
+    await waitFor(() => expect(deleteLibraryEntry).toHaveBeenCalledWith("e1"));
+  });
+
   it("filters by search query and paginates large libraries", async () => {
     const entries = Array.from({ length: 8 }, (_, idx) =>
       makeEntry(`e${idx + 1}`, `Track ${idx + 1}`, idx === 7 ? "SpecialArtist" : "Artist"),

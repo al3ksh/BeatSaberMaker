@@ -36,7 +36,7 @@ function visiblePageNumbers(current: number, total: number): Array<number | "ell
 }
 
 export interface LibraryViewProps {
-  onRegenerate: (entry: LibraryEntry) => void;
+  onRegenerate: (entry: LibraryEntry, immediate?: boolean) => void;
   onGoToCreate?: () => void;
   initialEntries?: LibraryEntry[];
   initialCovers?: Record<string, string>;
@@ -326,7 +326,11 @@ export function LibraryView({
                         <Button
                           variant="secondary"
                           size="sm"
-                          onClick={() => onRegenerate(entry)}
+                          onClick={(e) => {
+                            if (e.shiftKey) onRegenerate(entry, true);
+                            else onRegenerate(entry);
+                          }}
+                          title={EN.library.regenerateHint}
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
                           {EN.library.regenerate}
@@ -351,7 +355,11 @@ export function LibraryView({
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setConfirmDeleteId(entry.id)}
+                        onClick={(e) => {
+                          if (e.shiftKey) void handleConfirmDelete(entry.id);
+                          else setConfirmDeleteId(entry.id);
+                        }}
+                        title={EN.library.deleteHint}
                         className="text-red-400 hover:text-red-300"
                       >
                         <Trash2 className="h-3.5 w-3.5" />

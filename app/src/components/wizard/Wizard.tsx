@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check } from "lucide-react";
 import { EN } from "../../i18n/en";
@@ -30,69 +30,49 @@ function extractErrorCode(err: unknown): string {
 
 export interface WizardProps {
   regenerateTarget: LibraryEntry | null;
+  regenerateImmediate?: boolean;
   onClearRegenerate: () => void;
   onGoToLibrary: () => void;
 }
 
 export function Wizard({
   regenerateTarget,
+  regenerateImmediate = false,
   onClearRegenerate,
   onGoToLibrary,
 }: WizardProps) {
-  const [step, setStep] = useState<1 | 2 | 3>(regenerateTarget ? 2 : 1);
+  const [step, setStep] = useState<1 | 2 | 3>(
+    regenerateTarget ? (regenerateImmediate ? 3 : 2) : 1,
+  );
   const [song, setSong] = useState<SongDraft>(EMPTY_SONG);
   const [config, setConfig] = useState<MapGenerationConfig>(PACK_DEFAULT_CONFIG);
   const [status, setStatus] = useState<"running" | "done" | "error">("running");
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [result, setResult] = useState<GenerateOutput | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  const immediateStartedIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (!regenerateTarget) return;
-    setSong({
-      sourceType: "cached",
-      sourcePathOrUrl: regenerateTarget.audioCachePath,
-      title: regenerateTarget.title,
-      artist: regenerateTarget.artist,
-      coverPath: regenerateTarget.coverCachePath,
-      thumbnailUrl: null,
-    });
-    setConfig({
-      ...regenerateTarget.config,
-      mode: "custom",
-    });
-    setStep(2);
-    setResult(null);
-    setErrorCode(null);
-  }, [regenerateTarget]);
-
-  function handleReset() {
-    onClearRegenerate();
-    setSong(EMPTY_SONG);
-    setConfig(PACK_DEFAULT_CONFIG);
-    setProgress(null);
-    setResult(null);
-    setErrorCode(null);
-    setStep(1);
-  }
-
-  async function handleGenerate() {
+  async function runGeneration(
+    targetSong: SongDraft,
+    targetConfig: MapGenerationConfig,
+    regenId?: string,
+  ) {
     const effectiveConfig: MapGenerationConfig =
-      config.mode === "pack"
+      targetConfig.mode === "pack"
         ? {
-            ...config,
+            ...targetConfig,
             seed:
-              config.seed > 0
-                ? config.seed
+              targetConfig.seed > 0
+                ? targetConfig.seed
                 : Math.floor(Math.random() * 2_000_000_000) + 1,
           }
-        : config;
+        : targetConfig;
 
     setConfig(effectiveConfig);
     setStep(3);
     setStatus("running");
     setProgress({
-      stage: song.sourceType === "youtube" ? "downloading" : "analyzing",
+      stage: targetSong.sourceType === "youtube" ? "downloading" : "analyzing",
       pct: 0,
     });
     setResult(null);
@@ -104,13 +84,13 @@ export function Wizard({
 
     try {
       const { result: genRes } = await window.bsm.startGeneration({
-        sourceType: song.sourceType,
-        sourcePathOrUrl: song.sourcePathOrUrl,
-        title: song.title,
-        artist: song.artist || "Unknown",
-        coverPath: song.coverPath,
+        sourceType: targetSong.sourceType,
+        sourcePathOrUrl: targetSong.sourcePathOrUrl,
+        title: targetSong.title,
+        artist: targetSong.artist || "Unknown",
+        coverPath: targetSong.coverPath,
         config: effectiveConfig,
-        regenerateId: regenerateTarget?.id,
+        regenerateId: regenId,
       });
       setResult(genRes);
       setStatus("done");
@@ -126,6 +106,50 @@ export function Wizard({
     } finally {
       unsub?.();
     }
+  }
+
+  useEffect(() => {
+    if (!regenerateTarget) {
+      immediateStartedIdRef.current = null;
+      return;
+    }
+    const nextSong: SongDraft = {
+      sourceType: "cached",
+      sourcePathOrUrl: regenerateTarget.audioCachePath,
+      title: regenerateTarget.title,
+      artist: regenerateTarget.artist,
+      coverPath: regenerateTarget.coverCachePath,
+      thumbnailUrl: null,
+    };
+    const nextConfig: MapGenerationConfig = {
+      ...regenerateTarget.config,
+      mode: "custom",
+    };
+    setSong(nextSong);
+    setConfig(nextConfig);
+    setResult(null);
+    setErrorCode(null);
+    if (regenerateImmediate) {
+      if (immediateStartedIdRef.current === regenerateTarget.id) return;
+      immediateStartedIdRef.current = regenerateTarget.id;
+      void runGeneration(nextSong, nextConfig, regenerateTarget.id);
+    } else {
+      setStep(2);
+    }
+  }, [regenerateTarget, regenerateImmediate]);
+
+  function handleReset() {
+    onClearRegenerate();
+    setSong(EMPTY_SONG);
+    setConfig(PACK_DEFAULT_CONFIG);
+    setProgress(null);
+    setResult(null);
+    setErrorCode(null);
+    setStep(1);
+  }
+
+  async function handleGenerate() {
+    await runGeneration(song, config, regenerateTarget?.id);
   }
 
   const steps: Array<{ num: 1 | 2 | 3; label: string }> = [
