@@ -54,7 +54,9 @@ V3 = {"version": "3.2.0",
                     {"b": 7, "x": 0, "y": 0, "d": 0, "w": 1, "h": 5}],    # flash
       "sliders": [{"b": 1, "c": 0, "x": 1, "y": 0, "d": 1, "mu": 1, "tb": 3, "tx": 2, "ty": 2, "tc": 4,
                    "tmu": 1, "m": 0},
-                  {"b": 9, "c": 1, "x": 0, "y": 0, "d": 1, "tb": 10, "tx": 0, "ty": 0, "tc": 1}],
+                  {"b": 9, "c": 1, "x": 0, "y": 0, "d": 1, "tb": 10, "tx": 0, "ty": 0, "tc": 1},
+                  {"b": 1, "c": 0, "x": 1, "y": 0, "d": 1, "tb": 5, "tx": 0, "ty": 0, "tc": 1},   # 2nd arc, same note
+                  {"b": 3, "c": 0, "x": 1, "y": 0, "d": 1, "tb": 4, "tx": 0, "ty": 0, "tc": 12}],  # bad tail direction
       "burstSliders": [{"b": 4, "c": 1, "x": 3, "y": 2, "d": 8, "tb": 5, "tx": 3, "ty": 0, "sc": 9, "s": 0.5}],
       "basicBeatmapEvents": LIGHTS}
 
@@ -140,10 +142,10 @@ def test_v3_ornaments_matched_to_notes(built):
     assert list(hand) == [0, 1, 0, 1]
     assert token[0] == 1 + 1 * 27 + 0 * 9 + 1 and token[3] == 1 + 3 * 27 + 2 * 9 + 8
     assert list(chain) == [0, 0, 0, 7]            # 9 segments clipped to 7
-    assert list(arc_len) == [4, 0, 0, 0]          # 2 beats -> index 4
+    assert list(arc_len) == [4, 0, 0, 0]          # 2 beats -> index 4; second arc on the note ignored
     assert list(arc_cell) == [2 * 4 + 2, 0, 0, 0] and list(arc_dir) == [4, 0, 0, 0]
     m = cache.meta(1)
-    assert (m["n_arcs"], m["arcs_unmatched"], m["n_chains"], m["chains_unmatched"]) == (1, 1, 1, 0)
+    assert (m["n_arcs"], m["arcs_unmatched"], m["n_chains"], m["chains_unmatched"]) == (1, 3, 1, 0)
 
 
 def test_v2_and_v4_entries(built):
@@ -175,6 +177,18 @@ def test_inconsistent_index_rejected(built):
     (out / "index.json").write_text(json.dumps(idx[:2]))
     with pytest.raises(ValueError, match="inconsistent"):
         LayerCache.load(out)
+
+
+def test_unencodable_notes_are_counted():
+    # the reader already drops off-grid notes; the counter guards the cache against other callers
+    from bsmaker.data.layers_cache import _empty_record, _ornaments
+    from bsmaker.formats.model import Difficulty, DifficultyFlags, Layers, Note
+    lay = Layers((), (), (), (), (), False, 0)
+    d = Difficulty("Standard", "Expert", "v3", 16.0, 0.0, (Note(1.0, 2.0, 1, 0, 0, 9),),
+                   0, 0, 0, 0, DifficultyFlags(False, False, False, False), lay)
+    rec = _empty_record(0)
+    orn = _ornaments(d, rec)
+    assert rec["notes_unencodable"] == 1 and orn["orn_token"] == [0]
 
 
 # ---------------------------------------------------------------- statistics

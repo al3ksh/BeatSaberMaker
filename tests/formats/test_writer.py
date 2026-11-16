@@ -193,3 +193,40 @@ def test_invalid_layer_objects_rejected(tmp_path, kwargs):
     with pytest.raises(ValueError):
         _multi(tmp_path, [LevelData("Expert", 16.0, 0.0, [], **kwargs)])
     assert not (tmp_path / "BSM - x").exists()
+
+
+_A = dict(time_s=1.0, beat=0, color=0, x=1, y=0, d=1, tail_time_s=2.0, tail_beat=0, tx=2, ty=1, td=1)
+_C = dict(time_s=1.0, beat=0, color=0, x=1, y=0, d=1, tail_time_s=2.0, tail_beat=0, tx=2, ty=1,
+          segments=3, squish=0.5)
+_NAN, _INF = float("nan"), float("inf")
+
+
+@pytest.mark.parametrize("kwargs,what", [
+    ({"arcs": [Arc(**{**_A, "d": 9})]}, "arc 0"),
+    ({"arcs": [Arc(**{**_A, "td": -1})]}, "arc 0"),
+    ({"arcs": [Arc(**{**_A, "tail_time_s": _NAN})]}, "arc 0"),
+    ({"arcs": [Arc(**_A), Arc(**{**_A, "time_s": -1.0})]}, "arc 1"),
+    ({"chains": [Chain(**{**_C, "d": 9})]}, "chain 0"),
+    ({"chains": [Chain(**{**_C, "segments": 0})]}, "chain 0"),
+    ({"chains": [Chain(**{**_C, "squish": 0.0})]}, "chain 0"),
+    ({"chains": [Chain(**{**_C, "squish": 1.5})]}, "chain 0"),
+    ({"chains": [Chain(**{**_C, "squish": _NAN})]}, "chain 0"),
+    ({"chains": [Chain(**{**_C, "tail_time_s": _INF})]}, "chain 0"),
+    ({"bombs": [Bomb(_NAN, 0, 1, 1)]}, "bomb 0"),
+    ({"bombs": [Bomb(1.0, 0, 1, 1), Bomb(-0.5, 0, 1, 1)]}, "bomb 1"),
+    ({"obstacles": [Obstacle(_INF, 0, 1.0, 1.0, 0, 0, 1, 5)]}, "wall 0"),
+    ({"obstacles": [Obstacle(1.0, 0, _NAN, 1.0, 0, 0, 1, 5)]}, "wall 0"),
+    ({"obstacles": [Obstacle(1.0, 0, _INF, 1.0, 0, 0, 1, 5)]}, "wall 0"),
+    ({"obstacles": [Obstacle(-1.0, 0, 1.0, 1.0, 0, 0, 1, 5)]}, "wall 0"),
+])
+def test_review_validation_names_object_and_index(tmp_path, kwargs, what):
+    with pytest.raises(ValueError, match=what):
+        _multi(tmp_path, [LevelData("Expert", 16.0, 0.0, [], **kwargs)])
+    assert not (tmp_path / "BSM - x").exists()
+
+
+@pytest.mark.parametrize("ev", [LightEvent(_NAN, 0, 1, 1, 1.0), LightEvent(-1.0, 0, 1, 1, 1.0),
+                                LightEvent(1.0, 0, 1, 1, _NAN)])
+def test_invalid_light_events_rejected(tmp_path, ev):
+    with pytest.raises(ValueError, match="light event 1"):
+        _multi(tmp_path, [_easy()], lights=[LightEvent(0.0, 0, 1, 1, 1.0), ev])

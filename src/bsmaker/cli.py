@@ -210,8 +210,10 @@ def build_layers() -> None:
     print(f"arcs: {t['n_arcs']} (unmatched {t['arcs_unmatched']}), chains: {t['n_chains']} "
           f"(unmatched {t['chains_unmatched']}), walls: {t['n_walls']}, "
           f"bomb groups: {t['n_bomb_groups']}, light events: {t['n_lights']}")
-    print(f"wall classes: flash {t['wall_flash']}, side {t['wall_side']}, centre {t['wall_centre']}; "
-          f"unsupported flash/side shapes: {t['walls_unsupported']}")
+    print(f"wall classes over ALL parsed walls: flash {t['wall_flash']}, side {t['wall_side']}, "
+          f"centre {t['wall_centre']}; unsupported flash/side shapes (not tokenisable): "
+          f"{t['walls_unsupported']}; `walls` above = tokenised subset")
+    print(f"notes with no token: {t['notes_unencodable']}")
     print(f"dropped objects: {t['dropped']}, light events skipped: {t['lights_skipped']}, "
           f"duplicate light events: {t['lights_duplicate']}")
     print(f"lightshow-eligible difficulties: {t['lights_ok']}")

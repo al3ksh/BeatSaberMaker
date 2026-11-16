@@ -31,7 +31,7 @@ _GROUPS = {"light": ("light_t", "light_ch", "light_tok"), "wall": ("wall_t", "wa
                    "orn_arc_dir")}
 _SUMMED = ("n_lights", "n_walls", "n_bomb_groups", "n_bombs", "n_arcs", "n_chains",
            "walls_unsupported", "lights_skipped", "lights_duplicate", "arcs_unmatched",
-           "chains_unmatched", "dropped")
+           "chains_unmatched", "notes_unencodable", "dropped")
 
 
 def _empty_record(entry_idx: int) -> dict:
@@ -40,7 +40,7 @@ def _empty_record(entry_idx: int) -> dict:
             "n_bombs": 0, "n_arcs": 0, "n_chains": 0, "n_notes": 0,
             "wall_classes": {"flash": 0, "side": 0, "centre": 0}, "walls_unsupported": 0,
             "lights_skipped": 0, "lights_duplicate": 0, "arcs_unmatched": 0,
-            "chains_unmatched": 0, "dropped": 0, "readable": False}
+            "chains_unmatched": 0, "notes_unencodable": 0, "dropped": 0, "readable": False}
 
 
 def _empty_arrays() -> dict[str, np.ndarray]:
@@ -107,6 +107,7 @@ def _ornaments(d: Difficulty, rec: dict) -> dict[str, list]:
         try:
             orn["orn_token"].append(encode_token(nt.x, nt.y, nt.direction))
         except ValueError:
+            rec["notes_unencodable"] += 1
             orn["orn_token"].append(0)
     by_cell: dict[tuple[int, int, int], list[int]] = defaultdict(list)
     for k, nt in enumerate(notes):
@@ -120,7 +121,8 @@ def _ornaments(d: Difficulty, rec: dict) -> dict[str, list]:
 
     for a in d.layers.arcs:
         k = find(a.color, a.x, a.y, a.time_s)
-        if k is None or not (0 <= a.tx <= 3 and 0 <= a.ty <= 2) or not 0 <= a.td <= 255:
+        if (k is None or not (0 <= a.tx <= 3 and 0 <= a.ty <= 2) or not 0 <= a.td <= 8
+                or orn["orn_arc_len"][k]):  # second arc on the same note: keep the first
             rec["arcs_unmatched"] += 1
             continue
         orn["orn_arc_len"][k] = arc_length_bucket(a.tail_beat - a.beat)
@@ -139,6 +141,11 @@ def _ornaments(d: Difficulty, rec: dict) -> dict[str, list]:
 
 def _process(d: Difficulty | None, env: str, bpm: float, duration_s: float,
              entry_idx: int) -> tuple[dict, dict[str, np.ndarray]]:
+    """Record and arrays for one difficulty.
+
+    `lights_ok` = supported environment, no group lighting, and >= 100 light events per minute
+    counted after tokenising and removing duplicates.
+    """
     rec = _empty_record(entry_idx)
     if d is None:
         return rec, _empty_arrays()
@@ -155,6 +162,8 @@ def _process(d: Difficulty | None, env: str, bpm: float, duration_s: float,
     rec["n_walls"] = len(rows["wall_t"])
     rec["n_bomb_groups"] = len(rows["bomb_t"])
     per_min = rec["n_lights"] / (duration_s / 60.0) if duration_s > 0 else 0.0
+    # Eligibility: the >= 100 events/min rule counts light events AFTER tokenising and removing
+    # duplicates (the events training actually sees), not the raw events in the file.
     rec["lights_ok"] = (env in SUPPORTED_ENVIRONMENTS and not d.layers.group_lighting
                         and per_min >= MIN_LIGHTS_PER_MIN)
     arrays: dict[str, np.ndarray] = {}

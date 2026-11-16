@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import struct
 import subprocess
@@ -59,21 +60,40 @@ def _in_grid(x: int, y: int) -> bool:
     return 0 <= x <= 3 and 0 <= y <= 2
 
 
+def _time_ok(v: float) -> bool:
+    return isinstance(v, (int, float)) and math.isfinite(v) and v >= 0
+
+
 def _validate(level: LevelData) -> None:
-    for b in level.bombs:
+    r = level.rank
+    for i, b in enumerate(level.bombs):
+        if not _time_ok(b.time_s):
+            raise ValueError(f"{r}: bomb {i} has an invalid time: {b.time_s}")
         if not _in_grid(b.x, b.y):
-            raise ValueError(f"{level.rank}: bomb outside the grid: ({b.x}, {b.y})")
-    for o in level.obstacles:
+            raise ValueError(f"{r}: bomb {i} outside the grid: ({b.x}, {b.y})")
+    for i, o in enumerate(level.obstacles):
+        if not _time_ok(o.time_s) or not math.isfinite(o.duration_s):
+            raise ValueError(f"{r}: wall {i} has an invalid time or duration: {o}")
         if not o.duration_s > 0 or o.w <= 0:
-            raise ValueError(f"{level.rank}: wall needs a positive duration and width: {o}")
+            raise ValueError(f"{r}: wall {i} needs a positive duration and width: {o}")
         if not -1 <= o.x <= 4 or not 0 <= o.y <= 2 or not 1 <= o.h <= 5:
-            raise ValueError(f"{level.rank}: wall outside the allowed range: {o}")
-    for a in level.arcs:
+            raise ValueError(f"{r}: wall {i} outside the allowed range: {o}")
+    for i, a in enumerate(level.arcs):
+        if not _time_ok(a.time_s) or not _time_ok(a.tail_time_s):
+            raise ValueError(f"{r}: arc {i} has an invalid time: {a}")
         if not _in_grid(a.x, a.y) or not _in_grid(a.tx, a.ty):
-            raise ValueError(f"{level.rank}: arc outside the grid: {a}")
-    for c in level.chains:
+            raise ValueError(f"{r}: arc {i} outside the grid: {a}")
+        if not 0 <= a.d <= 8 or not 0 <= a.td <= 8:
+            raise ValueError(f"{r}: arc {i} has a direction outside 0-8: {a}")
+    for i, c in enumerate(level.chains):
+        if not _time_ok(c.time_s) or not _time_ok(c.tail_time_s):
+            raise ValueError(f"{r}: chain {i} has an invalid time: {c}")
         if not _in_grid(c.x, c.y) or not _in_grid(c.tx, c.ty):
-            raise ValueError(f"{level.rank}: chain outside the grid: {c}")
+            raise ValueError(f"{r}: chain {i} outside the grid: {c}")
+        if not 0 <= c.d <= 8:
+            raise ValueError(f"{r}: chain {i} has a direction outside 0-8: {c}")
+        if c.segments < 1 or not (math.isfinite(c.squish) and 0 < c.squish <= 1):
+            raise ValueError(f"{r}: chain {i} needs segments >= 1 and squish in (0, 1]: {c}")
 
 
 def _difficulty_json(level: LevelData, bpm: float, lights: Sequence[LightEvent]) -> dict:
@@ -129,6 +149,9 @@ def write_map_multi(folder: Path, *, title: str, artist: str, bpm: float, levels
         raise ValueError("environment must be a non-empty string")
     for lv in levels:
         _validate(lv)
+    for i, e in enumerate(lights):
+        if not _time_ok(e.time_s) or not math.isfinite(e.float_value):
+            raise ValueError(f"light event {i} has an invalid time or value: {e}")
     if folder.exists():
         if not overwrite:
             raise FileExistsError(f"{folder} already exists")
