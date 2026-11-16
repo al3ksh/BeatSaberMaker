@@ -7,7 +7,8 @@ from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
 from bsmaker.models.pattern import sample as S
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import (
-    LoadedPattern, _top_p_probs, load_pattern, sample_notes, window_gaps)
+    DEFAULT_DOUBLE_BIAS, DoubleBias, LoadedPattern, _top_p_probs, load_pattern, sample_notes,
+    window_gaps)
 from bsmaker.playability.checker import check
 from bsmaker.playability.config import PlayabilityConfig
 
@@ -165,3 +166,73 @@ def test_frame_collisions_are_not_skips(loaded) -> None:
     _, rep = _run(loaded, t)
     assert rep.n_frame_collisions > 0
     assert rep.n_frame_collisions + rep.n_skipped <= rep.n_events
+
+
+def _doubles(notes) -> int:
+    events, _ = to_events(notes)
+    return sum(e.left != NONE_TOKEN and e.right != NONE_TOKEN for e in events)
+
+
+def test_double_bias_off_reproduces_unbiased_output(loaded) -> None:
+    t = _times(300)
+    plain = _run(loaded, t, seed=5, double_bias=None)[0]
+    assert _run(loaded, t, seed=5, double_bias=DoubleBias(0.0, 0.0, 0.0, 0.0, 4))[0] == plain
+    assert _doubles(plain) > 20
+
+
+def test_default_double_bias_is_active_and_reduces_doubles(loaded) -> None:
+    t = _times(600)
+    plain = _run(loaded, t, seed=2, double_bias=None)[0]
+    default = _run(loaded, t, seed=2)[0]
+    assert DEFAULT_DOUBLE_BIAS != DoubleBias(0.0, 0.0, 0.0, 0.0, 4)
+    assert _doubles(default) < _doubles(plain)
+
+
+def test_large_bias_removes_doubles_when_singles_are_allowed(loaded) -> None:
+    notes, _ = _run(loaded, _times(400), double_bias=DoubleBias(60.0, 0.0, 0.0, 0.0, 4))
+    assert notes and _doubles(notes) == 0
+    events, _ = to_events(notes)
+    assert check(events, CFG).hard == ()
+
+
+def test_masked_none_stays_impossible_under_bias(loaded, monkeypatch) -> None:
+    real = S.allowed
+
+    def no_right_none(state, t, hand, cfg, other_token=NONE_TOKEN):
+        m = real(state, t, hand, cfg, other_token=other_token)
+        if hand == 1 and other_token != NONE_TOKEN:
+            m = m.copy()
+            m[NONE_TOKEN] = False
+        return m
+    monkeypatch.setattr(S, "allowed", no_right_none)
+    notes, _ = _run(loaded, _times(300), double_bias=DoubleBias(60.0, 0.0, 0.0, 0.0, 4))
+    events, _ = to_events(notes)
+    left_events = [e for e in events if e.left != NONE_TOKEN]
+    assert left_events and all(e.right != NONE_TOKEN for e in left_events)
+
+
+def test_bias_keeps_hand_balance(loaded) -> None:
+    t = _times(800)
+
+    def left_share(notes) -> float:
+        return sum(n.color == 0 for n in notes) / len(notes)
+    plain = left_share(_run(loaded, t, seed=1, double_bias=None)[0])
+    biased = left_share(_run(loaded, t, seed=1)[0])
+    assert abs(biased - plain) < 0.05
+
+
+@pytest.mark.parametrize("bad", [
+    dict(base=-0.1), dict(short=-1.0), dict(very_short=float("nan")), dict(per_run=-0.5),
+    dict(run_cap=-1), dict(run_cap=2.5), dict(base=float("inf"))])
+def test_double_bias_rejects_invalid_values(bad) -> None:
+    with pytest.raises(ValueError):
+        DoubleBias(**bad)
+
+
+def test_double_bias_value_grows_with_run_and_short_gap() -> None:
+    b = DoubleBias(base=0.5, short=0.25, very_short=1.0, per_run=0.5, run_cap=3)
+    assert b.at(0.5, 0) == 0.5
+    assert b.at(0.2, 0) == 0.75
+    assert b.at(0.1, 0) == 1.75
+    assert b.at(0.5, 2) == 1.5
+    assert b.at(0.5, 9) == 2.0      # run capped at 3
