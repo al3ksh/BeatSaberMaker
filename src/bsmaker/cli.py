@@ -597,13 +597,8 @@ def generate_cmd(
         typer.echo(f"unknown style {unknown[0]!r}; expected one of {', '.join(STYLES)}", err=True)
         raise typer.Exit(2)
 
-    import torch
-
     from bsmaker.audio.decode import AudioDecodeError
-    from bsmaker.data.layer_stats import load_layer_stats
-    from bsmaker.layers_generate import LayerModels, load_layer_models
-    from bsmaker.models.pattern.sample import load_pattern
-    from bsmaker.models.timing.decode import load_timing
+    from bsmaker.pipeline import load_pipeline, run_generate
 
     cfg = load_config()
     if not audio.is_file():
@@ -612,79 +607,32 @@ def generate_cmd(
         require_ffmpeg()
     except FfmpegMissingError as e:
         _fail(f"{e}; install ffmpeg and put it on PATH")
-    timing_ck = timing_ckpt or cfg.checkpoints_dir / "timing" / "best.pt"
-    pattern_ck = pattern_ckpt or cfg.checkpoints_dir / "pattern" / "best.pt"
-    for ck in (timing_ck, pattern_ck):
-        if not ck.is_file():
-            _fail(f"checkpoint not found: {ck}; train the models first")
-    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    if dev == "cuda" and not torch.cuda.is_available():
-        _fail("--device cuda requested but CUDA is not available; use --device cpu")
+    maybe_need_layers = (ozdoby is None or ozdoby > 0) or (swiatla > 0 and not swiatla_reguly)
     try:
-        timing = load_timing(timing_ck, dev)
-        pattern = load_pattern(pattern_ck, dev)
-        mask_cfg = load_playability_config(cfg.playability_path, "mask")
-        require_stats(timing.stats)
-        require_stats(pattern.stats, ("mel_mean", "mel_std"))
-        extra: list[str] = []
-        if cfg.playability_path is None:
-            extra.append(_NO_PLAYABILITY_WARNING)
-            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
-
-        if parsed_levels is not None:
-            medians = timing.stats.get("rank_median_nps", {})
-            missing_r = [r for r in parsed_levels if r not in medians]
-            if missing_r:
-                raise GenerateError(f"checkpoint stats missing median nps for rank(s): {', '.join(missing_r)}")
-            target_nps_list = [float(medians[r]) for r in parsed_levels]
-        else:
-            assert nps is not None
-            target_nps_list = [float(nps)]
-
-        need_orn_decor = (ozdoby > 0) if ozdoby is not None else any(
-            auto_ornaments_level(x) > 0 for x in target_nps_list
+        pipe = load_pipeline(
+            cfg,
+            device,
+            timing_ckpt=timing_ckpt,
+            pattern_ckpt=pattern_ckpt,
+            load_layers=maybe_need_layers,
         )
-        need_lights_model = swiatla > 0 and not swiatla_reguly
-        need_layer_stats = need_orn_decor or need_lights_model
-
-        layer_models: LayerModels | None = None
-        if need_orn_decor or need_lights_model:
-            loaded_lm, ckpt_warnings = load_layer_models(cfg.checkpoints_dir, dev)
-            layer_models = LayerModels(
-                ornaments=loaded_lm.ornaments if need_orn_decor else None,
-                decor_when=loaded_lm.decor_when if need_orn_decor else None,
-                decor_what=loaded_lm.decor_what if need_orn_decor else None,
-                lights_when=loaded_lm.lights_when if need_lights_model else None,
-                lights_what=loaded_lm.lights_what if need_lights_model else None,
-            )
-            needed_slots = (
-                (("ornaments", "decor-when", "decor-what") if need_orn_decor else ())
-                + (("lights-when", "lights-what") if need_lights_model else ())
-            )
-            for w in ckpt_warnings:
-                if any(
-                    w.startswith((f"missing {slot} checkpoint:", f"{slot} checkpoint "))
-                    for slot in needed_slots
-                ):
-                    extra.append(w)
-
-        layer_stats: dict | None = None
-        if need_layer_stats:
-            ls_path = cfg.base_dir / "layer_stats.json"
-            if ls_path.is_file():
-                layer_stats = load_layer_stats(ls_path)
-            else:
-                extra.append(f"missing layer_stats.json: {ls_path}; learned layers switched off")
-
-        result = generate_map(
-            audio, nps=nps, styles=tuple(style), seed=seed,
-            out_dir=out if out is not None else cfg.custom_levels, timing=timing,
-            pattern=pattern, mask_cfg=mask_cfg, stats=timing.stats, device=dev,
-            overwrite=overwrite, extra_warnings=extra,
-            levels=parsed_levels, ornaments=ozdoby, lights=swiatla,
-            environment=environment, layer_models=layer_models,
-            layer_stats=layer_stats, lights_rules=swiatla_reguly)
-    except (GenerateError, AudioDecodeError, FileExistsError, ValueError) as e:
+        if pipe.playability_missing:
+            typer.echo(f"warning: {_NO_PLAYABILITY_WARNING}", err=True)
+        result = run_generate(
+            pipe,
+            audio,
+            out_dir=out if out is not None else cfg.custom_levels,
+            nps=nps,
+            levels=parsed_levels,
+            styles=tuple(style),
+            seed=seed,
+            overwrite=overwrite,
+            ornaments=ozdoby,
+            lights=swiatla,
+            environment=environment,
+            lights_rules=swiatla_reguly,
+        )
+    except (GenerateError, AudioDecodeError, FileExistsError, ValueError, FfmpegMissingError) as e:
         _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     for w in result.warnings:
         typer.echo(f"warning: {w}")
