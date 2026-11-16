@@ -69,7 +69,7 @@ def test_structure():
     ring = {e.time_s: e.value for e in ev if e.type == 1}
     assert ring[0.0] != ring[4.0] and ring[0.0] == ring[2.0]
     # an off follows a lone event one beat later
-    assert any(e.type == 2 and e.value == 0 for e in run(1))
+    assert any(e.type == 2 and e.value == 0 for e in run(2))
 
 
 def test_works_without_notes_and_short_song():
@@ -89,6 +89,6 @@ def test_level_one_is_bars_only():
     ev = run(1, offset=0.3)
     bar_s = 2.0
     for e in ev:
-        if e.value != 0 and e.type in (0, 1, 2, 3, 8, 12, 13):
+        if e.type in (0, 1, 2, 3, 8, 12, 13):
             assert abs((e.time_s - 0.3) / bar_s - round((e.time_s - 0.3) / bar_s)) < 1e-9
     assert not any(e.type == 4 for e in ev)

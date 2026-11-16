@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,7 @@ def test_cli_check_v4_map_has_no_layer_line(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     fixture = Path(__file__).parent.parent / "fixtures" / "maps" / "v4_basic"
     result = CliRunner().invoke(app, ["check", str(fixture)])
+    assert result.exit_code == 0, result.output
     assert "layers:" not in result.output and "Traceback" not in result.output
 
 
@@ -188,6 +190,10 @@ def test_cli_check_malformed_layers_do_not_crash(tmp_path, monkeypatch):
     diff["obstacles"] = [{"b": "x", "x": None, "y": 1e999, "d": 1, "w": 10**9, "h": [1]}, 5, None]
     diff["burstSliders"] = {"a": 1}
     diff["sliders"] = [{"b": float("nan")}]
+    # the reader accepts |v| <= 1e6, so this one survives parsing and must be clipped, not iterated
+    diff["obstacles"].append({"b": 1, "x": -10**6, "y": 0, "d": 1, "w": 10**6, "h": 100})
     (folder / "E.dat").write_text(json.dumps(diff), encoding="utf-8")
+    start = time.monotonic()
     result = CliRunner().invoke(app, ["check", str(folder)])
     assert result.exit_code == 0 and "Traceback" not in result.output, result.output
+    assert time.monotonic() - start < 5.0

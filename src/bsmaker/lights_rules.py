@@ -97,7 +97,7 @@ def rule_lights(mel: np.ndarray, notes: Sequence[Note], bpm: float, offset_s: fl
     for (t, typ) in events:
         if typ in (BACK, RING, LEFT, RIGHT, CENTRE):
             by_type.setdefault(typ, []).append(t)
-    for typ, ts in by_type.items():
+    for typ, ts in ([] if level == 1 else by_type.items()):  # level 1: fades end themselves, no off pass
         ts.sort()
         for i, t in enumerate(ts):
             nxt = ts[i + 1] if i + 1 < len(ts) else math.inf
