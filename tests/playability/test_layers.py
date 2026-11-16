@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from bsmaker.cli import app
 from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
 from bsmaker.playability.layers import (
+    _line_cells,
     NoteIndex, arc_ok, bomb_forbidden_cells, bomb_mask_ok, chain_ok, check_layers, wall_cells, wall_ok)
 
 RULES = ("wall_on_note", "bomb_in_swing", "chain_conflict", "arc_overrun")
@@ -149,3 +150,44 @@ def test_cli_check_layer_violations(tmp_path, monkeypatch):
     detail = [ln for ln in result.output.splitlines()
               if ln.strip().split(" ")[-1] in RULES and "=" not in ln]
     assert len(detail) == 4
+
+
+def test_wall_cells_huge_untrusted_size_is_instant():
+    assert wall_cells(wall(0, 1, x=-10**6, y=-10**6, w=2 * 10**6, h=2 * 10**6)) == {
+        (x, y) for x in range(4) for y in range(3)}
+    assert wall_cells(wall(0, 1, x=0, y=0, w=10**6, h=10**6)) == {(x, y) for x in range(4) for y in range(3)}
+
+
+def test_line_cells_rounding_rule():
+    assert _line_cells(0, 0, 2, 1) == {(0, 0), (1, 1), (2, 1)}  # halves round up
+    assert _line_cells(2, 1, 0, 0) == {(2, 1), (1, 1), (0, 0)}
+    assert _line_cells(1, 1, 1, 1) == {(1, 1)}
+
+
+def test_exact_boundaries():
+    assert not wall_ok(wall(1.0, 1.0), [note(0.9)])   # exactly 0.1 s before
+    assert not wall_ok(wall(1.0, 1.0), [note(2.1)])   # exactly 0.1 s after the end
+    assert bomb_forbidden_cells([note(5.4, 1, 1)], 5.0) == {(1, 1)}   # exactly 0.4 s
+    assert bomb_forbidden_cells([note(4.6, 1, 1)], 5.0) == {(1, 1)}
+    assert chain_ok(chain(1.0, 1.5), [note(1.0), note(1.25, x=3, y=2)])  # exactly 0.25 s
+    assert not chain_ok(chain(1.0, 1.5), [note(1.0), note(1.2499, x=3, y=2)])
+
+
+def test_cli_check_v4_map_has_no_layer_line(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fixture = Path(__file__).parent.parent / "fixtures" / "maps" / "v4_basic"
+    result = CliRunner().invoke(app, ["check", str(fixture)])
+    assert "layers:" not in result.output and "Traceback" not in result.output
+
+
+def test_cli_check_malformed_layers_do_not_crash(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    folder = _cli_map(tmp_path / "m")
+    diff = json.loads((folder / "E.dat").read_text(encoding="utf-8"))
+    diff["bombNotes"] = "garbage"
+    diff["obstacles"] = [{"b": "x", "x": None, "y": 1e999, "d": 1, "w": 10**9, "h": [1]}, 5, None]
+    diff["burstSliders"] = {"a": 1}
+    diff["sliders"] = [{"b": float("nan")}]
+    (folder / "E.dat").write_text(json.dumps(diff), encoding="utf-8")
+    result = CliRunner().invoke(app, ["check", str(folder)])
+    assert result.exit_code == 0 and "Traceback" not in result.output, result.output

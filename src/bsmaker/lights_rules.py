@@ -21,7 +21,7 @@ _ON, _FLASH, _FADE = 0, 1, 2
 _VALUES = {0: (5, 6, 7), 1: (1, 2, 3)}  # colour A = red, colour B = blue
 _ONSET_PERCENTILE = {1: 90.0, 2: 75.0, 3: 50.0}  # strictly above this percentile of the peaks
 _RING_STEP_BEATS = {1: 4.0, 2: 1.0, 3: 0.5}
-_FOLLOW_STEP_BEATS = {1: 4.0, 2: 1.0, 3: 0.5}
+_FOLLOW_STEP_BEATS = {2: 1.0, 3: 0.5}
 _SWAP_BEATS = 8
 _BAR_BEATS = 4
 _ZOOM_BEATS = 8 * _BAR_BEATS
@@ -64,15 +64,25 @@ def rule_lights(mel: np.ndarray, notes: Sequence[Note], bpm: float, offset_s: fl
     for t in beat_times(_RING_STEP_BEATS[level]):
         add(t, RING, lit(t, _FADE))
 
-    for t in _strong_onsets(mel, level, duration_s):
-        add(t, CENTRE, lit(t, _ON))
+    if level > 1:  # level 1 is bars only: no onset-driven centre lights
+        for t in _strong_onsets(mel, level, duration_s):
+            add(t, CENTRE, lit(t, _ON))
 
-    last_follow = {0: -math.inf, 1: -math.inf}
-    step = _FOLLOW_STEP_BEATS[level] * beat_s
-    for n in sorted(notes, key=lambda n: n.time_s):
-        if n.color in last_follow and n.time_s - last_follow[n.color] >= step - 1e-9:
-            add(n.time_s, LEFT if n.color == 0 else RIGHT, lit(n.time_s, _ON))
-            last_follow[n.color] = n.time_s
+    ordered = sorted(notes, key=lambda n: n.time_s)
+    if level == 1:  # lasers light on a bar start when their hand plays in that bar
+        times_by_hand = {c: [n.time_s for n in ordered if n.color == c] for c in (0, 1)}
+        for t in bars:
+            for c, typ in ((0, LEFT), (1, RIGHT)):
+                ts = times_by_hand[c]
+                if np.searchsorted(ts, t, "left") < np.searchsorted(ts, t + _BAR_BEATS * beat_s, "left"):
+                    add(t, typ, lit(t, _ON))
+    else:
+        last_follow = {0: -math.inf, 1: -math.inf}
+        step = _FOLLOW_STEP_BEATS[level] * beat_s
+        for n in ordered:
+            if n.color in last_follow and n.time_s - last_follow[n.color] >= step - 1e-9:
+                add(n.time_s, LEFT if n.color == 0 else RIGHT, lit(n.time_s, _ON))
+                last_follow[n.color] = n.time_s
 
     hand_times = {c: sorted(n.time_s for n in notes if n.color == c) for c in (0, 1)}
     window_s = _SPEED_BEATS * beat_s

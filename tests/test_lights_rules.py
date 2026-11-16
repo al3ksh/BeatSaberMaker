@@ -83,3 +83,12 @@ def test_works_without_notes_and_short_song():
 
 def test_deterministic():
     assert run(3, seed=5) == run(3, seed=5)
+
+
+def test_level_one_is_bars_only():
+    ev = run(1, offset=0.3)
+    bar_s = 2.0
+    for e in ev:
+        if e.value != 0 and e.type in (0, 1, 2, 3, 8, 12, 13):
+            assert abs((e.time_s - 0.3) / bar_s - round((e.time_s - 0.3) / bar_s)) < 1e-9
+    assert not any(e.type == 4 for e in ev)

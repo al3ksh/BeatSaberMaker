@@ -5,6 +5,7 @@ once the index exists, so masks can be evaluated per sampled event.
 """
 from __future__ import annotations
 
+import math
 from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 
@@ -60,9 +61,8 @@ def _in_grid(x: int, y: int) -> bool:
 def wall_cells(ob: Obstacle) -> set[Cell]:
     """Grid cells (x 0-3, y 0-2) covered by the wall; cells outside the grid are dropped."""
     return {(x, y)
-            for x in range(ob.x, ob.x + max(ob.w, 0))
-            for y in range(ob.y, ob.y + max(ob.h, 0))
-            if _in_grid(x, y)}
+            for x in range(max(ob.x, 0), min(ob.x + ob.w, 4))
+            for y in range(max(ob.y, 0), min(ob.y + ob.h, 3))}
 
 
 def wall_ok(ob: Obstacle, notes: "Sequence[Note] | NoteIndex") -> bool:
@@ -99,7 +99,8 @@ def _line_cells(x0: int, y0: int, x1: int, y1: int) -> set[Cell]:
     steps = max(abs(x1 - x0), abs(y1 - y0))
     if steps == 0:
         return {(x0, y0)}
-    return {(round(x0 + (x1 - x0) * i / steps), round(y0 + (y1 - y0) * i / steps))
+    # rounding rule: floor(v + 0.5), so halves go up (not Python's half-to-even)
+    return {(math.floor(x0 + (x1 - x0) * i / steps + 0.5), math.floor(y0 + (y1 - y0) * i / steps + 0.5))
             for i in range(steps + 1)}
 
 
