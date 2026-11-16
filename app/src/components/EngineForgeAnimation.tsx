@@ -1,7 +1,16 @@
 import { motion } from "framer-motion";
 
-const CYCLE_S = 3.0;
+const CYCLE_S = 2.7;
 const CUBE_OFFSETS = [0, 1, 2];
+
+// Continuous physics-sampled trajectory:
+// 1. Constant 2:1 isometric velocity along belt (t = 0.00 -> 0.68)
+// 2. Smooth parabolic projectile drop off belt lip (t = 0.68 -> 1.00) with zero stall
+const TIMES = [0, 0.12, 0.68, 0.74, 0.80, 0.86, 0.92, 0.97, 1];
+const X_KEYS = [78, 102, 192, 200.5, 208.5, 215.5, 221, 224.5, 226];
+const Y_KEYS = [62, 74, 119, 125.5, 136, 150, 165, 174, 176];
+const ROT_KEYS = [0, 0, 0, 8, 18, 30, 42, 50, 54];
+const OP_KEYS = [0, 1, 1, 1, 0.95, 0.65, 0.2, 0, 0];
 
 interface IsoCubeProps {
   variant: "light" | "muted";
@@ -19,27 +28,21 @@ function IsoCube({ variant, delay }: IsoCubeProps) {
   return (
     <motion.g
       style={{ transformOrigin: "0px -7px" }}
-      initial={{ x: 86, y: 66, rotate: 0, opacity: 0 }}
+      initial={{ x: X_KEYS[0], y: Y_KEYS[0], rotate: 0, opacity: 0 }}
       animate={{
-        x: [86, 102, 192, 203, 207],
-        y: [66, 74, 119, 129, 154],
-        rotate: [0, 0, 0, 14, 28],
-        opacity: [0, 1, 1, 0.85, 0],
+        x: X_KEYS,
+        y: Y_KEYS,
+        rotate: ROT_KEYS,
+        opacity: OP_KEYS,
       }}
       transition={{
         duration: CYCLE_S,
         delay,
         repeat: Infinity,
-        ease: ["linear", "linear", "easeIn", "easeIn"],
-        times: [0, 0.1, 0.72, 0.84, 1],
+        ease: "linear",
+        times: TIMES,
       }}
     >
-      {/* Subtle contact shadow on belt */}
-      <polygon
-        points="0,-6 13,0.5 0,7 -13,0.5"
-        fill="#000000"
-        fillOpacity={0.35}
-      />
       {/* Left face */}
       <polygon
         points="-13,-13.5 0,-7 0,6.5 -13,0"
@@ -86,15 +89,15 @@ export function EngineForgeAnimation() {
     <div className="select-none pointer-events-none" aria-hidden="true">
       <svg
         width="260"
-        height="146"
-        viewBox="0 0 260 146"
+        height="176"
+        viewBox="0 0 260 176"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          {/* Clips cubes cleanly inside the furnace exit and belt/drop area */}
+          {/* Clips cubes cleanly inside the arch mouth & along the belt + drop zone */}
           <clipPath id="bsm-iso-exit-clip">
-            <polygon points="88,65 122,48 240,107 240,152 170,152 88,108" />
+            <polygon points="90,56 114,44 252,113 252,200 90,200" />
           </clipPath>
           {/* Clips scrolling belt ribs to top deck surface */}
           <clipPath id="bsm-iso-belt-clip">
@@ -138,7 +141,7 @@ export function EngineForgeAnimation() {
           <motion.g
             initial={{ x: 0, y: 0 }}
             animate={{ x: [0, 16], y: [0, 8] }}
-            transition={{ repeat: Infinity, duration: 0.55, ease: "linear" }}
+            transition={{ repeat: Infinity, duration: 0.48, ease: "linear" }}
           >
             {Array.from({ length: 10 }).map((_, idx) => {
               const bx = 68 + idx * 16;
@@ -158,7 +161,7 @@ export function EngineForgeAnimation() {
           </motion.g>
         </g>
 
-        {/* Furnace Back/Left Casing (behind emerging cubes) */}
+        {/* Furnace Body & Full Portal Frame drawn BEFORE exiting cubes for proper 2.5D depth */}
         <polygon
           points="50,34 86,16 120,33 84,51"
           fill="#18181b"
@@ -173,56 +176,27 @@ export function EngineForgeAnimation() {
           strokeWidth={1}
           strokeLinejoin="round"
         />
-        {/* Inner furnace hearth chamber behind exit arch */}
+        {/* Front portal face */}
         <polygon
           points="84,51 120,33 120,65 84,83"
+          fill="#141418"
+          stroke="#3f3f46"
+          strokeWidth={1}
+          strokeLinejoin="round"
+        />
+        {/* Inner dark hearth chamber */}
+        <polygon
+          points="90,80 114,68 114,44 90,56"
           fill="#09090b"
           stroke="#27272a"
-          strokeWidth={1}
+          strokeWidth={0.8}
           strokeLinejoin="round"
         />
         <motion.polygon
-          points="90,80 114,68 114,50 90,62"
+          points="90,80 114,68 114,44 90,56"
           fill="url(#bsm-mono-hearth)"
           animate={{ opacity: [0.4, 0.9, 0.4] }}
           transition={{ repeat: Infinity, duration: 2.0, ease: "easeInOut" }}
-        />
-
-        {/* Isometric Cubes sliding out and dropping cleanly off the belt end */}
-        <g clipPath="url(#bsm-iso-exit-clip)">
-          {CUBE_OFFSETS.map((idx) => (
-            <IsoCube
-              key={idx}
-              variant={idx % 2 === 0 ? "light" : "muted"}
-              delay={(CYCLE_S / CUBE_OFFSETS.length) * idx}
-            />
-          ))}
-        </g>
-
-        {/* Furnace Front Portal Frame (above & flanking exit so cubes emerge from inside) */}
-        {/* Upper lintel */}
-        <polygon
-          points="84,51 120,33 120,47 84,65"
-          fill="#141418"
-          stroke="#3f3f46"
-          strokeWidth={1}
-          strokeLinejoin="round"
-        />
-        {/* Left portal pillar */}
-        <polygon
-          points="84,65 90,62 90,80 84,83"
-          fill="#141418"
-          stroke="#3f3f46"
-          strokeWidth={1}
-          strokeLinejoin="round"
-        />
-        {/* Right portal pillar */}
-        <polygon
-          points="114,50 120,47 120,65 114,68"
-          fill="#141418"
-          stroke="#3f3f46"
-          strokeWidth={1}
-          strokeLinejoin="round"
         />
 
         {/* Minimal roof vent slot on furnace top (exact 2:1 isometric) */}
@@ -234,6 +208,26 @@ export function EngineForgeAnimation() {
           stroke="#52525b"
           strokeWidth={1.2}
           strokeLinecap="round"
+        />
+
+        {/* Isometric Cubes emerge from doorway & render IN FRONT OF all exit jambs */}
+        <g clipPath="url(#bsm-iso-exit-clip)">
+          {CUBE_OFFSETS.map((idx) => (
+            <IsoCube
+              key={idx}
+              variant={idx % 2 === 0 ? "light" : "muted"}
+              delay={(CYCLE_S / CUBE_OFFSETS.length) * idx}
+            />
+          ))}
+        </g>
+
+        {/* Only the left foreground pillar overlaps the leftmost edge cleanly */}
+        <polygon
+          points="84,51 90,48 90,80 84,83"
+          fill="#141418"
+          stroke="#3f3f46"
+          strokeWidth={1}
+          strokeLinejoin="round"
         />
       </svg>
     </div>
