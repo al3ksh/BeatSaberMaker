@@ -18,6 +18,7 @@ from bsmaker.playability.calibrate import (
     write_playability_toml,
 )
 from bsmaker.playability.checker import check as check_events
+from bsmaker.playability.layers import LAYER_RULE_NAMES, check_layers
 from bsmaker.data.beatsaver import BeatSaverClient
 from bsmaker.data.features import build_features
 from bsmaker.data.fetch_metadata import fetch_metadata
@@ -241,7 +242,7 @@ def check_map(folder: str, profile: str = typer.Option(
         typer.echo(f"unknown profile {profile!r}; expected one of {', '.join(PROFILES)}", err=True)
         raise typer.Exit(2)
     try:
-        bm = read_map(Path(folder))
+        bm = read_map(Path(folder), layers=True)
         if not bm.difficulties:
             raise ValueError("no readable difficulties")
     except Exception as e:  # noqa: BLE001 - untrusted input, one-line message only
@@ -270,6 +271,15 @@ def check_map(folder: str, profile: str = typer.Option(
               f"hard rate {report.hard_rate:.4f}, {per_rule}")
         for v in sorted(report.hard, key=lambda v: v.time_s)[:20]:
             print(f"  {_mmss(v.time_s)} {'left' if v.hand == 0 else 'right'} {v.rule}")
+        ly = d.layers
+        if ly is not None and (ly.obstacles or ly.bombs or ly.arcs or ly.chains or ly.lights):
+            lviol = check_layers(d.notes, ly)
+            lcounts = Counter(v.rule for v in lviol)
+            per_layer = ", ".join(f"{r}={lcounts.get(r, 0)}" for r in LAYER_RULE_NAMES)
+            print(f"  layers: walls {len(ly.obstacles)}, bombs {len(ly.bombs)}, arcs {len(ly.arcs)}, "
+                  f"chains {len(ly.chains)}, light events {len(ly.lights)}, {per_layer}")
+            for v in lviol[:20]:
+                print(f"  {_mmss(v.time_s)} {v.rule}")
 
 
 @data_app.command("scrape")
