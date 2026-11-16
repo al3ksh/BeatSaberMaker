@@ -340,6 +340,18 @@ train_app = typer.Typer(help="Model training commands.", no_args_is_help=True)
 app.add_typer(train_app, name="train")
 
 
+def _register_train_subcommands(target: typer.Typer) -> None:
+    """Attach ornament and layer training commands without top-level circular imports."""
+    from bsmaker.models.layers.cli import register as register_layers
+    from bsmaker.models.ornaments.cli import register as register_ornaments
+
+    register_ornaments(target)
+    register_layers(target)
+
+
+_register_train_subcommands(train_app)
+
+
 _NO_PLAYABILITY_WARNING = ("playability.toml not found next to bsmaker.toml; "
                            "using built-in mask defaults")
 

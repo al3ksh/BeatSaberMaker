@@ -18,14 +18,12 @@ from bsmaker.formats.tokens import encode_token
 from bsmaker.models.common import load_checkpoint, log_nps_value
 from bsmaker.models.ornaments.dataset import note_inputs
 from bsmaker.models.ornaments.model import OrnamentConfig, OrnamentModel
+from bsmaker.playability.layers import NoteIndex, arc_ok, chain_ok
 
 log = logging.getLogger(__name__)
 
 TEMPERATURE = 0.8
-# replaced by playability.layers at the join
-MIN_CHAIN_GAP_S = 0.25
 CHAIN_TAIL_BEATS = 1.0 / 24.0
-_DOT = 8
 _DIR_VEC = {0: (0, 1), 1: (0, -1), 2: (-1, 0), 3: (1, 0), 4: (-1, 1), 5: (1, 1), 6: (-1, -1),
             7: (1, -1)}
 
@@ -58,17 +56,6 @@ def load_ornaments(path: Path, device: str) -> LoadedOrnaments:
     return LoadedOrnaments(model, config, payload["stats"])
 
 
-# replaced by playability.layers at the join
-def _next_same_hand(notes: Sequence[Note]) -> list[float | None]:
-    nxt: list[float | None] = [None] * len(notes)
-    seen: dict[int, float] = {}
-    for i in range(len(notes) - 1, -1, -1):
-        nxt[i] = seen.get(notes[i].color)
-        seen[notes[i].color] = notes[i].time_s
-    return nxt
-
-
-# replaced by playability.layers at the join
 def _chain_tail_cell(note: Note) -> tuple[int, int] | None:
     """Cell one step along the cut, clipped to the grid; None for dots or when clipping empties it."""
     if note.direction not in _DIR_VEC:
@@ -78,26 +65,16 @@ def _chain_tail_cell(note: Note) -> tuple[int, int] | None:
     return None if (tx, ty) == (note.x, note.y) else (tx, ty)
 
 
-# replaced by playability.layers at the join
-def _chain_ok(notes: Sequence[Note], i: int, next_t: float | None) -> bool:
-    n = notes[i]
-    if next_t is None or next_t - n.time_s < MIN_CHAIN_GAP_S:
-        return False
-    tail = _chain_tail_cell(n)
-    if tail is None:
-        return False
-    cells = {(n.x, n.y), tail}
-    for j, o in enumerate(notes):
-        if j != i and n.time_s <= o.time_s <= next_t and (o.x, o.y) in cells:
-            return False
-    return True
+def _build_chain(note: Note, tail: tuple[int, int], segments: int, beat_s: float) -> Chain:
+    tail_s = note.time_s + CHAIN_TAIL_BEATS * beat_s
+    return Chain(note.time_s, note.time_s / beat_s, note.color, note.x, note.y, note.direction,
+                 tail_s, tail_s / beat_s, tail[0], tail[1], segments, 1.0)
 
 
-# replaced by playability.layers at the join
-def _arc_buckets(note: Note, next_t: float | None, bpm: float) -> list[int]:
-    """Allowed arc length classes (1-6): the tail must not come after the same hand's next note."""
-    return [k + 1 for k, beats in enumerate(ARC_LENGTH_BEATS)
-            if next_t is None or note.time_s + beats * 60.0 / bpm <= next_t]
+def _build_arc(note: Note, length_beats: float, tx: int, ty: int, td: int, beat_s: float) -> Arc:
+    tail_s = note.time_s + length_beats * beat_s
+    return Arc(note.time_s, note.time_s / beat_s, note.color, note.x, note.y, note.direction,
+               tail_s, tail_s / beat_s, tx, ty, td)
 
 
 @torch.no_grad()
@@ -145,10 +122,19 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
     want_arcs = int(round(level_rate(layer_stats, "arcs", nps, level) * minutes))
     want_chains = int(round(level_rate(layer_stats, "chains", nps, level) * minutes))
 
-    next_t = _next_same_hand(notes)
-    chain_ok = [_chain_ok(notes, i, next_t[i]) for i in range(len(notes))]
-    arc_buckets = [_arc_buckets(notes[i], next_t[i], bpm) for i in range(len(notes))]
-    rejected_chain = len(notes) - sum(chain_ok)
+    idx = NoteIndex(notes)
+    beat_s = 60.0 / bpm
+    tail_cells = [_chain_tail_cell(n) for n in notes]
+    can_chain = [
+        tc is not None and chain_ok(_build_chain(n, tc, 3, beat_s), idx)
+        for n, tc in zip(notes, tail_cells)
+    ]
+    arc_buckets = [
+        [k + 1 for k, beats in enumerate(ARC_LENGTH_BEATS)
+         if arc_ok(_build_arc(n, beats, n.x, n.y, n.direction, beat_s), idx)]
+        for n in notes
+    ]
+    rejected_chain = len(notes) - sum(can_chain)
     rejected_arc = sum(1 for b in arc_buckets if not b)
     if want_arcs + want_chains == 0:
         return [], [], OrnamentReport(0, 0, 0, 0, rejected_chain, rejected_arc)
@@ -158,7 +144,7 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
     p_arc = _softmax(probs["arc_len"])
     cands = []  # (-p, time, kind, index)
     for i, n in enumerate(notes):
-        if chain_ok[i]:
+        if can_chain[i]:
             cands.append((-(1.0 - float(p_chain[i, 0])), n.time_s, 0, i))
         if arc_buckets[i]:
             cands.append((-(1.0 - float(p_arc[i, 0])), n.time_s, 1, i))
@@ -174,15 +160,13 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
         picked[kind].append(i)
 
     rng = np.random.default_rng(seed)
-    beat_s = 60.0 / bpm
     chains = []
     for i in sorted(picked[0]):
         n = notes[i]
-        tx, ty = _chain_tail_cell(n)  # type: ignore[misc]  # chain_ok guarantees a tail cell
+        tc = tail_cells[i]
+        assert tc is not None  # can_chain guarantees a tail cell
         segments = 3 + int(np.argmax(p_chain[i, 1:]))
-        tail_s = n.time_s + CHAIN_TAIL_BEATS * beat_s
-        chains.append(Chain(n.time_s, n.time_s / beat_s, n.color, n.x, n.y, n.direction, tail_s,
-                            tail_s / beat_s, tx, ty, segments, 1.0))
+        chains.append(_build_chain(n, tc, segments, beat_s))
     arcs = []
     for i in sorted(picked[1]):
         n = notes[i]
@@ -191,9 +175,7 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
         cls = min(cls, max(allowed))  # allowed classes are a prefix 1..k: shorter always fits
         cell = int(rng.choice(12, p=_softmax(probs["arc_cell"][i], TEMPERATURE)))
         direction = int(rng.choice(9, p=_softmax(probs["arc_dir"][i], TEMPERATURE)))
-        tail_s = n.time_s + ARC_LENGTH_BEATS[cls - 1] * 60.0 / bpm
-        arcs.append(Arc(n.time_s, n.time_s / beat_s, n.color, n.x, n.y, n.direction, tail_s,
-                        tail_s / beat_s, cell % 4, cell // 4, direction))
+        arcs.append(_build_arc(n, ARC_LENGTH_BEATS[cls - 1], cell % 4, cell // 4, direction, beat_s))
     report = OrnamentReport(want_arcs, want_chains, len(arcs), len(chains), rejected_chain,
                             rejected_arc)
     if len(arcs) < want_arcs or len(chains) < want_chains:

@@ -187,6 +187,20 @@ def test_load_exposes_bomb_masks_and_spec(tmp_path):
     assert lights.bomb_masks is None and lights.spec.n_channels == 9
 
 
+def test_load_when_requires_stats(tmp_path):
+    cfg = WhenConfig(n_channels=LIGHTS.n_channels, **TINY)
+    model = WhenModel(cfg)
+    base = {"model": model.state_dict(), "model_config": asdict(cfg),
+            "train_options": {"layer": "lights"}}
+    path = tmp_path / "no_stats.pt"
+    for bad in (base, {**base, "stats": None}, {**base, "stats": {}}):
+        save_checkpoint(path, bad)
+        with pytest.raises(ValueError, match="stats"):
+            load_when(path, "cpu")
+    save_checkpoint(path, {**base, "stats": STATS})
+    assert load_when(path, "cpu").stats == STATS
+
+
 def test_predict_counts_gap_and_lead_in(tmp_path):
     loaded = load_when(_checkpoint(tmp_path, "lights"), "cpu")
     rng = np.random.default_rng(0)

@@ -2,10 +2,11 @@ import numpy as np
 import pytest
 import torch
 
-from bsmaker.formats.model import Note
+from bsmaker.formats.model import Layers, Note
 from bsmaker.models.ornaments.model import OrnamentConfig, OrnamentModel
 from bsmaker.models.ornaments.sample import (
     LoadedOrnaments, load_ornaments, sample_ornaments)
+from bsmaker.playability.layers import NoteIndex, arc_ok, chain_ok, check_layers
 
 STATS = {"mel_mean": 0.0, "mel_std": 1.0}
 BPM = 120.0
@@ -37,27 +38,18 @@ def _run(loaded, notes, span, nps=3.0, level=3, seed=0):
 
 
 def _check_rules(notes, arcs, chains):
-    notes = sorted(notes, key=lambda n: n.time_s)
-
-    def next_same(color, t):
-        later = [n.time_s for n in notes if n.color == color and n.time_s > t]
-        return min(later) if later else None
-
+    idx = NoteIndex(notes)
+    assert check_layers(notes, Layers((), (), tuple(arcs), tuple(chains), (), False, 0)) == []
     used = set()
     for c in chains:
-        head = next(n for n in notes if (n.time_s, n.color, n.x, n.y) == (c.time_s, c.color, c.x, c.y))
+        head = next(n for n in idx.notes if (n.time_s, n.color, n.x, n.y) == (c.time_s, c.color, c.x, c.y))
         assert head.direction != 8
-        nt = next_same(c.color, c.time_s)
-        assert nt is not None and nt - c.time_s >= 0.25
+        assert chain_ok(c, idx)
         assert (c.tx, c.ty) != (c.x, c.y) and 0 <= c.tx <= 3 and 0 <= c.ty <= 2
         assert 3 <= c.segments <= 7 and c.squish == 1.0
-        for o in notes:
-            if o is not head and c.time_s <= o.time_s <= nt:
-                assert (o.x, o.y) not in {(c.x, c.y), (c.tx, c.ty)}
         used.add((c.time_s, c.color))
     for a in arcs:
-        nt = next_same(a.color, a.time_s)
-        assert nt is None or a.tail_time_s <= nt
+        assert arc_ok(a, idx)
         assert a.tail_time_s > a.time_s and 0 <= a.tx <= 3 and 0 <= a.ty <= 2
         assert 0 <= a.td <= 8
         assert (a.time_s, a.color) not in used
@@ -156,3 +148,17 @@ def test_softmax_sharp_float32_logits_sum_to_one(n):
     assert p.dtype == np.float64
     for row in p:
         rng.choice(n, p=row)  # must not raise "probabilities do not sum to 1"
+
+
+def test_last_note_and_exclusive_next_note_follow_playability_layers(loaded):
+    chains_only = {"nps_bins": [0.0, 100.0],
+                   "rates": {"arcs": [[0.0, 0.0, 0.0]], "chains": [[3.0, 9.0, 18.0]]}}
+    # Single non-dot note (no subsequent same-hand note): allowed by playability.layers.chain_ok
+    single = [Note(0.0, 0.0, 1, 1, 0, 3)]
+    _, chains, rep = sample_ornaments(loaded, single, _mel(31.0), 3.0, 3, chains_only, BPM, 0, "cpu")
+    assert rep.rejected_chain == 0 and len(chains) == 1 and chains[0].time_s == 0.0
+    # Next same-hand note sits in the tail cell (2, 1) >= 0.25 s later: exclusive bound allows chain
+    pair = [Note(0.0, 0.0, 1, 1, 0, 3), Note(0.5, 1.0, 2, 1, 0, 8)]
+    _, chains, rep = sample_ornaments(loaded, pair, _mel(31.0), 3.0, 3, chains_only, BPM, 0, "cpu")
+    assert rep.rejected_chain == 1  # only the dot note is rejected
+    assert len(chains) == 1 and chains[0].time_s == 0.0

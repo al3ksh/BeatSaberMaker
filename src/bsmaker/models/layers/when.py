@@ -237,11 +237,13 @@ class LoadedWhen:
 
 def load_when(path: Path, device: str) -> LoadedWhen:
     payload = load_checkpoint(path, map_location=device)
+    if not payload.get("stats"):
+        raise ValueError(f"{path}: checkpoint has no mel stats; it cannot be used for sampling")
     config = WhenConfig(**payload["model_config"])
     model = WhenModel(config)
     model.load_state_dict(payload["model"])
     model.to(device).eval()
-    stats = payload.get("stats", {})
+    stats = payload["stats"]
     layer = (payload.get("train_options") or {}).get("layer", "")
     return LoadedWhen(model, config, stats, layer, stats.get("bomb_masks"))
 
