@@ -1,9 +1,10 @@
 name: Release
 
+# v0.1.0 was built locally and uploaded by hand: the runner has no access to the
+# trained checkpoints yet. Once CHECKPOINTS_ARCHIVE_URL is set, run it manually
+# with "Use workflow from" set to the release tag (vX.Y.Z).
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write

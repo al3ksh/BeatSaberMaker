@@ -68,7 +68,7 @@ export const EN = {
   },
   firstRun: {
     title: "First-Time Setup",
-    subtitle: "Download the AI engine pack (~2.5 GB) and select your Beat Saber CustomLevels folder.",
+    subtitle: "Download the AI engine pack (~5 GB) and select your Beat Saber CustomLevels folder.",
     folderLabel: "CustomLevels Folder",
     folderPlaceholder: "e.g. C:\\Program Files (x86)\\Steam\\steamapps\\common\\Beat Saber\\Beat Saber_Data\\CustomLevels",
     detectedHint: "Beat Saber folder detected automatically.",
