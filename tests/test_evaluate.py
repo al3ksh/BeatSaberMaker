@@ -336,6 +336,8 @@ def test_eval_layers_structure_and_zero_violations(tmp_path, layer_models):
 
 def test_eval_layers_rates_increase_with_level(tmp_path, layer_models):
     r = _eval_layers(tmp_path, layer_models)
+    rules = [r["lights"]["levels"][lv]["rules"]["per_min"] for lv in (1, 2, 3)]
+    assert rules[0] < rules[1] < rules[2], rules
     for layer, key in (("ornaments", "arcs_per_min"), ("ornaments", "chains_per_min"),
                        ("decor", "walls_per_min"), ("decor", "bomb_groups_per_min"),
                        ("lights", "per_min")):
@@ -410,3 +412,25 @@ def test_cli_eval_layers_without_checkpoints_says_not_trained(tmp_path, monkeypa
                                  "--pattern-ckpt", str(tmp_path / "pattern-custom.pt")])
     assert r.exit_code == 0, r.output
     assert "not trained" in (data / "reports" / "eval-val.md").read_text(encoding="utf-8")
+
+
+def test_onset_ratio_uses_plus_minus_one_frame_max_and_on_flash_filter():
+    flux = np.ones(100, dtype=np.float32)
+    flux[50] = 11.0
+    fps = E.FRAMES_PER_SECOND
+    t = np.array([51 / fps])  # one frame off the peak still scores the peak
+    _, ratio = E._light_metrics(t, np.array([0]), np.array([1]), 120.0, flux)
+    assert ratio == pytest.approx(11.0 / flux.mean())
+    _, off = E._light_metrics(np.array([53 / fps]), np.array([0]), np.array([1]), 120.0, flux)
+    assert off == pytest.approx(1.0 / flux.mean())
+    # fade tokens, spin channels and frames too close to the edges are not counted
+    _, none = E._light_metrics(t, np.array([0]), np.array([3]), 120.0, flux)
+    assert none != none
+    _, none = E._light_metrics(t, np.array([5]), np.array([17]), 120.0, flux)
+    assert none != none
+    _, edge = E._light_metrics(np.array([1 / fps]), np.array([0]), np.array([1]), 120.0, flux)
+    assert edge != edge
+
+
+def test_channel_tv_nan_when_human_side_empty():
+    assert E._channel_tv([(0, 1)], []) != E._channel_tv([(0, 1)], [])

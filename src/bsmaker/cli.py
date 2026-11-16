@@ -756,7 +756,7 @@ def eval_cmd(
                 layer_models, load_layer_stats(stats_path), timing, pattern, cache,
                 LayerCache.load(cfg.layers_dir), cfg.features_dir, mask_cfg, split, n_layers, seed,
                 dev, pool)
-        except (ValueError, KeyError, OSError) as e:
+        except (ValueError, KeyError, IndexError, OSError) as e:
             _fail(str(e).splitlines()[0] if str(e) else type(e).__name__)
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     stem = f"eval-{split}-{tag}" if tag else f"eval-{split}"

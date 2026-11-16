@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-from bsmaker.data.align import onset_envelope
 from bsmaker.data.events_cache import Entry, EventCache
 from bsmaker.data.layer_stats import level_rate
 from bsmaker.formats.events import FRAMES_PER_SECOND, Event, to_events
@@ -347,17 +346,38 @@ def _light_tokens(events: Sequence[LightEvent]) -> list[tuple[int, int]]:
     return [m for ev in events if (m := light_event_to_token(ev.type, ev.value)) is not None]
 
 
-def _light_metrics(times: np.ndarray, bpm: float, env: np.ndarray) -> tuple[float, float]:
-    """(share within 30 ms of a quarter beat, mean onset strength / mean envelope) of event times."""
+def _flux(mel: np.ndarray) -> np.ndarray:
+    """Positive spectral flux of the raw log-mel (the survey's envelope), 0 at frame 0."""
+    mel = np.asarray(mel, dtype=np.float32)
+    if mel.shape[0] == 0:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate([[0.0], np.maximum(np.diff(mel, axis=0), 0).sum(1)]).astype(np.float32)
+
+
+_ON_FLASH_TOKENS = (1, 2, 4, 5)  # on / flash in either colour (v2 values 1, 2, 5, 6, 9, 10)
+
+
+def _light_metrics(times: np.ndarray, ch: np.ndarray, tok: np.ndarray, bpm: float,
+                   flux: np.ndarray) -> tuple[float, float]:
+    """(share within 30 ms of a quarter beat, onset ratio) of light events.
+
+    Onset ratio as in the survey: for on/flash events of channels 0-4 whose frame
+    `round(t * fps)` lies in (1, len - 2), the max flux over frame +-1, averaged, divided by the
+    mean flux of the song.
+    """
+    times = np.asarray(times, dtype=np.float64)
     if len(times) == 0:
         return float("nan"), float("nan")
     q = 60.0 / bpm / 4.0
     off = np.abs(times / q - np.round(times / q)) * q
     share = float((off <= QUARTER_BEAT_TOL_S).mean())
-    if env.size == 0 or env.mean() <= 0:
+    keep = (np.asarray(ch) <= 4) & np.isin(np.asarray(tok), _ON_FLASH_TOKENS)
+    idx = np.round(times[keep] * FRAMES_PER_SECOND).astype(int)
+    idx = idx[(idx > 1) & (idx < len(flux) - 2)]
+    if len(idx) == 0 or flux.mean() <= 0:
         return share, float("nan")
-    frames = np.clip(np.round(times * FRAMES_PER_SECOND).astype(int), 0, env.size - 1)
-    return share, float(env[frames].mean() / env.mean())
+    v = np.maximum(np.maximum(flux[idx - 1], flux[idx]), flux[idx + 1])
+    return share, float(v.mean() / flux.mean())
 
 
 def _channel_tv(gen: Sequence[tuple[int, int]], hum: Sequence[tuple[int, int]]) -> float:
@@ -365,7 +385,7 @@ def _channel_tv(gen: Sequence[tuple[int, int]], hum: Sequence[tuple[int, int]]) 
     for ch in range(LIGHT_CHANNELS):
         g = np.bincount([t for c, t in gen if c == ch], minlength=LIGHT_VOCAB)
         h = np.bincount([t for c, t in hum if c == ch], minlength=LIGHT_VOCAB)
-        tvs.append(_tv_counts(g, h))
+        tvs.append(float("nan") if h.sum() == 0 else _tv_counts(g, h))
     return _nanmean(tvs)
 
 
@@ -420,7 +440,6 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
     h_onset: list[float] = []
     for e in chosen:
         meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
-        env = onset_envelope(mel)
         for v in layer_cache.ornaments(e.i)[4]:
             if v:
                 h_arc[int(v) - 1] += 1
@@ -432,11 +451,19 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
         lt, lch, ltok = layer_cache.lights(e.i)
         if meta.get("lights_ok"):
             h_light += list(zip(lch.tolist(), ltok.tolist()))
-            sh, on = _light_metrics(np.asarray(lt, dtype=np.float64), meta["bpm"], env)
+            sh, on = _light_metrics(lt, lch, ltok, meta["bpm"], _flux(mel))
             h_share.append(sh)
             h_onset.append(on)
     out["human"] = {"lights": {"quarter_beat_share": _nanmean(h_share),
                                "onset_ratio": _nanmean(h_onset)}}
+
+    prep: dict[int, tuple] = {}
+    for e in chosen:
+        meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
+        bpm = float(meta["bpm"])
+        minutes = e.n_frames / FRAMES_PER_SECOND / 60.0
+        prep[e.i] = (mel, bpm, minutes, minutes * 60.0, _human_notes(layer_cache, e.i, bpm),
+                     _flux(mel))
 
     for level in LAYER_LEVELS:
         orn_rows: list[dict] = []
@@ -447,12 +474,7 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
         g_bomb = np.zeros(len(bomb_vocab))
         g_light: dict[str, list[tuple[int, int]]] = {"model": [], "rules": []}
         for e in chosen:
-            meta, mel = layer_cache.meta(e.i), _mel(features_dir, e)
-            bpm = float(meta["bpm"])
-            minutes = e.n_frames / FRAMES_PER_SECOND / 60.0
-            duration_s = minutes * 60.0
-            notes = _human_notes(layer_cache, e.i, bpm)
-            env = onset_envelope(mel)
+            mel, bpm, minutes, duration_s, notes, flux = prep[e.i]
             if have_orn:
                 arcs, chains, rep = sample_ornaments(
                     models.ornaments, notes, mel, e.nps, level, layer_stats, bpm, seed, device)
@@ -490,8 +512,11 @@ def eval_layers(models: LayerModels, layer_stats: dict, timing, pattern, event_c
                     continue
                 events, rep = generate_lights(models, mel, notes, e.nps, bpm, 0.0, duration_s,
                                               level, layer_stats, seed, device, use_rules=use_rules)
-                share, onset = _light_metrics(
-                    np.asarray([ev.time_s for ev in events], dtype=np.float64), bpm, env)
+                mapped = [(ev.time_s, *light_event_to_token(ev.type, ev.value) )
+                          if light_event_to_token(ev.type, ev.value) is not None else (ev.time_s, 99, 99)
+                          for ev in events]
+                arr = np.asarray(mapped, dtype=np.float64).reshape(-1, 3)
+                share, onset = _light_metrics(arr[:, 0], arr[:, 1], arr[:, 2], bpm, flux)
                 g_light[kind] += _light_tokens(events)
                 light_rows[kind].append({
                     "per_min": len(events) / minutes, "target": target,
