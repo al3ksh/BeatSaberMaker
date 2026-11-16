@@ -11,6 +11,43 @@
     "test": "vitest run",
     "e2e": "playwright test"
   },
+  "build": {
+    "appId": "com.beatsabermaker.app",
+    "productName": "BeatSaberMaker",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "engine-version.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "al3ksh",
+        "repo": "BeatSaberMaker"
+      }
+    ]
+  },
   "dependencies": {
     "clsx": "^2.1.1",
     "electron-updater": "^6.3.9",

@@ -5,3 +5,9 @@ __pycache__/
 *.npy
 *.sqlite
 *.pt
+app/node_modules/
+app/dist/
+app/dist-electron/
+app/release/
+app/test-results/
+app/playwright-report/

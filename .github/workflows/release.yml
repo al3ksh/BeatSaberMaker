@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release tag matches app version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $pkg = Get-Content app/package.json -Raw | ConvertFrom-Json
+          $expected = "v$($pkg.version)"
+          if ($tag -ne $expected) {
+            throw "Tag $tag does not match app/package.json version $expected"
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install CUDA PyTorch
+        run: python -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Install bsmaker and PyInstaller
+        run: python -m pip install --no-cache-dir . pyinstaller
+
+      - name: Fetch pinned LGPL ffmpeg and yt-dlp
+        shell: pwsh
+        run: |
+          python packaging/fetch_tools.py --manifest packaging/tools.json --out-dir _tools
+          "$PWD\_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Run Python tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python -m pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build and test Electron app
+        working-directory: app
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+          npx playwright test
+
+      - name: Download and slim checkpoints
+        shell: pwsh
+        env:
+          CHECKPOINTS_ARCHIVE_URL: ${{ secrets.CHECKPOINTS_ARCHIVE_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CHECKPOINTS_ARCHIVE_URL)) {
+            throw "CHECKPOINTS_ARCHIVE_URL secret is not set"
+          }
+          Invoke-WebRequest -Uri $env:CHECKPOINTS_ARCHIVE_URL -OutFile _ckpts.zip
+          Expand-Archive -Path _ckpts.zip -DestinationPath _raw_ckpts -Force
+          Remove-Item _ckpts.zip -Force
+          $ckptRoot = if (Test-Path "_raw_ckpts/checkpoints") { "_raw_ckpts/checkpoints" } else { "_raw_ckpts" }
+          $env:PYTHONPATH = "src"
+          python packaging/slim_checkpoints.py --src $ckptRoot --dst _slim_ckpts
+          Remove-Item _raw_ckpts -Recurse -Force
+
+      - name: Build split PyInstaller engine pack
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python packaging/build_engine_pack.py `
+            --repo-root . `
+            --checkpoints-dir _slim_ckpts `
+            --tools-dir _tools `
+            --out-dir _pack_out `
+            --playability playability.toml `
+            --layer-stats layer_stats.json
+
+      - name: Build NSIS installer
+        working-directory: app
+        run: npx electron-builder --win --publish never
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/release/BeatSaberMaker-Setup-*.exe
+            app/release/*.blockmap
+            app/release/latest.yml
+            _pack_out/engine-pack-manifest.json
+            _pack_out/bsmaker-engine-v*.zip.*
