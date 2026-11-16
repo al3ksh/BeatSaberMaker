@@ -209,6 +209,13 @@ export const EN = {
   library: {
     title: "My Maps",
     empty: "You haven't generated any maps yet. Head over to New Map to get started.",
+    searchPlaceholder: "Filter by title, artist, or difficulty...",
+    noMatches: "No maps match your search.",
+    clearSearch: "Clear filter",
+    pageLabel: "Page",
+    ofLabel: "of",
+    prevPage: "Previous",
+    nextPage: "Next",
     createFirst: "Create First Map",
     regenerate: "Regenerate",
     exportZip: "Export ZIP",

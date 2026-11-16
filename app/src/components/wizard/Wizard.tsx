@@ -248,6 +248,9 @@ export function Wizard({
           >
             <StepProgressDone
               hasDownloadStage={song.sourceType === "youtube"}
+              songTitle={song.title}
+              songArtist={song.artist}
+              thumbnailUrl={song.thumbnailUrl}
               status={status}
               progress={progress}
               result={result}
