@@ -11,8 +11,8 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from itertools import accumulate
 
-from bsmaker.formats.model import Note, Obstacle
-from bsmaker.playability.layers import NoteIndex, wall_ok
+from bsmaker.formats.model import Arc, Chain, Note, Obstacle
+from bsmaker.playability.layers import NoteIndex, ornament_points, wall_ok, wall_on_ornament
 
 START_MARGIN_S = 10.0
 END_MARGIN_S = 5.0
@@ -59,7 +59,8 @@ def _duck_candidates(times: list[float], beat_s: float, duration_s: float, lo: f
 
 
 def gameplay_obstacles(notes: Sequence[Note], bpm: float, duration_s: float, level: int,
-                       seed: int) -> list[Obstacle]:
+                       seed: int, arcs: Sequence[Arc] = (), chains: Sequence[Chain] = ()
+                       ) -> list[Obstacle]:
     """At most one wall per 45 s (30 s at level 3), none in the first 10 s or the last 5 s."""
     if level < 2 or bpm <= 0 or duration_s <= 0:
         return []
@@ -70,6 +71,7 @@ def gameplay_obstacles(notes: Sequence[Note], bpm: float, duration_s: float, lev
         return []
     beat_s = 60.0 / bpm
     idx = NoteIndex(notes)
+    points = ornament_points(arcs=arcs, chains=chains)
     times = idx.times
     xs = [n.x for n in idx.notes]
     left, right = _side_candidates(times, xs, beat_s, lo, hi)
@@ -83,7 +85,8 @@ def gameplay_obstacles(notes: Sequence[Note], bpm: float, duration_s: float, lev
     pools: dict[str, list[tuple[float, int]]] = {"left": [], "right": [], "duck": []}
     for kind, cands in (("left", left), ("right", right), ("duck", ducks)):
         for s, beats in cands:
-            if wall_ok(make(kind, s, beats), idx):
+            wall = make(kind, s, beats)
+            if wall_ok(wall, idx) and not wall_on_ornament(wall, points):
                 pools[kind].append((s, beats))
         pools[kind].sort()
 

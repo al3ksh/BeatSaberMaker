@@ -9,14 +9,14 @@ import math
 from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 
-from bsmaker.formats.model import Arc, Chain, Layers, Note, Obstacle
+from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
 from bsmaker.playability.checker import Violation
 
 WALL_MARGIN_S = 0.1
 BOMB_WINDOW_S = 0.4
 CHAIN_MIN_GAP_S = 0.25
 _EPS = 1e-6
-LAYER_RULE_NAMES = ("wall_on_note", "bomb_in_swing", "chain_conflict", "arc_overrun")
+LAYER_RULE_NAMES = ("wall_on_note", "bomb_in_swing", "chain_conflict", "arc_overrun", "wall_on_ornament")
 
 # Cut direction vectors (dx, dy); direction 8 (dot) has none.
 _DIRECTION_VECTORS: dict[int, tuple[int, int]] = {
@@ -73,6 +73,26 @@ def wall_ok(ob: Obstacle, notes: "Sequence[Note] | NoteIndex") -> bool:
     end = ob.time_s + max(ob.duration_s, 0.0)
     return not any((n.x, n.y) in cells
                    for n in _index(notes).window(ob.time_s - WALL_MARGIN_S, end + WALL_MARGIN_S))
+
+
+def ornament_points(bombs: Sequence[Bomb] = (), arcs: Sequence[Arc] = (),
+                    chains: Sequence[Chain] = ()) -> list[tuple[float, Cell]]:
+    """(time_s, cell) of every bomb and every arc/chain head and tail."""
+    pts: list[tuple[float, Cell]] = [(b.time_s, (b.x, b.y)) for b in bombs]
+    for o in (*arcs, *chains):
+        pts.append((o.time_s, (o.x, o.y)))
+        pts.append((o.tail_time_s, (o.tx, o.ty)))
+    return pts
+
+
+def wall_on_ornament(ob: Obstacle, points: Sequence[tuple[float, Cell]]) -> bool:
+    """True if a bomb/arc/chain point sits in a covered cell from 0.1 s before the wall to 0.1 s after."""
+    cells = wall_cells(ob)
+    if not cells or not points:
+        return False
+    lo = ob.time_s - WALL_MARGIN_S - _EPS
+    hi = ob.time_s + max(ob.duration_s, 0.0) + WALL_MARGIN_S + _EPS
+    return any(lo <= t <= hi and c in cells for t, c in points)
 
 
 def bomb_forbidden_cells(notes: "Sequence[Note] | NoteIndex", time_s: float) -> set[Cell]:
@@ -137,6 +157,10 @@ def check_layers(notes: Sequence[Note], layers: Layers) -> list[Violation]:
     for w in layers.obstacles:
         if not wall_ok(w, idx):
             out.append(Violation(w.time_s, -1, "wall_on_note"))
+    pts = ornament_points(layers.bombs, layers.arcs, layers.chains)
+    for w in layers.obstacles:
+        if wall_on_ornament(w, pts):
+            out.append(Violation(w.time_s, -1, "wall_on_ornament"))
     for b in layers.bombs:
         if _in_grid(b.x, b.y) and not bomb_mask_ok(1 << (b.y * 4 + b.x), idx, b.time_s):
             out.append(Violation(b.time_s, -1, "bomb_in_swing"))

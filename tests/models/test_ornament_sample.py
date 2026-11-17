@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 import torch
 
-from bsmaker.formats.model import Layers, Note
+from bsmaker.formats.model import Arc, Layers, Note
 from bsmaker.models.ornaments.model import OrnamentConfig, OrnamentModel
 from bsmaker.models.ornaments.sample import (
-    LoadedOrnaments, load_ornaments, sample_ornaments)
+    LoadedOrnaments, load_ornaments, sample_ornaments, snap_arc_tail)
 from bsmaker.playability.layers import NoteIndex, arc_ok, chain_ok, check_layers
 
 STATS = {"mel_mean": 0.0, "mel_std": 1.0}
@@ -162,3 +162,25 @@ def test_last_note_and_exclusive_next_note_follow_playability_layers(loaded):
     _, chains, rep = sample_ornaments(loaded, pair, _mel(31.0), 3.0, 3, chains_only, BPM, 0, "cpu")
     assert rep.rejected_chain == 1  # only the dot note is rejected
     assert len(chains) == 1 and chains[0].time_s == 0.0
+
+
+def _arc(tail_beat, tx, ty, td=8):
+    return Arc(0.0, 0.0, 0, 0, 0, 8, tail_beat * 0.5, tail_beat, tx, ty, td)
+
+
+def test_arc_tail_just_short_of_next_note_snaps_to_it():
+    notes = [Note(0.0, 0.0, 0, 0, 0, 1), Note(2.0, 4.0, 2, 1, 0, 5), Note(1.0, 2.0, 3, 2, 1, 0)]
+    snapped = snap_arc_tail(_arc(3.5, 1, 1), notes)  # 0.5 beat short, one cell away
+    assert (snapped.tail_beat, snapped.tail_time_s, snapped.tx, snapped.ty, snapped.td) == (4.0, 2.0, 2, 1, 5)
+    assert arc_ok(snapped, NoteIndex(notes))
+
+
+def test_arc_tail_far_from_next_note_is_unchanged():
+    notes = [Note(0.0, 0.0, 0, 0, 0, 1), Note(2.0, 4.0, 2, 1, 0, 5)]
+    arc = _arc(2.0, 1, 1)  # 2 beats short
+    assert snap_arc_tail(arc, notes) == arc
+    arc = _arc(3.5, 0, 2)  # 0.5 beat short but 2 cells away
+    assert snap_arc_tail(arc, notes) == arc
+    arc = _arc(3.5, 0, 0)  # distance 2 in x
+    assert snap_arc_tail(arc, notes) == arc
+    assert snap_arc_tail(_arc(3.5, 1, 1), [Note(0.0, 0.0, 0, 0, 0, 1)]) == _arc(3.5, 1, 1)  # no next note

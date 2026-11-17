@@ -13,14 +13,14 @@ from bsmaker.data.layer_stats import level_rate
 from bsmaker.errors import GenerateCancelled
 from bsmaker.formats.layer_tokens import (
     WALL_VOCAB, mask_to_cells, token_to_light_event, token_to_wall)
-from bsmaker.formats.model import Bomb, LightEvent, Note, Obstacle
+from bsmaker.formats.model import Arc, Bomb, Chain, LightEvent, Note, Obstacle
 from bsmaker.lights_rules import rule_lights
 from bsmaker.models.layers.spec import LIGHTS
 from bsmaker.models.layers.what import LoadedWhat, load_what, sample_layer_values
 from bsmaker.models.layers.when import LoadedWhen, load_when, predict_layer_events
 from bsmaker.models.ornaments.sample import LoadedOrnaments, load_ornaments
 from bsmaker.obstacles_rules import gameplay_obstacles
-from bsmaker.playability.layers import NoteIndex, bomb_mask_ok, wall_ok
+from bsmaker.playability.layers import NoteIndex, bomb_mask_ok, ornament_points, wall_ok, wall_on_ornament
 
 log = logging.getLogger(__name__)
 
@@ -194,6 +194,8 @@ def generate_decor(
     seed: int,
     device: str,
     *,
+    arcs: Sequence[Arc] = (),
+    chains: Sequence[Chain] = (),
     is_cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[Obstacle], list[Bomb], dict]:
     """Generate rule-safe decorative walls, bomb groups and gameplay obstacles."""
@@ -207,7 +209,7 @@ def generate_decor(
     if bpm <= 0 or duration_s <= 0:
         return [], [], _decor_report(missing_models=missing_models, missing_stats=missing_stats)
 
-    gp_walls = gameplay_obstacles(notes, bpm, duration_s, level, seed)
+    gp_walls = gameplay_obstacles(notes, bpm, duration_s, level, seed, arcs, chains)
     if missing_models or missing_stats:
         obstacles = sorted(gp_walls, key=lambda o: (o.time_s, o.x, o.y))
         return obstacles, [], _decor_report(
@@ -272,6 +274,10 @@ def generate_decor(
             for x, y in mask_to_cells(cell_mask):
                 bombs.append(Bomb(t, beat, x, y))
 
+    # walls are decoration: ornaments (bombs, arcs, chains) win over them
+    points = ornament_points(bombs, arcs, chains)
+    decor_walls = [w for w in decor_walls if not wall_on_ornament(w, points)]
+    gp_walls = [w for w in gp_walls if not wall_on_ornament(w, points)]
     kept_decor = [w for w in decor_walls if not _overlaps_gameplay(w, gp_walls)]
     dropped_by_gameplay = len(decor_walls) - len(kept_decor)
     obstacles = sorted([*kept_decor, *gp_walls], key=lambda o: (o.time_s, o.x, o.y))

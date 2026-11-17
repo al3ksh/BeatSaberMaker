@@ -422,7 +422,8 @@ def generate_map(
         decor_level = auto_ornaments_level(lv.target_nps) if ornaments is None else ornaments
         lv.obstacles, lv.bombs, lv.decor_report = generate_decor(
             models, mel, lv.notes, lv.target_nps, base_grid.bpm, duration_s,
-            decor_level, layer_stats, seed, device, is_cancelled=is_cancelled,
+            decor_level, layer_stats, seed, device, arcs=lv.arcs, chains=lv.chains,
+            is_cancelled=is_cancelled,
         )
         tracker.emit("layers", 80 + int(round(6 * (i + 1) / len(built))))
     decor_rep = _merge_decor_reports([lv.decor_report for lv in built])

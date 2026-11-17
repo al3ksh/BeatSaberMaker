@@ -8,7 +8,7 @@ import torch
 from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.audio.mel import HOP
 from bsmaker.formats.layer_tokens import CHANNEL_TYPES, WALL_VOCAB
-from bsmaker.formats.model import Layers, LightEvent, Note, Obstacle
+from bsmaker.formats.model import Arc, Bomb, Chain, Layers, LightEvent, Note, Obstacle
 from bsmaker.layers_generate import LayerModels, generate_decor, generate_lights, load_layer_models
 from bsmaker.lights_rules import rule_lights
 from bsmaker.obstacles_rules import gameplay_obstacles
@@ -533,3 +533,39 @@ def test_runs_under_inference_mode(all_models, monkeypatch):
     generate_decor(all_models, mel, notes, 2.0, BPM, 31.0, 2, LAYER_STATS, 0, "cpu")
     generate_lights(all_models, mel, notes, 2.0, BPM, 0.0, 31.0, 2, LAYER_STATS, 0, "cpu")
     assert seen == [True, True]
+
+
+def _force_decor(monkeypatch, times, channels, tokens):
+    import bsmaker.layers_generate as lg
+
+    monkeypatch.setattr(lg, "predict_layer_events", lambda *a, **k: [
+        np.array([t for t, c in zip(times, channels) if c == ch], dtype=np.float64) for ch in range(3)])
+    monkeypatch.setattr(lg, "sample_layer_values",
+                        lambda loaded, ts, chs, *a, **k: (np.array(tokens, dtype=np.int64), 0))
+
+
+def test_decor_wall_dropped_when_it_covers_a_bomb(all_models, monkeypatch):
+    # left wall token 0 at 20 s (x=0 w=1?) and a bomb group (cells (0,0)+(3,0)) at the same time
+    notes = _side_notes(40.0, x_choices=(2, 3))
+    _force_decor(monkeypatch, [20.0, 20.0], [0, 2], [0, WALL_VOCAB + 3])
+    obs, bombs, rep = generate_decor(all_models, _mel(40.0), notes, 2.0, BPM, 40.0, 1, LAYER_STATS, 0, "cpu")
+    assert {(b.x, b.y) for b in bombs} == {(0, 0), (3, 0)}
+    assert obs == []
+    assert check_layers(notes, Layers(tuple(bombs), tuple(obs), (), (), (), False, 0)) == []
+
+
+def test_decor_wall_dropped_on_arc_tail_and_chain_head(all_models, monkeypatch):
+    notes = _side_notes(40.0, x_choices=(2, 3))
+    from bsmaker.layers_generate import token_to_wall
+
+    w = token_to_wall(0, 0, 20.0, BPM)
+    cx, cy = sorted(__import__("bsmaker.playability.layers", fromlist=["wall_cells"]).wall_cells(w))[0]
+    arc = Arc(18.0, 36.0, 0, 3, 2, 8, 20.1, 40.2, cx, cy, 8)
+    chain = Chain(20.0, 40.0, 1, cx, cy, 8, 20.05, 40.1, 3, 2, 3, 1.0)
+    for kw in ({"arcs": [arc]}, {"chains": [chain]}):
+        _force_decor(monkeypatch, [20.0], [0], [0])
+        obs, _, _ = generate_decor(all_models, _mel(40.0), notes, 2.0, BPM, 40.0, 1, LAYER_STATS, 0, "cpu", **kw)
+        assert obs == []
+    _force_decor(monkeypatch, [20.0], [0], [0])
+    obs, _, _ = generate_decor(all_models, _mel(40.0), notes, 2.0, BPM, 40.0, 1, LAYER_STATS, 0, "cpu")
+    assert len(obs) == 1  # control: without the ornaments the wall stays

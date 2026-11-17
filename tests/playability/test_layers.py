@@ -9,7 +9,8 @@ from bsmaker.cli import app
 from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
 from bsmaker.playability.layers import (
     _line_cells,
-    NoteIndex, arc_ok, bomb_forbidden_cells, bomb_mask_ok, chain_ok, check_layers, wall_cells, wall_ok)
+    NoteIndex, arc_ok, bomb_forbidden_cells, bomb_mask_ok, chain_ok, check_layers, wall_cells, wall_ok,
+    wall_on_ornament, ornament_points, LAYER_RULE_NAMES)
 
 RULES = ("wall_on_note", "bomb_in_swing", "chain_conflict", "arc_overrun")
 
@@ -197,3 +198,21 @@ def test_cli_check_malformed_layers_do_not_crash(tmp_path, monkeypatch):
     result = CliRunner().invoke(app, ["check", str(folder)])
     assert result.exit_code == 0 and "Traceback" not in result.output, result.output
     assert time.monotonic() - start < 5.0
+
+
+def test_wall_on_ornament_rule_registered():
+    assert "wall_on_ornament" in LAYER_RULE_NAMES
+
+
+def test_check_layers_reports_wall_on_bomb_arc_tail_and_chain_head():
+    w = wall(10.0, 1.0, x=0, y=0, w=2, h=2)
+    assert wall_on_ornament(w, ornament_points(bombs=[Bomb(10.5, 21.0, 1, 1)]))
+    assert not wall_on_ornament(w, ornament_points(bombs=[Bomb(10.5, 21.0, 3, 1)]))
+    assert not wall_on_ornament(w, ornament_points(bombs=[Bomb(11.2, 22.4, 1, 1)]))  # after the margin
+    assert wall_on_ornament(w, ornament_points(bombs=[Bomb(11.05, 22.1, 1, 1)]))  # inside the margin
+    a = Arc(5.0, 10.0, 0, 3, 0, 8, 10.5, 21.0, 1, 1, 8)
+    c = Chain(10.2, 20.4, 0, 0, 0, 8, 10.3, 20.6, 1, 0, 3, 1.0)
+    for layers in (Layers((Bomb(10.5, 21.0, 0, 0),), (w,), (), (), (), False, 0),
+                   Layers((), (w,), (a,), (), (), False, 0),
+                   Layers((), (w,), (), (c,), (), False, 0)):
+        assert [v.rule for v in check_layers([], layers)] == ["wall_on_ornament"]

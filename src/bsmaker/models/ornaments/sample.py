@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -76,6 +76,29 @@ def _build_arc(note: Note, length_beats: float, tx: int, ty: int, td: int, beat_
     tail_s = note.time_s + length_beats * beat_s
     return Arc(note.time_s, note.time_s / beat_s, note.color, note.x, note.y, note.direction,
                tail_s, tail_s / beat_s, tx, ty, td)
+
+
+SNAP_MAX_BEATS = 1.0
+SNAP_MAX_CELLS = 1
+
+
+def snap_arc_tail(arc: Arc, notes: Sequence[Note]) -> Arc:
+    """Snap the tail onto the same hand's next note when it would end just short of it.
+
+    The next note is the hand's first colour note strictly after the head. If the tail is at most
+    1 beat before it (never after) and within 1 cell (Chebyshev), the tail takes that note's beat,
+    cell and direction. Otherwise the free-ending arc is returned unchanged.
+    """
+    nxt = next((n for n in sorted(notes, key=lambda n: n.time_s)
+                if n.color == arc.color and n.time_s > arc.time_s + 1e-6), None)
+    if nxt is None:
+        return arc
+    gap = nxt.beat - arc.tail_beat
+    if not -1e-6 <= gap <= SNAP_MAX_BEATS + 1e-6:
+        return arc
+    if max(abs(nxt.x - arc.tx), abs(nxt.y - arc.ty)) > SNAP_MAX_CELLS:
+        return arc
+    return replace(arc, tail_time_s=nxt.time_s, tail_beat=nxt.beat, tx=nxt.x, ty=nxt.y, td=nxt.direction)
 
 
 @torch.no_grad()
@@ -194,7 +217,8 @@ def sample_ornaments(loaded: LoadedOrnaments, notes: Sequence[Note], mel: np.nda
         cls = min(cls, max(allowed))  # allowed classes are a prefix 1..k: shorter always fits
         cell = int(rng.choice(12, p=_softmax(probs["arc_cell"][i], TEMPERATURE)))
         direction = int(rng.choice(9, p=_softmax(probs["arc_dir"][i], TEMPERATURE)))
-        arcs.append(_build_arc(n, ARC_LENGTH_BEATS[cls - 1], cell % 4, cell // 4, direction, beat_s))
+        arc = _build_arc(n, ARC_LENGTH_BEATS[cls - 1], cell % 4, cell // 4, direction, beat_s)
+        arcs.append(snap_arc_tail(arc, notes))
     if is_cancelled is not None and is_cancelled():
         raise GenerateCancelled("cancelled")
     report = OrnamentReport(want_arcs, want_chains, len(arcs), len(chains), rejected_chain,
