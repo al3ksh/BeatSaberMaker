@@ -14,7 +14,9 @@ from bsmaker.flow_rules import (
     SLITHER,
     FlowReport,
     add_dot_stacks,
+    apply_flow,
     apply_snakes,
+    auto_flow_level,
     find_runs,
     rewrite_run,
     stack_spacing_s,
@@ -312,5 +314,25 @@ def test_seed_deterministic() -> None:
     out1 = apply_snakes(notes, share=0.8, rng=random.Random(99), mask_cfg=cfg)
     out2 = apply_snakes(notes, share=0.8, rng=random.Random(99), mask_cfg=cfg)
     assert out1 == out2
+
+
+def test_apply_flow_level0_identity() -> None:
+    bpm = 150.0
+    notes = _alternating_run(12, gap=0.2)
+    env = np.ones(400, dtype=np.float32)
+    out, rep = apply_flow(
+        notes, bpm=bpm, onset_env=env, onset_hop_s=HOP_S,
+        level=0, seed=0, mask_cfg=PlayabilityConfig(),
+    )
+    assert out == notes
+    assert rep == FlowReport(level=0)
+
+
+def test_auto_flow_level() -> None:
+    assert auto_flow_level(["tech"]) == 2
+    assert auto_flow_level(["dance"]) == 1
+    assert auto_flow_level([]) == 1
+    assert auto_flow_level(["dance", "tech"]) == 2
+
 
 

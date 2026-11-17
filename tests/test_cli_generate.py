@@ -271,3 +271,12 @@ def test_cli_missing_checkpoints_and_stats_warn_once_each_and_write_map(tmp_path
               if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
     assert len(warns2) == 1 and "layer_stats.json" in warns2[0]
     assert (out2 / "BSM - a [nps 3, unknown]" / "Info.dat").is_file()
+
+
+def test_cli_waz_validation(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch, checkpoints=False)
+    audio = write_audio(tmp_path / "a.wav")
+    r = CliRunner().invoke(app, ["generate", str(audio), "--nps", "3", "--waz", "5"])
+    assert r.exit_code == 2
+    assert "--waz must be 0, 1, 2, or 3" in r.output
+

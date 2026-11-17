@@ -364,3 +364,45 @@ def apply_snakes(
 
     return working, len(runs), runs_rewritten, notes_rewritten, reverted
 
+
+def auto_flow_level(styles: Sequence[str]) -> int:
+    """Default flow level: 2 when 'tech' is in styles, otherwise 1."""
+    return 2 if "tech" in styles else 1
+
+
+def apply_flow(
+    notes: list[Note],
+    *,
+    bpm: float,
+    onset_env: np.ndarray,
+    onset_hop_s: float,
+    level: int,
+    seed: int,
+    mask_cfg: PlayabilityConfig,
+) -> tuple[list[Note], FlowReport]:
+    """Apply snake rewrites then dot stacks for the given flow level (0-3)."""
+    if level not in (0, 1, 2, 3):
+        raise ValueError(f"flow level must be 0, 1, 2, or 3, got {level}")
+    if level == 0:
+        return list(notes), FlowReport(level=0)
+
+    rng = random.Random(seed)
+    after_snakes, runs_found, runs_rewritten, notes_rewritten, snake_reverted = apply_snakes(
+        notes, share=RUN_SHARE[level], rng=rng, mask_cfg=mask_cfg,
+    )
+    after_stacks, dot_stacks, dots_added, stack_reverted = add_dot_stacks(
+        after_snakes, bpm=bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
+        chance=STACK_CHANCE[level], rng=rng, mask_cfg=mask_cfg,
+    )
+    report = FlowReport(
+        level=level,
+        runs_found=runs_found,
+        runs_rewritten=runs_rewritten,
+        notes_rewritten=notes_rewritten,
+        dot_stacks=dot_stacks,
+        dots_added=dots_added,
+        reverted=snake_reverted + stack_reverted,
+    )
+    return after_stacks, report
+
+

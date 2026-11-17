@@ -8,11 +8,12 @@ from pathlib import Path
 
 import numpy as np
 
-from bsmaker.audio.beats import Grid, align_grid, detect_grid, snap_times, to_beats
+from bsmaker.audio.beats import Grid, align_grid, detect_grid, onset_envelope, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
 from bsmaker.errors import GenerateCancelled
+from bsmaker.flow_rules import FlowReport, apply_flow, auto_flow_level, validation_cfg
 from bsmaker.formats.events import Event, to_events
 from bsmaker.formats.layer_tokens import SUPPORTED_ENVIRONMENTS
 from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
@@ -80,6 +81,7 @@ class LevelResult:
     ornament_report: OrnamentReport | None = None
     n_walls: int = 0
     n_bombs: int = 0
+    flow_report: FlowReport | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,7 @@ class _BuiltLevel:
     obstacles: list[Obstacle] = field(default_factory=list)
     bombs: list[Bomb] = field(default_factory=list)
     decor_report: dict = field(default_factory=dict)
+    flow_report: FlowReport | None = None
 
 
 def _merge_decor_reports(reps: list[dict]) -> dict:
@@ -320,6 +323,7 @@ def generate_map(
     levels: Sequence[str] | None = None,
     ornaments: int | None = 0,
     lights: int = 0,
+    flow: int | None = None,
     environment: str = "DefaultEnvironment",
     layer_models: LayerModels | None = None,
     layer_stats: dict | None = None,
@@ -336,6 +340,8 @@ def generate_map(
         raise ValueError(f"ornaments must be 0-3 or None, got {ornaments}")
     if lights not in (0, 1, 2, 3):
         raise ValueError(f"lights must be 0-3, got {lights}")
+    if flow is not None and flow not in (0, 1, 2, 3):
+        raise ValueError(f"flow must be 0-3 or None, got {flow}")
     if environment not in SUPPORTED_ENVIRONMENTS:
         raise ValueError(
             f"unsupported environment {environment!r}; expected one of {', '.join(SUPPORTED_ENVIRONMENTS)}"
@@ -373,6 +379,8 @@ def generate_map(
     tracker.emit("analyzing", 10)
 
     base_grid: Grid = detect_grid(audio)
+    onset_env, onset_hop_s = onset_envelope(audio)
+    flow_level = auto_flow_level(styles) if flow is None else flow
     _check_cancel(is_cancelled)
     tracker.emit("analyzing", 15)
 
@@ -393,6 +401,18 @@ def generate_map(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
             is_cancelled=is_cancelled, on_progress=_on_note_progress,
         )
+        vcfg = validation_cfg(mask_cfg)
+        pre_hard = set(check(to_events(notes)[0], vcfg).hard) if flow_level > 0 else set()
+        notes, flow_report = apply_flow(
+            notes, bpm=grid.bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
+            level=flow_level, seed=seed, mask_cfg=mask_cfg,
+        )
+        final_events, dropped = to_events(notes)
+        check_cfg = vcfg if flow_level > 0 else mask_cfg
+        new_hard = set(check(final_events, check_cfg).hard) - pre_hard
+        if dropped or new_hard:
+            raise RuntimeError("flow layer broke a hard playability rule (bug)")
+        measured = _measured_nps(notes)
         tracker.emit("notes", band_end)
 
         njs, _ = pick_njs(target_nps, stats)
@@ -410,7 +430,7 @@ def generate_map(
             rank=rank, target_nps=target_nps, notes=notes, measured_nps=measured,
             grid=grid, report=report, rounds=rounds, early_stop=early_stop,
             njs=njs, njs_offset=njs_offset, arcs=arcs, chains=chains,
-            ornament_report=orn_rep,
+            ornament_report=orn_rep, flow_report=flow_report,
         ))
 
     _check_cancel(is_cancelled)
@@ -504,7 +524,7 @@ def generate_map(
             rank=lv.rank, target_nps=lv.target_nps, n_notes=len(lv.notes),
             nps=lv.measured_nps, n_skipped=lv.report.n_skipped, density_rounds=lv.rounds,
             n_arcs=len(lv.arcs), n_chains=len(lv.chains), ornament_report=lv.ornament_report,
-            n_walls=len(lv.obstacles), n_bombs=len(lv.bombs),
+            n_walls=len(lv.obstacles), n_bombs=len(lv.bombs), flow_report=lv.flow_report,
         )
         for lv in built
     )

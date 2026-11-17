@@ -70,7 +70,7 @@ def _gen(models, audio, out, **kw):
 
 
 def test_generate_end_to_end(models, tmp_path):
-    res = _gen(models, write_audio(tmp_path / "My Song.wav"), tmp_path / "out")
+    res = _gen(models, write_audio(tmp_path / "My Song.wav"), tmp_path / "out", flow=0)
     assert res.folder.is_dir() and res.folder.name == "BSM - My Song [nps 3, tech]"
     assert res.rank == "Hard" and res.n_notes > 20
     m = read_map(res.folder)
@@ -222,7 +222,7 @@ def test_check_exact_groups_identical_times_without_frame_rounding():
 def test_density_extremes_real_pipeline(models, tmp_path, nps):
     audio = write_audio(tmp_path / "a.wav", seconds=60.0)
     try:
-        res = _gen(models, audio, tmp_path / "out", nps=nps)
+        res = _gen(models, audio, tmp_path / "out", nps=nps, flow=0)
     except GenerateError as e:
         assert str(e)
         return
@@ -321,14 +321,14 @@ def make_layer_models(seed: int = 0) -> LayerModels:
 
 def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path):
     audio = write_audio(tmp_path / "My Song.wav")
-    res_default = _gen(models, audio, tmp_path / "out_default")
+    res_default = _gen(models, audio, tmp_path / "out_default", flow=0)
     for name in ("Info.dat", "HardStandard.dat"):
         assert (res_default.folder / name).read_bytes() == (GOLDEN_GEN / name).read_bytes()
 
     lm = make_layer_models()
     res_off = _gen(
         models, audio, tmp_path / "out_off",
-        ornaments=0, lights=0, environment="DefaultEnvironment",
+        ornaments=0, lights=0, flow=0, environment="DefaultEnvironment",
         layer_models=lm, layer_stats=LAYER_STATS,
     )
     for name in ("Info.dat", "HardStandard.dat"):
@@ -438,6 +438,8 @@ def test_generate_map_validation_errors(models, tmp_path):
         generate_map(audio, nps=3.0, ornaments=4, **base)
     with pytest.raises(ValueError):
         generate_map(audio, nps=3.0, lights=4, **base)
+    with pytest.raises(ValueError):
+        generate_map(audio, nps=3.0, flow=4, **base)
 
 
 def test_lights_rules_flag_and_check_layers_guard(models, tmp_path, monkeypatch):
@@ -590,3 +592,35 @@ def test_generate_map_monotonic_progress_across_density_rounds_and_layer_cancel(
             lm.lights_what, np.array([1.0]), np.array([0]), np.zeros((100, 80), dtype=np.float32),
             [], 3.0, 0, "cpu", is_cancelled=cancel_fn,
         )
+
+
+def test_generate_map_flow_per_level(models, tmp_path):
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    res = generate_map(
+        audio, levels=("Easy", "Hard"), styles=("dance",), seed=1,
+        out_dir=tmp_path / "out", timing=models[0], pattern=models[1],
+        mask_cfg=MASK, stats=STATS, device="cpu", flow=None,
+    )
+    assert len(res.levels) == 2
+    for lv in res.levels:
+        assert lv.flow_report is not None
+        assert lv.flow_report.level == 1
+
+
+def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    res0 = _gen(models, audio, tmp_path / "out0", flow=0)
+
+    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+        from bsmaker.flow_rules import FlowReport
+        return list(notes), FlowReport(level=0)
+
+    monkeypatch.setattr(G, "apply_flow", no_flow)
+    res_patched = _gen(models, audio, tmp_path / "out_patched", flow=2)
+    assert (res0.folder / "HardStandard.dat").read_bytes() == (
+        res_patched.folder / "HardStandard.dat"
+    ).read_bytes()
+    notes0 = read_map(res0.folder).difficulties[0].notes
+    notes_p = read_map(res_patched.folder).difficulties[0].notes
+    assert sum(n.direction == 8 for n in notes0) == sum(n.direction == 8 for n in notes_p)
+

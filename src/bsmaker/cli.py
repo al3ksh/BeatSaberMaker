@@ -553,6 +553,8 @@ def generate_cmd(
         ozdoby: int | None = typer.Option(
             None, "--ozdoby", help="Ornaments and decor level 0-3 (default: auto from nps)."),
         swiatla: int = typer.Option(2, "--swiatla", help="Lights level 0-3 (default: 2)."),
+        waz: int | None = typer.Option(
+            None, "--waz", help="Snake and dot-stack level 0-3 (default: auto from style)."),
         tlo: str = typer.Option("Default", "--tlo", help="Environment name (default: Default)."),
         swiatla_reguly: bool = typer.Option(
             False, "--swiatla-reguly", help="Force rule-based lightshow instead of models."),
@@ -583,6 +585,9 @@ def generate_cmd(
         raise typer.Exit(2)
     if swiatla not in (0, 1, 2, 3):
         typer.echo("--swiatla must be 0, 1, 2, or 3", err=True)
+        raise typer.Exit(2)
+    if waz is not None and waz not in (0, 1, 2, 3):
+        typer.echo("--waz must be 0, 1, 2, or 3", err=True)
         raise typer.Exit(2)
     try:
         environment = parse_environment(tlo)
@@ -629,6 +634,7 @@ def generate_cmd(
             overwrite=overwrite,
             ornaments=ozdoby,
             lights=swiatla,
+            flow=waz,
             environment=environment,
             lights_rules=swiatla_reguly,
         )
@@ -637,6 +643,13 @@ def generate_cmd(
     for w in result.warnings:
         typer.echo(f"warning: {w}")
     typer.echo(f"wrote {result.folder}")
+    for lv in result.levels:
+        if lv.flow_report is not None:
+            fr = lv.flow_report
+            typer.echo(
+                f"flow {lv.rank}: {fr.runs_rewritten} snake runs ({fr.notes_rewritten} notes), "
+                f"{fr.dot_stacks} dot stacks ({fr.dots_added} dots), {fr.reverted} reverted"
+            )
     per_level = "; ".join(
         f"{lv.rank}: {lv.n_notes} notes, {lv.nps:.2f} nps, {lv.n_arcs} arcs, {lv.n_chains} chains "
         f"({lv.density_rounds} density round(s))"
