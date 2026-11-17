@@ -21,6 +21,7 @@ async function launchApp(extraEnv: Record<string, string>) {
       BSM_USER_DATA_DIR: userData,
       BSM_SKIP_ENGINE_PACK: "1",
       BSM_DISABLE_UPDATER: "1",
+      BSM_MUTE_AUDIO: "1",
       BSM_ENGINE_CMD: process.execPath,
       BSM_ENGINE_ARGS: JSON.stringify([FAKE_ENGINE]),
       ...extraEnv,

@@ -3,6 +3,7 @@ import { HitsoundScheduler } from "./hitsound";
 export type PlaybackRate = 0.5 | 0.75 | 1 | 1.25 | 1.5;
 
 export const PLAYBACK_RATES: readonly PlaybackRate[] = [0.5, 0.75, 1, 1.25, 1.5];
+export const DEFAULT_MUSIC_VOLUME = 0.7;
 
 export interface GainNodeLike {
   gain: {
@@ -65,7 +66,7 @@ export class ViewerAudioPlayer {
   private _duration = 0;
   private _isPlaying = false;
   private _playbackRate: PlaybackRate = 1;
-  private _volume = 0.8;
+  private _volume = DEFAULT_MUSIC_VOLUME;
   private anchorCtxTime = 0;
   private anchorSongTime = 0;
   private onEndedCb: (() => void) | null = null;

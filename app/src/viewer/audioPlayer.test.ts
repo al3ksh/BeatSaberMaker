@@ -115,4 +115,19 @@ describe("ViewerAudioPlayer", () => {
 
     await player.dispose();
   });
+
+  it("defaults music volume to 0.7 and clamps gain strictly to [0, 1]", async () => {
+    const fake = createFakeAudioContext();
+    const player = new ViewerAudioPlayer(() => fake.ctx);
+    expect(player.volume).toBe(0.7);
+
+    await player.load(new Uint8Array([1, 2, 3]), 120);
+    expect(fake.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.7, expect.any(Number));
+
+    player.setVolume(1.8);
+    expect(player.volume).toBe(1);
+    expect(fake.gainNode.gain.setValueAtTime).toHaveBeenLastCalledWith(1, expect.any(Number));
+
+    await player.dispose();
+  });
 });

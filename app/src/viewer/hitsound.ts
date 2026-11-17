@@ -3,6 +3,8 @@ import type { ViewerNote } from "./types";
 
 export const HITSOUND_DEDUP_EPS_S = 0.01;
 export const HITSOUND_LOOKAHEAD_S = 0.15;
+export const HITSOUND_PEAK_AMPLITUDE = 0.3;
+export const DEFAULT_HITSOUND_VOLUME = 0.5;
 
 export interface HitsoundClockSnapshot {
   isPlaying: boolean;
@@ -61,6 +63,7 @@ export function synthesizeHitsoundBuffer(ctx: AudioContextLike): AudioBuffer | n
   let rng = 0x13579bdf;
   let prevNoise = 0;
   let phase = 0;
+  let peak = 0;
 
   for (let i = 0; i < length; i += 1) {
     const t = i / sampleRate;
@@ -78,9 +81,19 @@ export function synthesizeHitsoundBuffer(ctx: AudioContextLike): AudioBuffer | n
     prevNoise = white;
     const sliceAir = hpNoise * Math.exp(-t * 115) * 0.42;
 
-    // Gentle soft clip / envelope tail to zero at buffer end
+    // Gentle envelope tail to zero at buffer end
     const tailFade = i > length - 48 ? (length - i) / 48 : 1;
-    data[i] = Math.max(-1, Math.min(1, (tickBody * 0.78 + sliceAir) * attack * tailFade));
+    const sample = (tickBody * 0.78 + sliceAir) * attack * tailFade;
+    data[i] = sample;
+    const abs = Math.abs(sample);
+    if (abs > peak) peak = abs;
+  }
+
+  if (peak > 0) {
+    const scale = HITSOUND_PEAK_AMPLITUDE / peak;
+    for (let i = 0; i < length; i += 1) {
+      data[i] *= scale;
+    }
   }
 
   return buffer;
@@ -97,7 +110,7 @@ export class HitsoundScheduler {
   private noteTimes: readonly number[] = [];
   private nextIndex = 0;
   private enabled = true;
-  private volume = 0.65;
+  private volume = DEFAULT_HITSOUND_VOLUME;
   private activeSources = new Set<BufferSourceLike>();
 
   attachContext(ctx: AudioContextLike): void {
@@ -154,7 +167,7 @@ export class HitsoundScheduler {
   }
 
   setVolume(vol: number): void {
-    this.volume = Math.max(0, Math.min(1, Number.isFinite(vol) ? vol : 0.65));
+    this.volume = Math.max(0, Math.min(1, Number.isFinite(vol) ? vol : DEFAULT_HITSOUND_VOLUME));
     if (this.ctx && this.gainNode) {
       this.gainNode.gain.setValueAtTime(this.enabled ? this.volume : 0, this.ctx.currentTime);
     }

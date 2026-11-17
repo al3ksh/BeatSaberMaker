@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AudioContextLike } from "./audioPlayer";
-import { HitsoundScheduler, extractHitsoundTimes } from "./hitsound";
+import { HitsoundScheduler, extractHitsoundTimes, synthesizeHitsoundBuffer } from "./hitsound";
 
 function createHitsoundMockAudio() {
   let ctxTime = 20;
@@ -127,5 +127,26 @@ describe("hitsound extraction & scheduling", () => {
     // Disabling immediately cancels queued hitsound and suppresses future ticks
     scheduler.setEnabled(false);
     expect(mock.started[2].stopped).toBe(true);
+  });
+
+  it("synthesizes a hitsound buffer peaking near 0.3 and defaults/clamps scheduler gain <= 1.0", () => {
+    const mock = createHitsoundMockAudio();
+    const buffer = synthesizeHitsoundBuffer(mock.ctx);
+    expect(buffer).not.toBeNull();
+    const samples = buffer!.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const a = Math.abs(samples[i]);
+      if (a > peak) peak = a;
+    }
+    expect(peak).toBeGreaterThan(0.25);
+    expect(peak).toBeLessThanOrEqual(0.32);
+
+    const scheduler = new HitsoundScheduler();
+    scheduler.attachContext(mock.ctx);
+    expect(mock.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.5, expect.any(Number));
+
+    scheduler.setVolume(2.5);
+    expect(mock.gainNode.gain.setValueAtTime).toHaveBeenLastCalledWith(1, expect.any(Number));
   });
 });

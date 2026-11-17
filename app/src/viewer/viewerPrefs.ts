@@ -1,3 +1,5 @@
+import { DEFAULT_HITSOUND_VOLUME } from "./hitsound";
+
 export type ViewerQualityMode = "high" | "fast";
 
 const KEY_HITSOUND_ENABLED = "bsm.viewer.hitsoundEnabled";
@@ -12,7 +14,7 @@ export interface ViewerPrefs {
 
 export function loadViewerPrefs(): ViewerPrefs {
   let hitsoundEnabled = true;
-  let hitsoundVolume = 0.65;
+  let hitsoundVolume = DEFAULT_HITSOUND_VOLUME;
   let qualityMode: ViewerQualityMode = "high";
 
   try {

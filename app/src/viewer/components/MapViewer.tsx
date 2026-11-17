@@ -15,7 +15,12 @@ import { EN, RANK_LABELS_EN } from "../../i18n/en";
 import type { ViewerMapPackage } from "../../types";
 import { Badge, Button, SegmentedControl, cn } from "../../components/ui/primitives";
 import { rankToBadgeVariant } from "../../components/wizard/StepMap";
-import { PLAYBACK_RATES, ViewerAudioPlayer, type PlaybackRate } from "../audioPlayer";
+import {
+  DEFAULT_MUSIC_VOLUME,
+  PLAYBACK_RATES,
+  ViewerAudioPlayer,
+  type PlaybackRate,
+} from "../audioPlayer";
 import type { CameraPreset } from "../geometry";
 import { computeLocalNps, parseDifficultyData } from "../parser";
 import { buildTempoMap, computeJumpMetrics, secondsToBeat } from "../timing";
@@ -93,7 +98,7 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
   const [duration, setDuration] = useState(1);
   const [audioDecoded, setAudioDecoded] = useState(true);
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState(DEFAULT_MUSIC_VOLUME);
   const [muted, setMuted] = useState(false);
 
   const [hudTime, setHudTime] = useState(0);
