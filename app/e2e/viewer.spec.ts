@@ -140,11 +140,16 @@ test.describe("3D Map Viewer E2E", () => {
       await expect(page.getByTestId("viewer-beat")).toContainText("Beat 10.0");
 
       // Hover tooltip on seek bar
-      const box = await seek.boundingBox();
-      if (box) {
-        await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
-        await expect(page.getByTestId("viewer-seek-tooltip")).toBeVisible();
-      }
+      // Re-hover until the tooltip shows: on a slow CI runner a single mouse move can land
+      // before the scrubber has its final layout.
+      await expect(async () => {
+        const box = await seek.boundingBox();
+        expect(box).not.toBeNull();
+        const y = box!.y + box!.height * 0.5;
+        await page.mouse.move(box!.x + box!.width * 0.3, y);
+        await page.mouse.move(box!.x + box!.width * 0.5, y, { steps: 4 });
+        await expect(page.getByTestId("viewer-seek-tooltip")).toBeVisible({ timeout: 1000 });
+      }).toPass({ timeout: 15000 });
 
       // YouTube-style ±5s arrow seek + accumulation
       await page.keyboard.press("ArrowRight");

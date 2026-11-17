@@ -55,3 +55,11 @@ jobs:
           npm test
           npm run build
           npx playwright test
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: app/test-results/
+          retention-days: 7
