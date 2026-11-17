@@ -193,7 +193,7 @@ def test_cli_generate_multi_level_with_layers_and_summary(tmp_path, monkeypatch)
         "--ozdoby", "2", "--swiatla", "2", "--out", str(out), "--device", "cpu",
     ])
     assert r.exit_code == 0, r.output
-    folder = out / "BSM - a [Hard+ExpertPlus, unknown]"
+    folder = out / "BSM - a [Hard+ExpertPlus, balanced]"
     assert (folder / "HardStandard.dat").is_file()
     assert (folder / "ExpertPlusStandard.dat").is_file()
     info = json.loads((folder / "Info.dat").read_text(encoding="utf-8"))
@@ -223,7 +223,7 @@ def test_cli_generate_layers_off_and_rule_lights_suppress_missing_warnings(tmp_p
     layer_warns1 = [ln for ln in r1.output.splitlines()
                     if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
     assert layer_warns1 == []
-    d1 = read_map(out1 / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    d1 = read_map(out1 / "BSM - a [nps 3, balanced]", layers=True).difficulties[0]
     assert d1.layers is not None
     assert (d1.layers.arcs, d1.layers.chains, d1.layers.obstacles, d1.layers.bombs, d1.layers.lights) == ((), (), (), (), ())
 
@@ -236,7 +236,7 @@ def test_cli_generate_layers_off_and_rule_lights_suppress_missing_warnings(tmp_p
     layer_warns2 = [ln for ln in r2.output.splitlines()
                     if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
     assert layer_warns2 == []
-    d2 = read_map(out2 / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    d2 = read_map(out2 / "BSM - a [nps 3, balanced]", layers=True).difficulties[0]
     assert len(d2.layers.lights) > 0
 
 
@@ -255,7 +255,7 @@ def test_cli_missing_checkpoints_and_stats_warn_once_each_and_write_map(tmp_path
     assert len(warns) == 2
     assert any("ornaments" in w for w in warns)
     assert any("lights-what" in w for w in warns)
-    d = read_map(out / "BSM - a [nps 3, unknown]", layers=True).difficulties[0]
+    d = read_map(out / "BSM - a [nps 3, balanced]", layers=True).difficulties[0]
     assert d.layers.arcs == () and d.layers.chains == ()
     assert len(d.layers.lights) > 0  # fell back to rule lights
 
@@ -270,7 +270,7 @@ def test_cli_missing_checkpoints_and_stats_warn_once_each_and_write_map(tmp_path
     warns2 = [ln for ln in r2.output.splitlines()
               if ln.startswith("warning:") and ("checkpoint" in ln or "layer_stats" in ln)]
     assert len(warns2) == 1 and "layer_stats.json" in warns2[0]
-    assert (out2 / "BSM - a [nps 3, unknown]" / "Info.dat").is_file()
+    assert (out2 / "BSM - a [nps 3, balanced]" / "Info.dat").is_file()
 
 
 def test_cli_waz_validation(tmp_path, monkeypatch):

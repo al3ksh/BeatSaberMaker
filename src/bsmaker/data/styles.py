@@ -5,6 +5,10 @@ from collections.abc import Iterable
 
 STYLES = ("tech", "dance", "speed", "accuracy", "balanced", "challenge", "fitness")
 UNKNOWN = "unknown"
+# Used when the user picks no style: the "unknown" slice of the training data has the
+# flattest patterns (few diagonals, bottom-row up/down flicks), "balanced" is close to
+# hand-made reference maps.
+DEFAULT_STYLE = "balanced"
 _TAG_TO_STYLE = {"dance-style": "dance", **{s: s for s in STYLES if s != "dance"}}
 
 

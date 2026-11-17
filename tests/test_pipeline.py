@@ -89,3 +89,14 @@ def test_run_generate_resolves_auto_flow_level(tmp_path: Path) -> None:
     assert tech.levels[0].flow_report.level == 2
     assert plain.levels[0].flow_report.level == 1
     assert forced.levels[0].flow_report.level == 0
+
+
+def test_run_generate_defaults_to_balanced_style(tmp_path: Path) -> None:
+    cfg = _setup_pack(tmp_path, with_layers=False)
+    pipe = load_pipeline(cfg, device="cpu", load_layers=False)
+    audio = write_audio(tmp_path / "song.wav")
+    plain = run_generate(pipe, audio, out_dir=tmp_path / "o1", nps=3.0, ornaments=0)
+    styled = run_generate(pipe, audio, out_dir=tmp_path / "o2", nps=3.0, ornaments=0,
+                          styles=("dance",))
+    assert plain.folder.name.endswith(", balanced]")
+    assert styled.folder.name.endswith(", dance]")
