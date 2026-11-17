@@ -395,6 +395,8 @@ class EngineServer:
                     "nps": lv.nps,
                     "n_arcs": lv.n_arcs,
                     "n_chains": lv.n_chains,
+                    "n_walls": lv.n_walls,
+                    "n_bombs": lv.n_bombs,
                 }
                 for lv in res.levels
             ],

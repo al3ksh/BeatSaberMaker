@@ -21,6 +21,7 @@ async function launchApp(extraEnv: Record<string, string>) {
       BSM_USER_DATA_DIR: userData,
       BSM_SKIP_ENGINE_PACK: "1",
       BSM_DISABLE_UPDATER: "1",
+      BSM_MUTE_AUDIO: "1",
       BSM_ENGINE_CMD: process.execPath,
       BSM_ENGINE_ARGS: JSON.stringify([FAKE_ENGINE]),
       ...extraEnv,
@@ -90,6 +91,10 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       await page.getByRole("button", { name: "Generate Map" }).click();
       await expect(page.getByText("Map is in the game!")).toBeVisible();
       await expect(page.getByText(/layer models/i)).toBeVisible();
+      // Default pack has three difficulties, each with its own walls/bombs
+      const levelsTable = page.getByTestId("done-levels-table");
+      await expect(levelsTable.locator("tbody tr")).toHaveCount(3);
+      await expect(levelsTable.locator("tbody tr").nth(2)).toContainText("31");
 
       const firstFolders = fs.readdirSync(cl);
       expect(firstFolders).toHaveLength(1);

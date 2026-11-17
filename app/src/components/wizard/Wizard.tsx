@@ -33,6 +33,7 @@ export interface WizardProps {
   regenerateImmediate?: boolean;
   onClearRegenerate: () => void;
   onGoToLibrary: () => void;
+  onPreview?: (folder: string) => void;
 }
 
 export function Wizard({
@@ -40,6 +41,7 @@ export function Wizard({
   regenerateImmediate = false,
   onClearRegenerate,
   onGoToLibrary,
+  onPreview,
 }: WizardProps) {
   const [step, setStep] = useState<1 | 2 | 3>(
     regenerateTarget ? (regenerateImmediate ? 3 : 2) : 1,
@@ -281,6 +283,7 @@ export function Wizard({
               errorCode={errorCode}
               onReset={handleReset}
               onGoToLibrary={onGoToLibrary}
+              onPreview={onPreview}
             />
           </motion.div>
         )}

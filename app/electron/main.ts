@@ -13,6 +13,9 @@ app.setName("BeatSaberMaker");
 if (process.env.BSM_USER_DATA_DIR) {
   app.setPath("userData", path.resolve(process.env.BSM_USER_DATA_DIR));
 }
+if (process.env.BSM_MUTE_AUDIO === "1") {
+  app.commandLine.appendSwitch("mute-audio");
+}
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {

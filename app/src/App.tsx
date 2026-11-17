@@ -9,6 +9,7 @@ import { LibraryView } from "./components/LibraryView";
 import { SettingsModal } from "./components/SettingsModal";
 import { Badge, Button, SegmentedControl } from "./components/ui/primitives";
 import { Wizard } from "./components/wizard/Wizard";
+import { MapViewer } from "./viewer/components/MapViewer";
 import type { EngineInfo, LibraryEntry, Settings, StartupState, UpdateStatus } from "./types";
 
 type Tab = "create" | "library";
@@ -28,6 +29,7 @@ export function App() {
   const [libraryEntries, setLibraryEntries] = useState<LibraryEntry[]>([]);
   const [libraryCovers, setLibraryCovers] = useState<Record<string, string>>({});
   const [libraryLoaded, setLibraryLoaded] = useState(false);
+  const [previewFolder, setPreviewFolder] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -207,6 +209,7 @@ export function App() {
                     setRegenerateImmediate(false);
                   }}
                   onGoToLibrary={() => setTab("library")}
+                  onPreview={(folder) => setPreviewFolder(folder)}
                 />
               ) : (
                 <LibraryView
@@ -218,6 +221,7 @@ export function App() {
                     setLibraryLoaded(true);
                   }}
                   onCoversChanged={setLibraryCovers}
+                  onPreview={(folder) => setPreviewFolder(folder)}
                   onRegenerate={(entry, immediate) => {
                     setRegenerateTarget(entry);
                     setRegenerateImmediate(Boolean(immediate));
@@ -227,6 +231,14 @@ export function App() {
                 />
               )}
             </main>
+
+            {previewFolder && (
+              <MapViewer
+                folder={previewFolder}
+                onClose={() => setPreviewFolder(null)}
+                onSwitchFolder={(nextFolder) => setPreviewFolder(nextFolder)}
+              />
+            )}
 
             <SettingsModal
               open={settingsOpen}
