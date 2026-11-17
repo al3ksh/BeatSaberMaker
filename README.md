@@ -33,6 +33,7 @@ The maps come from machine-learning models trained on curated community maps fro
 - 🧠 **Two-stage note generation.** A timing model decides *when* notes go. A pattern model decides *which* notes they are (color, position, cut direction).
 - ✨ **The rest of the map too.** Arcs and chains, decorative walls and bombs, and a lightshow. A neural model writes the lights, and a rule-based lightshow is available as an alternative.
 - 🛡️ **Playable by construction.** Generated maps pass the built-in checker with zero hard violations.
+- 👀 **Built-in 3D preview.** Watch the map play in sync with the song before you put on the headset: notes, arcs, chains, walls, bombs and lights, with player, side and free cameras.
 - 📚 **My Maps library.** Search, regenerate with a new seed, export a `.zip` to share, open the folder, or delete a map (it goes to the Recycle Bin).
 - 🔄 **Auto-updates.** The app updates itself from GitHub Releases.
 
@@ -147,16 +148,15 @@ docs/          Quickstart, data pipeline, Colab training, design specs and plans
 
 ## Known issues in 0.1.0
 
-- **Multi-difficulty packs get fewer walls and bombs than single-difficulty maps.** All difficulties share one decoration layer, and it is checked against the notes of every level, so a lot of it gets dropped.
 - The installer and the engine are not code-signed, so SmartScreen shows a warning.
 - Tested only on Windows 11 with an NVIDIA RTX GPU. CPU-only generation works but has not been benchmarked.
-- There is no built-in map preview yet. To watch a map without a headset, export it as a ZIP and open it in [ArcViewer](https://allpoland.github.io/ArcViewer/). A built-in 3D viewer is in progress.
+- The built-in preview is an approximation of the game, not a pixel-perfect copy. Lights in particular are simplified.
 
 ## Credits
 
 - Training data: community maps from [BeatSaver](https://beatsaver.com). Thanks to every mapper whose work made this possible.
 - Map format reference: the [BSMG wiki](https://bsmg.wiki).
-- Built with [PyTorch](https://pytorch.org), [librosa](https://librosa.org), [Electron](https://www.electronjs.org), [React](https://react.dev), [Tailwind CSS](https://tailwindcss.com) and [Framer Motion](https://motion.dev).
+- Built with [PyTorch](https://pytorch.org), [librosa](https://librosa.org), [Electron](https://www.electronjs.org), [React](https://react.dev), [three.js](https://threejs.org) with [React Three Fiber](https://r3f.docs.pmnd.rs), [Tailwind CSS](https://tailwindcss.com) and [Framer Motion](https://motion.dev).
 - The engine pack includes [FFmpeg](https://ffmpeg.org), an LGPL build from [FFmpeg-Builds](https://github.com/FFmpeg-Builds/FFmpeg-Builds), and [yt-dlp](https://github.com/yt-dlp/yt-dlp), which is released under the Unlicense.
 
 Beat Saber is a trademark of Beat Games. BeatSaberMaker is a fan project and is not affiliated with or endorsed by Beat Games or Meta. Only download and map music you have the right to use.
