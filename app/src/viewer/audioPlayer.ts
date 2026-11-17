@@ -1,3 +1,5 @@
+import { HitsoundScheduler } from "./hitsound";
+
 export type PlaybackRate = 0.5 | 0.75 | 1 | 1.25 | 1.5;
 
 export const PLAYBACK_RATES: readonly PlaybackRate[] = [0.5, 0.75, 1, 1.25, 1.5];
@@ -27,11 +29,13 @@ export interface BufferSourceLike {
 export interface AudioContextLike {
   readonly currentTime: number;
   readonly state: string;
+  readonly sampleRate?: number;
   readonly destination: unknown;
   resume: () => Promise<void>;
   close: () => Promise<void>;
   decodeAudioData: (audioData: ArrayBuffer) => Promise<AudioBuffer>;
   createGain: () => GainNodeLike;
+  createBuffer?: (numberOfChannels: number, length: number, sampleRate: number) => AudioBuffer;
   createBufferSource: () => BufferSourceLike;
 }
 
@@ -40,13 +44,15 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 function defaultAudioContextFactory(): AudioContextLike {
-  const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const Ctor =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   return new Ctor() as unknown as AudioContextLike;
 }
 
 /**
- * WebAudio player synchronized strictly to `AudioContext.currentTime`.
- * Falls back cleanly to a silent wall-clock timer if audio is absent or fails to decode.
+ * WebAudio player synchronized strictly to `AudioContext.currentTime`,
+ * sharing the exact clock with the lookahead hitsound scheduler.
  */
 export class ViewerAudioPlayer {
   private ctxFactory: () => AudioContextLike;
@@ -54,6 +60,7 @@ export class ViewerAudioPlayer {
   private gainNode: GainNodeLike | null = null;
   private buffer: AudioBuffer | null = null;
   private source: BufferSourceLike | null = null;
+  private hitsounds = new HitsoundScheduler();
 
   private _duration = 0;
   private _isPlaying = false;
@@ -87,11 +94,60 @@ export class ViewerAudioPlayer {
     this.onEndedCb = cb;
   }
 
+  setNoteHitTimes(times: readonly number[]): void {
+    this.hitsounds.setNoteTimes(times);
+    if (this._isPlaying) {
+      this.hitsounds.resetAndSync(this.getCurrentTime());
+      this.tickHitsounds();
+    }
+  }
+
+  setHitsoundEnabled(enabled: boolean): void {
+    this.hitsounds.setEnabled(enabled);
+    if (enabled && this._isPlaying) {
+      this.hitsounds.resetAndSync(this.getCurrentTime());
+      this.tickHitsounds();
+    }
+  }
+
+  setHitsoundVolume(vol: number): void {
+    this.hitsounds.setVolume(vol);
+  }
+
+  tickHitsounds(): void {
+    if (!this._isPlaying) return;
+    const songTimeS = this.getCurrentTime();
+    if (!this._isPlaying) return;
+    this.hitsounds.scheduleTick({
+      isPlaying: this._isPlaying,
+      songTimeS,
+      playbackRate: this._playbackRate,
+      anchorCtxTime: this.anchorCtxTime,
+      anchorSongTime: this.anchorSongTime,
+    });
+  }
+
+  private ensureContext(): AudioContextLike | null {
+    if (this.ctx) return this.ctx;
+    try {
+      const ctx = this.ctxFactory();
+      this.ctx = ctx;
+      this.gainNode = ctx.createGain();
+      this.gainNode.gain.setValueAtTime(this._volume, ctx.currentTime);
+      this.gainNode.connect(ctx.destination);
+      this.hitsounds.attachContext(ctx);
+      return ctx;
+    } catch {
+      return null;
+    }
+  }
+
   private clockNow(): number {
     return this.ctx ? this.ctx.currentTime : performance.now() / 1000;
   }
 
   private stopSource(): void {
+    this.hitsounds.cancelScheduled();
     if (this.source) {
       this.source.onended = null;
       try {
@@ -120,14 +176,10 @@ export class ViewerAudioPlayer {
     }
 
     try {
-      if (!this.ctx) {
-        this.ctx = this.ctxFactory();
-        this.gainNode = this.ctx.createGain();
-        this.gainNode.gain.setValueAtTime(this._volume, this.ctx.currentTime);
-        this.gainNode.connect(this.ctx.destination);
-      }
+      const ctx = this.ensureContext();
+      if (!ctx) return false;
       const copy = audioBytes.slice().buffer;
-      this.buffer = await this.ctx.decodeAudioData(copy);
+      this.buffer = await ctx.decodeAudioData(copy);
       if (this.buffer && Number.isFinite(this.buffer.duration) && this.buffer.duration > 0) {
         this._duration = this.buffer.duration;
       }
@@ -154,8 +206,9 @@ export class ViewerAudioPlayer {
   }
 
   async play(fromTime?: number): Promise<void> {
-    if (this.ctx && this.ctx.state === "suspended") {
-      await this.ctx.resume();
+    const ctx = this.ensureContext();
+    if (ctx && ctx.state === "suspended") {
+      await ctx.resume();
     }
     let startAt = clamp(fromTime ?? this.getCurrentTime(), 0, this._duration);
     if (startAt >= this._duration - 0.01) {
@@ -168,13 +221,14 @@ export class ViewerAudioPlayer {
     this.anchorSongTime = startAt;
     this._isPlaying = true;
 
-    if (this.ctx && this.gainNode && this.buffer) {
-      const src = this.ctx.createBufferSource();
+    if (ctx && this.gainNode && this.buffer) {
+      const src = ctx.createBufferSource();
       src.buffer = this.buffer;
       src.playbackRate.value = this._playbackRate;
       src.connect(this.gainNode);
       src.onended = () => {
         if (this.source === src && this._isPlaying) {
+          this.hitsounds.cancelScheduled();
           this._isPlaying = false;
           this.anchorSongTime = this._duration;
           this.source = null;
@@ -184,6 +238,9 @@ export class ViewerAudioPlayer {
       src.start(0, startAt);
       this.source = src;
     }
+
+    this.hitsounds.resetAndSync(startAt);
+    this.tickHitsounds();
   }
 
   pause(): void {
@@ -196,10 +253,12 @@ export class ViewerAudioPlayer {
 
   async seek(targetTimeSec: number): Promise<void> {
     const clamped = clamp(targetTimeSec, 0, this._duration);
+    this.anchorSongTime = clamped;
+    this.anchorCtxTime = this.clockNow();
     if (this._isPlaying) {
       await this.play(clamped);
     } else {
-      this.anchorSongTime = clamped;
+      this.hitsounds.resetAndSync(clamped);
     }
   }
 
@@ -213,6 +272,8 @@ export class ViewerAudioPlayer {
       if (this.source) {
         this.source.playbackRate.setValueAtTime(rate, now);
       }
+      this.hitsounds.resetAndSync(current);
+      this.tickHitsounds();
     }
   }
 
@@ -225,6 +286,7 @@ export class ViewerAudioPlayer {
 
   async dispose(): Promise<void> {
     this.stopSource();
+    this.hitsounds.detachContext();
     this._isPlaying = false;
     if (this.gainNode) {
       try {
