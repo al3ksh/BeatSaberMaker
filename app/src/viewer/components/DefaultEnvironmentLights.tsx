@@ -6,7 +6,35 @@ import type { ViewerLightEvent } from "../types";
 
 const RING_COUNT = 8;
 const RING_BASE_Z = -12;
-const RING_HALF = 4.4;
+const RING_APOTHEM = 4.5;
+const RING_THICKNESS = 0.42;
+const RING_DEPTH = 0.55;
+const RING_CENTER_Y = 1.6;
+
+/** Flat octagonal annulus (apothem = distance from center to a side), extruded along Z and centered. */
+function octagonAnnulusGeometry(innerApothem: number, outerApothem: number, depth: number): THREE.BufferGeometry {
+  const toRadius = (apothem: number) => apothem / Math.cos(Math.PI / 8);
+  const outerR = toRadius(outerApothem);
+  const innerR = toRadius(innerApothem);
+  const shape = new THREE.Shape();
+  const hole = new THREE.Path();
+  for (let k = 0; k <= 8; k += 1) {
+    const a = Math.PI / 8 + (k * Math.PI) / 4;
+    const op = [Math.cos(a) * outerR, Math.sin(a) * outerR] as const;
+    const ip = [Math.cos(a) * innerR, Math.sin(a) * innerR] as const;
+    if (k === 0) {
+      shape.moveTo(op[0], op[1]);
+      hole.moveTo(ip[0], ip[1]);
+    } else {
+      shape.lineTo(op[0], op[1]);
+      hole.lineTo(ip[0], ip[1]);
+    }
+  }
+  shape.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 1 });
+  geo.translate(0, 0, -depth / 2);
+  return geo;
+}
 const SIDE_LASER_COUNT = 5;
 const BACK_LASER_COUNT = 6;
 
@@ -64,9 +92,10 @@ export function DefaultEnvironmentLights({
   const ringCasingMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        color: "#090c16",
-        roughness: 0.4,
-        metalness: 0.78,
+        color: "#0a0d16",
+        roughness: 0.82,
+        metalness: 0.18,
+        envMapIntensity: 0.12,
       }),
     [],
   );
@@ -82,12 +111,23 @@ export function DefaultEnvironmentLights({
     [],
   );
 
+  const ringBodyGeo = useMemo(
+    () => octagonAnnulusGeometry(RING_APOTHEM, RING_APOTHEM + RING_THICKNESS, RING_DEPTH),
+    [],
+  );
+  const ringNeonGeo = useMemo(
+    () => octagonAnnulusGeometry(RING_APOTHEM - 0.015, RING_APOTHEM + 0.07, 0.03),
+    [],
+  );
+
   useEffect(() => {
     return () => {
+      ringBodyGeo.dispose();
+      ringNeonGeo.dispose();
       ringCasingMat.dispose();
       for (const m of ringNeonMaterials) m.dispose();
     };
-  }, [ringCasingMat, ringNeonMaterials]);
+  }, [ringBodyGeo, ringNeonGeo, ringCasingMat, ringNeonMaterials]);
 
   const ringGroupRefs = useRef<Array<THREE.Group | null>>([]);
 
@@ -121,7 +161,7 @@ export function DefaultEnvironmentLights({
       const grp = ringGroupRefs.current[i];
       if (grp) {
         grp.position.z = RING_BASE_Z - i * state.ringSpacing;
-        grp.rotation.z = Math.PI / 4 + state.ringRotation + i * 0.075;
+        grp.rotation.z = Math.PI / 8 + state.ringRotation + i * 0.075;
       }
       updateNeonStripMat(ringNeonMaterials[i], state.groups[1], 1.75);
     }
@@ -211,13 +251,6 @@ export function DefaultEnvironmentLights({
     }
   });
 
-  const ringSides = [
-    { pos: [0, RING_HALF, 0] as const, innerPos: [0, RING_HALF - 0.07, 0] as const, rot: 0 },
-    { pos: [0, -RING_HALF, 0] as const, innerPos: [0, -RING_HALF + 0.07, 0] as const, rot: 0 },
-    { pos: [RING_HALF, 0, 0] as const, innerPos: [RING_HALF - 0.07, 0, 0] as const, rot: Math.PI / 2 },
-    { pos: [-RING_HALF, 0, 0] as const, innerPos: [-RING_HALF + 0.07, 0, 0] as const, rot: Math.PI / 2 },
-  ];
-
   return (
     <group>
       {/* Dynamic stage bounce point lights (high elevation to avoid sharp runway hotspots) */}
@@ -231,23 +264,11 @@ export function DefaultEnvironmentLights({
           ref={(el) => {
             ringGroupRefs.current[idx] = el;
           }}
-          position={[0, 1.5, RING_BASE_Z - idx * 6]}
-          rotation={[0, 0, Math.PI / 4]}
+          position={[0, RING_CENTER_Y, RING_BASE_Z - idx * 6]}
+          rotation={[0, 0, Math.PI / 8]}
         >
-          {ringSides.map((bar, bIdx) => (
-            <group key={bIdx}>
-              <mesh position={bar.pos} rotation={[0, 0, bar.rot]} material={ringCasingMat}>
-                <boxGeometry args={[RING_HALF * 2 + 0.18, 0.14, 0.18]} />
-              </mesh>
-              <mesh
-                position={bar.innerPos}
-                rotation={[0, 0, bar.rot]}
-                material={ringNeonMaterials[idx]}
-              >
-                <boxGeometry args={[RING_HALF * 2 - 0.06, 0.045, 0.055]} />
-              </mesh>
-            </group>
-          ))}
+          <mesh geometry={ringBodyGeo} material={ringCasingMat} />
+          <mesh geometry={ringNeonGeo} material={ringNeonMaterials[idx]} position={[0, 0, RING_DEPTH / 2 + 0.005]} />
         </group>
       ))}
 

@@ -32,6 +32,23 @@ const HORIZON_MONOLITHS: ReadonlyArray<{
   { x: 19.5, y: 8.5, z: -58, w: 4.2, h: 24, d: 4.2, rotY: -0.16 },
 ];
 
+const DECK_PANEL_LENGTH = 3.6;
+const DECK_PANEL_GAP = 0.35;
+const DECK_PANEL_WIDTH = 1.5;
+const DECK_X = 2.65;
+const DECK_Y = -0.42;
+const DECK_PANELS: ReadonlyArray<{ x: number; z: number; side: -1 | 1 }> = (() => {
+  const out: Array<{ x: number; z: number; side: -1 | 1 }> = [];
+  const step = DECK_PANEL_LENGTH + DECK_PANEL_GAP;
+  for (let z = 1.8; z > -TRACK_LENGTH + 4; z -= step) {
+    out.push({ x: -DECK_X, z: z - DECK_PANEL_LENGTH / 2, side: -1 });
+    out.push({ x: DECK_X, z: z - DECK_PANEL_LENGTH / 2, side: 1 });
+  }
+  return out;
+})();
+const DECK_STRIP_LEFT = new THREE.Color(0.55, 0.06, 0.1);
+const DECK_STRIP_RIGHT = new THREE.Color(0.06, 0.22, 0.6);
+
 export interface TrackEnvironmentProps {
   cameraPreset: CameraPreset;
 }
@@ -72,12 +89,45 @@ export function TrackEnvironment({ cameraPreset }: TrackEnvironmentProps) {
     return geo;
   }, []);
 
+  const deckPanelGeo = useMemo(
+    () => new THREE.BoxGeometry(DECK_PANEL_WIDTH, 0.12, DECK_PANEL_LENGTH),
+    [],
+  );
+  const deckPanelMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: "#04050a", roughness: 0.9, metalness: 0.1, envMapIntensity: 0.03 }),
+    [],
+  );
+  const deckStripGeo = useMemo(() => new THREE.BoxGeometry(0.035, 0.02, DECK_PANEL_LENGTH - 0.3), []);
+  const deckPanelsRef = useRef<THREE.InstancedMesh>(null);
+  const deckStripsRef = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    const panels = deckPanelsRef.current;
+    const strips = deckStripsRef.current;
+    if (!panels || !strips) return;
+    const m = new THREE.Matrix4();
+    DECK_PANELS.forEach((p, i) => {
+      m.makeTranslation(p.x, DECK_Y, p.z);
+      panels.setMatrixAt(i, m);
+      const innerEdgeX = p.x - p.side * (DECK_PANEL_WIDTH / 2 - 0.05);
+      m.makeTranslation(innerEdgeX, DECK_Y + 0.07, p.z);
+      strips.setMatrixAt(i, m);
+      strips.setColorAt(i, p.side < 0 ? DECK_STRIP_LEFT : DECK_STRIP_RIGHT);
+    });
+    panels.instanceMatrix.needsUpdate = true;
+    strips.instanceMatrix.needsUpdate = true;
+    if (strips.instanceColor) strips.instanceColor.needsUpdate = true;
+  }, []);
+
   useEffect(() => {
     return () => {
+      deckPanelGeo.dispose();
+      deckPanelMat.dispose();
+      deckStripGeo.dispose();
       laneDividersGeo.dispose();
       hitGridGeo.dispose();
     };
-  }, [laneDividersGeo, hitGridGeo]);
+  }, [deckPanelGeo, deckPanelMat, deckStripGeo, laneDividersGeo, hitGridGeo]);
 
   useFrame(() => {
     const grp = playerBodyGroupRef.current;
@@ -104,7 +154,7 @@ export function TrackEnvironment({ cameraPreset }: TrackEnvironmentProps) {
           metalness={0.62}
           clearcoat={0.28}
           clearcoatRoughness={0.46}
-          envMapIntensity={0.55}
+          envMapIntensity={0.28}
         />
       </mesh>
 
@@ -215,15 +265,19 @@ export function TrackEnvironment({ cameraPreset }: TrackEnvironmentProps) {
         </group>
       </group>
 
-      {/* Flanking outer dark structural decks for depth */}
-      <mesh position={[-3.9, -0.35, TRACK_CENTER_Z]}>
-        <boxGeometry args={[1.6, 0.14, TRACK_LENGTH]} />
-        <meshStandardMaterial color="#05070e" roughness={0.65} metalness={0.45} envMapIntensity={0.18} />
-      </mesh>
-      <mesh position={[3.9, -0.35, TRACK_CENTER_Z]}>
-        <boxGeometry args={[1.6, 0.14, TRACK_LENGTH]} />
-        <meshStandardMaterial color="#05070e" roughness={0.65} metalness={0.45} envMapIntensity={0.18} />
-      </mesh>
+      {/* Flanking segmented matte deck panels with dim inner-edge accent strips */}
+      <instancedMesh
+        ref={deckPanelsRef}
+        args={[deckPanelGeo, deckPanelMat, DECK_PANELS.length]}
+        frustumCulled={false}
+      />
+      <instancedMesh
+        ref={deckStripsRef}
+        args={[deckStripGeo, undefined, DECK_PANELS.length]}
+        frustumCulled={false}
+      >
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
 
       {/* Far horizon monolithic skyline silhouettes */}
       {HORIZON_MONOLITHS.map((m, idx) => (

@@ -22,3 +22,27 @@ export function createSoftGlowTexture(size = 64): THREE.DataTexture {
   tex.needsUpdate = true;
   return tex;
 }
+
+/**
+ * 64x1 alpha profile for camera-facing light ribbons (arcs): narrow bright core + soft falloff to
+ * transparent edges. Sample with U across the ribbon width.
+ */
+export function createRibbonProfileTexture(width = 64): THREE.DataTexture {
+  const data = new Uint8Array(width * 4);
+  for (let i = 0; i < width; i += 1) {
+    const x = (i / (width - 1)) * 2 - 1;
+    const core = Math.exp(-((x / 0.2) ** 2));
+    const halo = 0.32 * Math.exp(-((x / 0.62) ** 2));
+    const edge = Math.max(0, 1 - x * x);
+    const a = Math.min(1, (core + halo) * edge);
+    data[i * 4] = 255;
+    data[i * 4 + 1] = 255;
+    data[i * 4 + 2] = 255;
+    data[i * 4 + 3] = Math.round(a * 255);
+  }
+  const tex = new THREE.DataTexture(data, width, 1, THREE.RGBAFormat);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}

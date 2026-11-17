@@ -11,6 +11,30 @@ import { NotesLayer } from "./NotesLayer";
 import { WallsAndBombsLayer } from "./WallsAndBombsLayer";
 import { ArcsAndChainsLayer } from "./ArcsAndChainsLayer";
 import { DefaultEnvironmentLights } from "./DefaultEnvironmentLights";
+import * as THREE from "three";
+
+/**
+ * three ignores material.envMapIntensity when the env comes from scene.environment (it uses
+ * scene.environmentIntensity instead). Binding the scene env onto each lit material explicitly makes
+ * the per-material envMapIntensity values (dark matte decks vs glossy notes) actually take effect.
+ */
+function EnvMapIntensityBridge() {
+  const frameRef = useRef(0);
+  useFrame(({ scene }) => {
+    frameRef.current += 1;
+    const env = scene.environment;
+    if (!env || frameRef.current % 20 !== 1) return;
+    scene.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material;
+      if (!mat || Array.isArray(mat)) return;
+      if (mat instanceof THREE.MeshStandardMaterial && mat.envMap !== env) {
+        mat.envMap = env;
+        mat.needsUpdate = true;
+      }
+    });
+  });
+  return null;
+}
 
 function CameraRig({ preset }: { preset: CameraPreset }) {
   const { camera } = useThree();
@@ -125,6 +149,7 @@ export function ViewerScene({
       </Environment>
 
       <FpsProbe />
+      <EnvMapIntensityBridge />
       <CameraRig preset={cameraPreset} />
       <DefaultEnvironmentLights lightEvents={difficulty.lightEvents} getTimeS={getTimeS} />
       <TrackEnvironment cameraPreset={cameraPreset} />

@@ -22,9 +22,11 @@ import { createSoftGlowTexture } from "../textures";
 
 const MAX_NOTE_INSTANCES = 512;
 const MAX_CUT_HALVES = 256;
-const MAX_CUT_FLASHES = 128;
-const MAX_CUT_SPARKS = 768;
-const SPARKS_PER_CUT = 6;
+const MAX_CUT_FLASHES = 256;
+const MAX_CUT_SPARKS = 512;
+const SPARKS_PER_CUT = 4;
+const HALF_OFFSET = NOTE_SIZE / 4;
+const WHITE = new THREE.Color(1, 1, 1);
 
 const LEFT_COLOR = new THREE.Color("#dc142c");
 const RIGHT_COLOR = new THREE.Color("#1864f5");
@@ -62,6 +64,7 @@ export function NotesLayer({
   const dotMeshRef = useRef<THREE.InstancedMesh>(null);
   const cutHalfMeshRef = useRef<THREE.InstancedMesh>(null);
   const cutFlashMeshRef = useRef<THREE.InstancedMesh>(null);
+  const cutFaceMeshRef = useRef<THREE.InstancedMesh>(null);
   const cutSparkMeshRef = useRef<THREE.InstancedMesh>(null);
 
   const bodyGeo = useMemo(
@@ -72,22 +75,17 @@ export function NotesLayer({
   const dotGeo = useMemo(() => new THREE.CircleGeometry(0.054, 24), []);
   const cutHalfGeo = useMemo(
     () =>
-      new RoundedBoxGeometry(
-        NOTE_SIZE * 0.44,
-        NOTE_SIZE * 0.88,
-        NOTE_SIZE * 0.82,
-        2,
-        0.028,
-      ),
+      new RoundedBoxGeometry(NOTE_SIZE * 0.5, NOTE_SIZE, NOTE_SIZE, 2, 0.03),
     [],
   );
+  const cutFaceGeo = useMemo(() => new THREE.PlaneGeometry(NOTE_SIZE * 0.84, NOTE_SIZE * 0.84), []);
   const cutFlashGeo = useMemo(() => new THREE.PlaneGeometry(0.62, 0.62), []);
-  const cutSparkGeo = useMemo(() => new THREE.BoxGeometry(0.022, 0.13, 0.022), []);
+  const cutSparkGeo = useMemo(() => new THREE.BoxGeometry(0.016, 0.09, 0.016), []);
   const glowTex = useMemo(() => createSoftGlowTexture(), []);
 
   useEffect(() => {
     const dummyColor = new THREE.Color(1, 1, 1);
-    for (const ref of [bodyMeshRef, cutHalfMeshRef, cutFlashMeshRef, cutSparkMeshRef]) {
+    for (const ref of [bodyMeshRef, cutHalfMeshRef, cutFaceMeshRef, cutFlashMeshRef, cutSparkMeshRef]) {
       const mesh = ref.current;
       if (mesh && !mesh.instanceColor) {
         mesh.setColorAt(0, dummyColor);
@@ -99,13 +97,21 @@ export function NotesLayer({
       arrowGeo.dispose();
       dotGeo.dispose();
       cutHalfGeo.dispose();
+      cutFaceGeo.dispose();
       cutFlashGeo.dispose();
       cutSparkGeo.dispose();
       glowTex.dispose();
     };
-  }, [bodyGeo, arrowGeo, dotGeo, cutHalfGeo, cutFlashGeo, cutSparkGeo, glowTex]);
+  }, [bodyGeo, arrowGeo, dotGeo, cutHalfGeo, cutFaceGeo, cutFlashGeo, cutSparkGeo, glowTex]);
 
-  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const dummy = useMemo(() => {
+    const o = new THREE.Object3D();
+    // Z then local Y: lets cut halves "open like a book" around the cut line
+    o.rotation.order = "ZYX";
+    return o;
+  }, []);
+  const faceLocal = useMemo(() => new THREE.Matrix4(), []);
+  const faceWorld = useMemo(() => new THREE.Matrix4(), []);
   const arrowDummy = useMemo(() => new THREE.Object3D(), []);
   const tmpColor = useMemo(() => new THREE.Color(), []);
 
@@ -115,6 +121,7 @@ export function NotesLayer({
     const dotMesh = dotMeshRef.current;
     const cutHalfMesh = cutHalfMeshRef.current;
     const cutFlashMesh = cutFlashMeshRef.current;
+    const cutFaceMesh = cutFaceMeshRef.current;
     const cutSparkMesh = cutSparkMeshRef.current;
     if (!bodyMesh || !arrowMesh || !dotMesh) return;
 
@@ -126,6 +133,7 @@ export function NotesLayer({
     let dotCount = 0;
     let halfCount = 0;
     let flashCount = 0;
+    let faceCount = 0;
     let sparkCount = 0;
 
     const faceOffset = NOTE_SIZE / 2 + 0.0025;
@@ -180,56 +188,77 @@ export function NotesLayer({
       const fadeOut = (1 - p) * (1 - p);
       const perpX = Math.cos(rotZ);
       const perpY = Math.sin(rotZ);
+      const cutX = -perpY;
+      const cutY = perpX;
 
+      // Two halves of the sliced note: split along the cut line, opening outward and dropping
       if (cutHalfMesh && halfCount + 1 < MAX_CUT_HALVES) {
-        const sep = 0.065 + easeOut * 0.34;
-        const halfScale = Math.max(0.05, 1 - p * 0.8);
-        const zCut = -0.04 - easeOut * 0.16;
+        const open = 0.01 + easeOut * 0.085;
+        const fall = 0.32 * p * p;
+        const shrink = Math.max(0.05, 1 - p * 0.35 - p * p * 0.5);
+        const zCut = -0.02 - easeOut * 0.12;
+        for (let side = -1; side <= 1; side += 2) {
+          const off = (HALF_OFFSET + open) * side;
+          dummy.position.set(wx + perpX * off, wy + perpY * off - fall, zCut);
+          dummy.rotation.set(0, side * 0.55 * easeOut, rotZ - side * 0.22 * easeOut);
+          dummy.scale.setScalar(shrink);
+          dummy.updateMatrix();
+          cutHalfMesh.setMatrixAt(halfCount, dummy.matrix);
+          cutHalfMesh.setColorAt(halfCount, handColor);
+          halfCount += 1;
 
-        // Left/Right separated halves
-        dummy.position.set(wx - perpX * sep, wy - perpY * sep, zCut);
-        dummy.rotation.set(0.28 * easeOut, -0.36 * easeOut, rotZ + 0.42 * easeOut);
-        dummy.scale.setScalar(halfScale);
-        dummy.updateMatrix();
-        cutHalfMesh.setMatrixAt(halfCount, dummy.matrix);
-        cutHalfMesh.setColorAt(halfCount, handColor);
-        halfCount += 1;
-
-        dummy.position.set(wx + perpX * sep, wy + perpY * sep, zCut);
-        dummy.rotation.set(-0.28 * easeOut, 0.36 * easeOut, rotZ - 0.42 * easeOut);
-        dummy.scale.setScalar(halfScale);
-        dummy.updateMatrix();
-        cutHalfMesh.setMatrixAt(halfCount, dummy.matrix);
-        cutHalfMesh.setColorAt(halfCount, handColor);
-        halfCount += 1;
+          // Glowing exposed cut face on the inner side of each half
+          if (cutFaceMesh) {
+            faceLocal.makeRotationY((-side * Math.PI) / 2);
+            faceLocal.setPosition(-side * (HALF_OFFSET + 0.003), 0, 0);
+            faceWorld.multiplyMatrices(dummy.matrix, faceLocal);
+            cutFaceMesh.setMatrixAt(faceCount, faceWorld);
+            tmpColor.copy(glowColor).lerp(WHITE, 0.25 * (1 - p)).multiplyScalar(0.35 + 0.9 * (1 - p));
+            cutFaceMesh.setColorAt(faceCount, tmpColor);
+            faceCount += 1;
+          }
+        }
       }
 
-      if (cutFlashMesh && flashCount < MAX_CUT_FLASHES) {
-        dummy.position.set(wx, wy, -0.015);
+      if (cutFlashMesh && flashCount + 1 < MAX_CUT_FLASHES) {
+        // Thin slash streak along the cut direction
+        dummy.position.set(wx, wy, -0.01);
         dummy.rotation.set(0, 0, rotZ);
-        dummy.scale.set(0.75 + easeOut * 0.85, 0.45 + easeOut * 0.55, 1);
+        dummy.scale.set(0.16 * (1 - p * 0.6), 0.9 + easeOut * 1.5, 1);
         dummy.updateMatrix();
         cutFlashMesh.setMatrixAt(flashCount, dummy.matrix);
-        tmpColor.copy(glowColor).multiplyScalar(fadeOut * 0.95);
+        tmpColor.copy(glowColor).lerp(WHITE, 0.35).multiplyScalar(fadeOut * 1.25);
+        cutFlashMesh.setColorAt(flashCount, tmpColor);
+        flashCount += 1;
+
+        // Small soft bloom at the impact point
+        dummy.scale.setScalar(0.55 + easeOut * 0.45);
+        dummy.updateMatrix();
+        cutFlashMesh.setMatrixAt(flashCount, dummy.matrix);
+        tmpColor.copy(glowColor).multiplyScalar(fadeOut * 0.4);
         cutFlashMesh.setColorAt(flashCount, tmpColor);
         flashCount += 1;
       }
 
       if (cutSparkMesh && sparkCount + SPARKS_PER_CUT <= MAX_CUT_SPARKS) {
-        const seedBase = note.beat * 13.7 + note.x * 3.1 + note.y * 5.7;
+        // A few sparks thrown out sideways from the cut line
         for (let k = 0; k < SPARKS_PER_CUT; k += 1) {
-          const ang = seedBase + (k * Math.PI * 2) / SPARKS_PER_CUT;
-          const dist = 0.08 + easeOut * (0.48 + (k % 2) * 0.16);
+          const side = k % 2 === 0 ? 1 : -1;
+          const along = k < 2 ? 0.55 : -0.25;
+          const dx = perpX * side + cutX * along;
+          const dy = perpY * side + cutY * along;
+          const len = Math.hypot(dx, dy);
+          const dist = 0.1 + easeOut * (0.34 + k * 0.04);
           dummy.position.set(
-            wx + Math.cos(ang) * dist,
-            wy + Math.sin(ang) * dist,
-            -0.02 - easeOut * 0.14,
+            wx + (dx / len) * dist,
+            wy + (dy / len) * dist - 0.12 * p * p,
+            -0.02 - easeOut * 0.08,
           );
-          dummy.rotation.set(0, 0, ang - Math.PI / 2);
-          dummy.scale.set(1 - p * 0.5, Math.max(0.2, 1.2 - p * 0.9), 1);
+          dummy.rotation.set(0, 0, Math.atan2(dy, dx) - Math.PI / 2);
+          dummy.scale.set(1, Math.max(0.25, 1.3 - p), 1);
           dummy.updateMatrix();
           cutSparkMesh.setMatrixAt(sparkCount, dummy.matrix);
-          tmpColor.copy(glowColor).multiplyScalar(fadeOut * 1.4);
+          tmpColor.copy(glowColor).lerp(WHITE, 0.2).multiplyScalar(fadeOut * 1.5);
           cutSparkMesh.setColorAt(sparkCount, tmpColor);
           sparkCount += 1;
         }
@@ -250,6 +279,12 @@ export function NotesLayer({
       cutHalfMesh.count = halfCount;
       cutHalfMesh.instanceMatrix.needsUpdate = true;
       if (cutHalfMesh.instanceColor) cutHalfMesh.instanceColor.needsUpdate = true;
+    }
+
+    if (cutFaceMesh) {
+      cutFaceMesh.count = faceCount;
+      cutFaceMesh.instanceMatrix.needsUpdate = true;
+      if (cutFaceMesh.instanceColor) cutFaceMesh.instanceColor.needsUpdate = true;
     }
 
     if (cutFlashMesh) {
@@ -309,6 +344,14 @@ export function NotesLayer({
           clearcoatRoughness={0.14}
           envMapIntensity={1.2}
         />
+      </instancedMesh>
+
+      <instancedMesh
+        ref={cutFaceMeshRef}
+        args={[cutFaceGeo, undefined, MAX_CUT_HALVES]}
+        frustumCulled={false}
+      >
+        <meshBasicMaterial color="#ffffff" toneMapped={false} side={THREE.DoubleSide} />
       </instancedMesh>
 
       <instancedMesh
