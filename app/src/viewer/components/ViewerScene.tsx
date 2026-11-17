@@ -7,6 +7,7 @@ import { CAMERA_PRESETS, type CameraPreset } from "../geometry";
 import { TrackEnvironment } from "./TrackEnvironment";
 import { NotesLayer } from "./NotesLayer";
 import { WallsAndBombsLayer } from "./WallsAndBombsLayer";
+import { ArcsAndChainsLayer } from "./ArcsAndChainsLayer";
 
 function CameraRig({ preset }: { preset: CameraPreset }) {
   const { camera } = useThree();
@@ -82,6 +83,13 @@ export function ViewerScene({
       <WallsAndBombsLayer
         bombs={difficulty.bombs}
         obstacles={difficulty.obstacles}
+        njs={njs}
+        halfJumpDurationSec={halfJumpDurationSec}
+        getTimeS={getTimeS}
+      />
+      <ArcsAndChainsLayer
+        arcs={difficulty.arcs}
+        chains={difficulty.chains}
         njs={njs}
         halfJumpDurationSec={halfJumpDurationSec}
         getTimeS={getTimeS}
