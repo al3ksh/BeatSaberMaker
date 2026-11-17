@@ -163,4 +163,4 @@ Beat Saber is a trademark of Beat Games. BeatSaberMaker is a fan project and is 
 
 ## License
 
-Copyright © 2026 Alex. All rights reserved. The source code is public so you can read it and learn from it, but no license is granted to copy, modify or redistribute it.
+Copyright © 2026 al3ksh. All rights reserved. The source code is public so you can read it and learn from it, but no license is granted to copy, modify or redistribute it.
