@@ -1,30 +1,51 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft,
   Camera,
+  Crosshair,
   Disc3,
   FolderOpen,
   Pause,
   Play,
-  RotateCcw,
-  RotateCw,
+  Sparkles,
   Volume2,
   VolumeX,
 } from "lucide-react";
 import { EN, RANK_LABELS_EN } from "../../i18n/en";
 import type { ViewerMapPackage } from "../../types";
-import { Badge, Button, SegmentedControl, cn } from "../../components/ui/primitives";
-import { rankToBadgeVariant } from "../../components/wizard/StepMap";
+import { Button, SegmentedControl, cn } from "../../components/ui/primitives";
 import {
-  DEFAULT_MUSIC_VOLUME,
   PLAYBACK_RATES,
   ViewerAudioPlayer,
   type PlaybackRate,
 } from "../audioPlayer";
+import {
+  clampVolumePercent,
+  sliderToHitsoundGain,
+  sliderToMusicGain,
+} from "../audioVolume";
 import type { CameraPreset } from "../geometry";
+import { extractHitsoundTimes } from "../hitsound";
 import { computeLocalNps, parseDifficultyData } from "../parser";
+import {
+  SEEK_OVERLAY_DURATION_MS,
+  SEEK_STEP_SEC,
+  accumulateSeekOverlay,
+  formatSeekOverlayText,
+  type SeekOverlayState,
+} from "../seekOverlay";
 import { buildTempoMap, computeJumpMetrics, secondsToBeat } from "../timing";
 import type { JumpMetrics, ParsedDifficultyData } from "../types";
+import {
+  loadViewerPrefs,
+  saveHitsoundEnabled,
+  saveHitsoundVolumePercent,
+  saveMusicVolumePercent,
+  saveQualityMode,
+  type ViewerQualityMode,
+} from "../viewerPrefs";
+import { TimelineScrubber } from "./TimelineScrubber";
 import { ViewerScene } from "./ViewerScene";
 
 const MemoViewerScene = React.memo(ViewerScene);
@@ -35,6 +56,11 @@ interface ParsedDiffEntry {
   rank: string;
   data: ParsedDifficultyData;
   jump: JumpMetrics;
+}
+
+interface PlayFlashState {
+  icon: "play" | "pause";
+  seq: number;
 }
 
 function formatTimeSec(sec: number, showDecimal = false): string {
@@ -59,6 +85,23 @@ function computeFallbackDuration(data: ParsedDifficultyData): number {
   for (const c of data.chains) if (c.tailTimeS > maxT) maxT = c.tailTimeS;
   for (const e of data.lightEvents) if (e.timeS > maxT) maxT = e.timeS;
   return maxT + 3;
+}
+
+function rankAccentTextClass(rank: string): string {
+  switch (rank) {
+    case "Easy":
+      return "text-emerald-300";
+    case "Normal":
+      return "text-sky-300";
+    case "Hard":
+      return "text-amber-300";
+    case "Expert":
+      return "text-rose-300";
+    case "ExpertPlus":
+      return "text-purple-300";
+    default:
+      return "text-zinc-200";
+  }
 }
 
 class SceneErrorBoundary extends React.Component<
@@ -88,24 +131,39 @@ export interface MapViewerProps {
 }
 
 export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
+  const initialPrefs = useMemo(() => loadViewerPrefs(), []);
+
   const [pkg, setPkg] = useState<ViewerMapPackage | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedDiffKey, setSelectedDiffKey] = useState<string>("");
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>("player");
+  const [qualityMode, setQualityMode] = useState<ViewerQualityMode>(initialPrefs.qualityMode);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(1);
   const [audioDecoded, setAudioDecoded] = useState(true);
   const [playbackRate, setPlaybackRate] = useState<PlaybackRate>(1);
-  const [volume, setVolume] = useState(DEFAULT_MUSIC_VOLUME);
+  const [musicVolumePercent, setMusicVolumePercent] = useState(initialPrefs.musicVolumePercent);
   const [muted, setMuted] = useState(false);
+  const [hitsoundEnabled, setHitsoundEnabled] = useState(initialPrefs.hitsoundEnabled);
+  const [hitsoundVolumePercent, setHitsoundVolumePercent] = useState(
+    initialPrefs.hitsoundVolumePercent,
+  );
 
   const [hudTime, setHudTime] = useState(0);
+  const [seekOverlay, setSeekOverlay] = useState<SeekOverlayState | null>(null);
+  const [playFlash, setPlayFlash] = useState<PlayFlashState | null>(null);
+
   const playerRef = useRef<ViewerAudioPlayer | null>(null);
+  const seekTimerRef = useRef<number | null>(null);
+  const playFlashTimerRef = useRef<number | null>(null);
 
   if (!playerRef.current) {
     playerRef.current = new ViewerAudioPlayer();
+    playerRef.current.setVolume(sliderToMusicGain(initialPrefs.musicVolumePercent));
+    playerRef.current.setHitsoundEnabled(initialPrefs.hitsoundEnabled);
+    playerRef.current.setHitsoundVolume(sliderToHitsoundGain(initialPrefs.hitsoundVolumePercent));
   }
 
   const parsedDiffs = useMemo<ParsedDiffEntry[]>(() => {
@@ -130,6 +188,13 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
   }, [parsedDiffs, selectedDiffKey]);
 
   useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    const hitTimes = activeDiff ? extractHitsoundTimes(activeDiff.data.notes) : [];
+    player.setNoteHitTimes(hitTimes);
+  }, [activeDiff]);
+
+  useEffect(() => {
     let active = true;
     const player = playerRef.current!;
     setLoading(true);
@@ -150,7 +215,6 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
           : 60;
 
         if (loaded.difficulties.length > 0) {
-          // Pick highest-rank Standard difficulty by default or index 0
           let pickIdx = 0;
           let bestScore = -1;
           loaded.difficulties.forEach((d, idx) => {
@@ -190,6 +254,8 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
       setHudTime(player.duration);
     });
     return () => {
+      if (seekTimerRef.current !== null) window.clearTimeout(seekTimerRef.current);
+      if (playFlashTimerRef.current !== null) window.clearTimeout(playFlashTimerRef.current);
       void player.dispose();
     };
   }, []);
@@ -200,6 +266,7 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
     const tick = (now: number) => {
       const player = playerRef.current;
       if (player) {
+        player.tickHitsounds();
         if (now - lastUiUpdate >= 45) {
           lastUiUpdate = now;
           const t = player.getCurrentTime();
@@ -217,18 +284,36 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
 
   const getTimeS = useCallback(() => playerRef.current?.getCurrentTime() ?? 0, []);
 
-  const togglePlay = useCallback(async () => {
-    const player = playerRef.current;
-    if (!player || loading || loadError) return;
-    if (player.isPlaying) {
-      player.pause();
-      setIsPlaying(false);
-      setHudTime(player.getCurrentTime());
-    } else {
-      await player.play();
-      setIsPlaying(player.isPlaying);
+  const triggerPlayFlash = useCallback((nextPlaying: boolean) => {
+    setPlayFlash((prev) => ({
+      icon: nextPlaying ? "play" : "pause",
+      seq: (prev?.seq ?? 0) + 1,
+    }));
+    if (playFlashTimerRef.current !== null) {
+      window.clearTimeout(playFlashTimerRef.current);
     }
-  }, [loading, loadError]);
+    playFlashTimerRef.current = window.setTimeout(() => {
+      setPlayFlash(null);
+    }, 480);
+  }, []);
+
+  const togglePlay = useCallback(
+    async (withFlash = false) => {
+      const player = playerRef.current;
+      if (!player || loading || loadError) return;
+      if (player.isPlaying) {
+        player.pause();
+        setIsPlaying(false);
+        setHudTime(player.getCurrentTime());
+        if (withFlash) triggerPlayFlash(false);
+      } else {
+        await player.play();
+        setIsPlaying(player.isPlaying);
+        if (withFlash) triggerPlayFlash(true);
+      }
+    },
+    [loading, loadError, triggerPlayFlash],
+  );
 
   const seekTo = useCallback(async (nextSec: number) => {
     const player = playerRef.current;
@@ -237,25 +322,73 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
     setHudTime(player.getCurrentTime());
   }, []);
 
+  const stepSeekWithOverlay = useCallback(
+    (direction: -1 | 1) => {
+      const player = playerRef.current;
+      if (!player || loading || loadError) return;
+      const cur = player.getCurrentTime();
+      void seekTo(cur + direction * SEEK_STEP_SEC);
+
+      const now = performance.now();
+      setSeekOverlay((prev) => accumulateSeekOverlay(prev, direction, now));
+      if (seekTimerRef.current !== null) {
+        window.clearTimeout(seekTimerRef.current);
+      }
+      seekTimerRef.current = window.setTimeout(() => {
+        setSeekOverlay(null);
+      }, SEEK_OVERLAY_DURATION_MS);
+    },
+    [loading, loadError, seekTo],
+  );
+
   const changeRate = useCallback((rate: PlaybackRate) => {
     setPlaybackRate(rate);
     playerRef.current?.setPlaybackRate(rate);
   }, []);
 
-  const changeVolume = useCallback(
-    (vol: number) => {
-      setVolume(vol);
-      setMuted(vol === 0);
-      playerRef.current?.setVolume(vol);
-    },
-    [],
-  );
+  const changeVolume = useCallback((percent: number) => {
+    const clamped = clampVolumePercent(percent);
+    setMusicVolumePercent(clamped);
+    setMuted(clamped === 0);
+    saveMusicVolumePercent(clamped);
+    playerRef.current?.setVolume(sliderToMusicGain(clamped));
+  }, []);
 
   const toggleMute = useCallback(() => {
     const nextMuted = !muted;
     setMuted(nextMuted);
-    playerRef.current?.setVolume(nextMuted ? 0 : volume);
-  }, [muted, volume]);
+    playerRef.current?.setVolume(nextMuted ? 0 : sliderToMusicGain(musicVolumePercent));
+  }, [muted, musicVolumePercent]);
+
+  const toggleHitsound = useCallback(() => {
+    const next = !hitsoundEnabled;
+    setHitsoundEnabled(next);
+    saveHitsoundEnabled(next);
+    playerRef.current?.setHitsoundEnabled(next);
+  }, [hitsoundEnabled]);
+
+  const changeHitsoundVolume = useCallback(
+    (percent: number) => {
+      const clamped = clampVolumePercent(percent);
+      setHitsoundVolumePercent(clamped);
+      saveHitsoundVolumePercent(clamped);
+      if (clamped > 0 && !hitsoundEnabled) {
+        setHitsoundEnabled(true);
+        saveHitsoundEnabled(true);
+        playerRef.current?.setHitsoundEnabled(true);
+      }
+      playerRef.current?.setHitsoundVolume(sliderToHitsoundGain(clamped));
+    },
+    [hitsoundEnabled],
+  );
+
+  const toggleQualityMode = useCallback(() => {
+    setQualityMode((prev) => {
+      const next: ViewerQualityMode = prev === "high" ? "fast" : "high";
+      saveQualityMode(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     function onKeyDown(ev: KeyboardEvent) {
@@ -268,20 +401,20 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
         onClose();
       } else if (ev.code === "Space") {
         ev.preventDefault();
-        void togglePlay();
+        if (!ev.repeat) {
+          void togglePlay(true);
+        }
       } else if (ev.code === "ArrowLeft") {
         ev.preventDefault();
-        const cur = playerRef.current?.getCurrentTime() ?? 0;
-        void seekTo(cur - 5);
+        stepSeekWithOverlay(-1);
       } else if (ev.code === "ArrowRight") {
         ev.preventDefault();
-        const cur = playerRef.current?.getCurrentTime() ?? 0;
-        void seekTo(cur + 5);
+        stepSeekWithOverlay(1);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, togglePlay, seekTo]);
+  }, [onClose, togglePlay, stepSeekWithOverlay]);
 
   async function handlePickFolder() {
     const picked = await window.bsm.pickFolder(EN.viewer.openMapFolder);
@@ -299,7 +432,7 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
       className="fixed inset-0 z-50 bg-zinc-950 text-zinc-100 flex flex-col select-none"
     >
       {/* Top Bar */}
-      <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/95 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+      <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/95 px-4 py-2 flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-3 min-w-0">
           <Button variant="secondary" size="sm" onClick={onClose}>
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -310,10 +443,10 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
             <img
               src={pkg.coverDataUrl}
               alt={pkg.title}
-              className="h-9 w-9 rounded-lg object-cover border border-zinc-800 shrink-0"
+              className="h-8 w-8 rounded-lg object-cover border border-zinc-800 shrink-0"
             />
           ) : (
-            <div className="h-9 w-9 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0">
+            <div className="h-8 w-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0">
               <Disc3 className="h-4 w-4 text-zinc-500" />
             </div>
           )}
@@ -322,18 +455,16 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
             <div className="text-sm font-semibold text-zinc-100 truncate">
               {pkg?.title ?? EN.viewer.title}
             </div>
-            <div className="text-xs text-zinc-400 truncate flex items-center gap-2">
+            <div className="text-[11px] text-zinc-400 truncate flex items-center gap-2">
               <span>{pkg?.artist ?? ""}</span>
               {pkg && (
-                <span className="font-mono text-[11px] text-zinc-500">
-                  {Math.round(pkg.bpm)} BPM
-                </span>
+                <span className="font-mono text-zinc-500">{Math.round(pkg.bpm)} BPM</span>
               )}
             </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           {parsedDiffs.length > 0 && (
             <div className="flex items-center gap-1 bg-zinc-900/90 border border-zinc-800 rounded-xl p-1">
               {parsedDiffs.map((d) => {
@@ -376,6 +507,25 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
             ]}
           />
 
+          <button
+            type="button"
+            data-testid="viewer-quality-toggle"
+            onClick={toggleQualityMode}
+            title={`${EN.viewer.qualityLabel}: ${qualityMode === "high" ? EN.viewer.qualityHigh : EN.viewer.qualityFast}`}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer",
+              qualityMode === "high"
+                ? "bg-indigo-500/15 border-indigo-400/35 text-indigo-200 hover:bg-indigo-500/25"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200",
+            )}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>
+              {EN.viewer.qualityLabel}:{" "}
+              {qualityMode === "high" ? EN.viewer.qualityHigh : EN.viewer.qualityFast}
+            </span>
+          </button>
+
           <Button variant="secondary" size="sm" onClick={handlePickFolder}>
             <FolderOpen className="h-3.5 w-3.5" />
             {EN.viewer.openMapFolder}
@@ -384,7 +534,7 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
       </header>
 
       {/* Main 3D Canvas + HUD */}
-      <div className="relative flex-1 min-h-0 overflow-hidden bg-[#05060b]">
+      <div className="relative flex-1 min-h-0 overflow-hidden bg-[#03040a]">
         {loading ? (
           <div className="h-full w-full flex flex-col items-center justify-center gap-3 text-sm text-zinc-400">
             <Disc3 className="h-8 w-8 text-blue-400 animate-spin" />
@@ -410,12 +560,13 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
                 njs={activeDiff.jump.njs}
                 halfJumpDurationSec={activeDiff.jump.halfJumpDurationSec}
                 cameraPreset={cameraPreset}
+                qualityMode={qualityMode}
                 getTimeS={getTimeS}
               />
             </SceneErrorBoundary>
 
             {/* Top-left HUD: time, beat, local NPS */}
-            <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-2 rounded-xl bg-zinc-950/75 border border-zinc-800/80 backdrop-blur-md px-3 py-2 text-xs">
+            <div className="pointer-events-none absolute top-3 left-3 flex items-center gap-2 rounded-xl bg-zinc-950/70 border border-zinc-800/75 backdrop-blur-md px-2.5 py-1.5 text-[11px]">
               <div data-testid="viewer-time" className="font-mono font-semibold text-zinc-100 tabular-nums">
                 {formatTimeSec(hudTime, true)} / {formatTimeSec(duration, false)}
               </div>
@@ -429,41 +580,109 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
               </div>
             </div>
 
-            {/* Top-right HUD: object counts & NJS/HJD */}
-            <div className="pointer-events-none absolute top-3 right-3 flex flex-wrap items-center justify-end gap-1.5 max-w-md">
-              <Badge variant={rankToBadgeVariant(activeDiff.rank)}>
-                {RANK_LABELS_EN[activeDiff.rank] ?? activeDiff.rank} · NJS{" "}
-                {activeDiff.jump.njs.toFixed(1)} · HJD {activeDiff.jump.hjdBeats.toFixed(2)}b
-              </Badge>
-              <Badge variant="neutral">
+            {/* Top-right HUD: compact grouped stats strip */}
+            <div className="pointer-events-none absolute top-3 right-3 flex flex-wrap items-center gap-2 rounded-xl bg-zinc-950/70 border border-zinc-800/75 backdrop-blur-md px-2.5 py-1.5 text-[11px] font-mono tabular-nums text-zinc-300">
+              <span className={cn("font-sans font-semibold", rankAccentTextClass(activeDiff.rank))}>
+                {RANK_LABELS_EN[activeDiff.rank] ?? activeDiff.rank}
+              </span>
+              <span className="text-zinc-500">
+                NJS {activeDiff.jump.njs.toFixed(1)} · HJD {activeDiff.jump.hjdBeats.toFixed(2)}b
+              </span>
+              <span className="text-zinc-700">|</span>
+              <span className="text-zinc-100">
                 {EN.viewer.stats.notes}: {activeDiff.data.notes.length}
-              </Badge>
+              </span>
               {activeDiff.data.arcs.length > 0 && (
-                <Badge variant="blue">
-                  {EN.viewer.stats.arcs}: {activeDiff.data.arcs.length}
-                </Badge>
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-blue-300/90">
+                    {EN.viewer.stats.arcs}: {activeDiff.data.arcs.length}
+                  </span>
+                </>
               )}
               {activeDiff.data.chains.length > 0 && (
-                <Badge variant="sky">
-                  {EN.viewer.stats.chains}: {activeDiff.data.chains.length}
-                </Badge>
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-sky-300/90">
+                    {EN.viewer.stats.chains}: {activeDiff.data.chains.length}
+                  </span>
+                </>
               )}
               {activeDiff.data.obstacles.length > 0 && (
-                <Badge variant="red">
-                  {EN.viewer.stats.walls}: {activeDiff.data.obstacles.length}
-                </Badge>
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-rose-300/90">
+                    {EN.viewer.stats.walls}: {activeDiff.data.obstacles.length}
+                  </span>
+                </>
               )}
               {activeDiff.data.bombs.length > 0 && (
-                <Badge variant="amber">
-                  {EN.viewer.stats.bombs}: {activeDiff.data.bombs.length}
-                </Badge>
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-amber-300/90">
+                    {EN.viewer.stats.bombs}: {activeDiff.data.bombs.length}
+                  </span>
+                </>
               )}
               {activeDiff.data.lightEvents.length > 0 && (
-                <Badge variant="purple">
-                  {EN.viewer.stats.lights}: {activeDiff.data.lightEvents.length}
-                </Badge>
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span className="text-purple-300/90">
+                    {EN.viewer.stats.lights}: {activeDiff.data.lightEvents.length}
+                  </span>
+                </>
               )}
             </div>
+
+            {/* YouTube-style ±5s Seek Ripple Overlay */}
+            {seekOverlay && (
+              <div
+                data-testid="viewer-seek-overlay"
+                className={cn(
+                  "pointer-events-none absolute top-1/2 -translate-y-1/2 h-28 w-28 flex items-center justify-center",
+                  seekOverlay.direction < 0 ? "left-10" : "right-10",
+                )}
+              >
+                <motion.div
+                  key={seekOverlay.seq}
+                  initial={{ opacity: 0.96, scale: 0.92 }}
+                  animate={{ opacity: 0, scale: 1.05 }}
+                  transition={{ duration: SEEK_OVERLAY_DURATION_MS / 1000, ease: "easeOut" }}
+                  className="relative h-full w-full rounded-full bg-black/55 border border-white/15 backdrop-blur-md flex items-center justify-center shadow-2xl"
+                >
+                  <motion.div
+                    initial={{ opacity: 0.5, scale: 0.72 }}
+                    animate={{ opacity: 0, scale: 1.45 }}
+                    transition={{ duration: SEEK_OVERLAY_DURATION_MS / 1000, ease: "easeOut" }}
+                    className="absolute inset-0 rounded-full border border-white/30"
+                  />
+                  <span className="relative text-xs font-semibold text-white tracking-wide text-center px-2">
+                    {formatSeekOverlayText(seekOverlay.direction, seekOverlay.amountSec)}
+                  </span>
+                </motion.div>
+              </div>
+            )}
+
+            {/* YouTube-style Space Play/Pause Centered Flash */}
+            <AnimatePresence>
+              {playFlash && (
+                <motion.div
+                  key={playFlash.seq}
+                  data-testid="viewer-play-flash"
+                  initial={{ opacity: 0.95, scale: 0.85 }}
+                  animate={{ opacity: 0, scale: 1.3 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.45, ease: "easeOut" }}
+                  className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-16 w-16 rounded-full bg-black/60 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-2xl text-white"
+                >
+                  {playFlash.icon === "play" ? (
+                    <Play className="h-7 w-7 fill-white translate-x-0.5" />
+                  ) : (
+                    <Pause className="h-7 w-7 fill-white" />
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Notices (no audio / variable BPM) */}
             {(!audioDecoded || activeDiff.data.hasBpmChanges) && (
@@ -477,65 +696,29 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
       </div>
 
       {/* Bottom Transport Controls */}
-      <footer className="shrink-0 border-t border-zinc-800/80 bg-zinc-950/95 px-4 py-2.5 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void seekTo((playerRef.current?.getCurrentTime() ?? 0) - 5)}
-            aria-label={EN.viewer.seekBack}
-            title={EN.viewer.seekBack}
-            disabled={loading || Boolean(loadError)}
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            -5s
-          </Button>
+      <footer className="shrink-0 border-t border-zinc-800/80 bg-zinc-950/95 px-4 py-2 flex flex-wrap items-center gap-3">
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => void togglePlay(false)}
+          aria-label={isPlaying ? EN.viewer.pause : EN.viewer.play}
+          disabled={loading || Boolean(loadError)}
+          className="min-w-20"
+        >
+          {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+          {isPlaying ? EN.viewer.pause : EN.viewer.play}
+        </Button>
 
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => void togglePlay()}
-            aria-label={isPlaying ? EN.viewer.pause : EN.viewer.play}
-            disabled={loading || Boolean(loadError)}
-            className="min-w-20"
-          >
-            {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-            {isPlaying ? EN.viewer.pause : EN.viewer.play}
-          </Button>
-
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void seekTo((playerRef.current?.getCurrentTime() ?? 0) + 5)}
-            aria-label={EN.viewer.seekForward}
-            title={EN.viewer.seekForward}
-            disabled={loading || Boolean(loadError)}
-          >
-            +5s
-            <RotateCw className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-        {/* Timeline Scrubber */}
-        <div className="flex-1 min-w-44 flex items-center gap-2.5">
-          <input
-            data-testid="viewer-seek"
-            type="range"
-            aria-label="Seek timeline"
-            min={0}
-            max={Math.max(1, duration)}
-            step={0.01}
-            value={Math.min(hudTime, duration)}
-            disabled={loading || Boolean(loadError)}
-            onChange={(e) => {
-              void seekTo(Number(e.target.value));
-            }}
-            className="w-full accent-blue-500 cursor-pointer"
-          />
-        </div>
+        {/* Custom Progress Bar with filled gradient, thumb, and hover tooltip */}
+        <TimelineScrubber
+          currentTime={hudTime}
+          duration={duration}
+          disabled={loading || Boolean(loadError)}
+          onSeek={(sec) => void seekTo(sec)}
+        />
 
         {/* Speed Selector */}
-        <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5">
+        <div className="flex items-center gap-0.5 bg-zinc-900 border border-zinc-800 rounded-lg p-0.5">
           {PLAYBACK_RATES.map((r) => (
             <button
               key={r}
@@ -553,30 +736,85 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
           ))}
         </div>
 
-        {/* Volume */}
-        <div className="flex items-center gap-2 w-28">
+        {/* Music Volume */}
+        <div className="flex items-center gap-1.5 w-36 shrink-0" title={EN.viewer.volumeLabel}>
           <button
             type="button"
             onClick={toggleMute}
             aria-label={EN.viewer.volumeLabel}
-            className="p-1 text-zinc-400 hover:text-zinc-100 cursor-pointer"
+            className="p-1 text-zinc-400 hover:text-zinc-100 cursor-pointer shrink-0"
           >
-            {muted || volume === 0 ? (
+            {muted || musicVolumePercent === 0 ? (
               <VolumeX className="h-4 w-4 text-zinc-500" />
             ) : (
               <Volume2 className="h-4 w-4" />
             )}
           </button>
           <input
+            data-testid="viewer-volume-slider"
             type="range"
             aria-label={EN.viewer.volumeLabel}
             min={0}
-            max={1}
-            step={0.02}
-            value={muted ? 0 : volume}
+            max={100}
+            step={1}
+            value={muted ? 0 : musicVolumePercent}
+            onInput={(e) => changeVolume(Number((e.target as HTMLInputElement).value))}
             onChange={(e) => changeVolume(Number(e.target.value))}
-            className="w-full accent-blue-500 cursor-pointer"
+            className="w-20 accent-blue-500 cursor-pointer"
           />
+          <span
+            data-testid="viewer-volume-percent"
+            className={cn(
+              "w-9 text-right font-mono text-[11px] tabular-nums shrink-0",
+              muted || musicVolumePercent === 0 ? "text-zinc-500" : "text-zinc-300",
+            )}
+          >
+            {muted ? 0 : musicVolumePercent}%
+          </span>
+        </div>
+
+        {/* Hitsound Toggle + Separate Volume Slider */}
+        <div
+          className="flex items-center gap-1.5 pl-2 border-l border-zinc-800/80 w-44 shrink-0"
+          title={EN.viewer.hitsoundLabel}
+        >
+          <button
+            type="button"
+            data-testid="viewer-hitsound-toggle"
+            onClick={toggleHitsound}
+            aria-pressed={hitsoundEnabled}
+            aria-label={EN.viewer.hitsoundLabel}
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-medium transition-colors cursor-pointer shrink-0",
+              hitsoundEnabled
+                ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25"
+                : "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300",
+            )}
+          >
+            <Crosshair className="h-3 w-3" />
+            <span>Hit</span>
+          </button>
+          <input
+            data-testid="viewer-hitsound-volume"
+            type="range"
+            aria-label={EN.viewer.hitsoundVolumeLabel}
+            min={0}
+            max={100}
+            step={1}
+            value={hitsoundEnabled ? hitsoundVolumePercent : 0}
+            onInput={(e) => changeHitsoundVolume(Number((e.target as HTMLInputElement).value))}
+            onChange={(e) => changeHitsoundVolume(Number(e.target.value))}
+            className="w-20 accent-emerald-500 cursor-pointer"
+          />
+          <span
+            data-testid="viewer-hitsound-percent"
+            className={cn(
+              "w-9 text-right font-mono text-[11px] tabular-nums shrink-0",
+              !hitsoundEnabled || hitsoundVolumePercent === 0 ? "text-zinc-500" : "text-emerald-300/90",
+            )}
+          >
+            {hitsoundEnabled ? hitsoundVolumePercent : 0}%
+          </span>
         </div>
       </footer>
     </div>

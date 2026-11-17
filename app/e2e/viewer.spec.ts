@@ -42,7 +42,7 @@ async function launchViewerApp(customLevelsDir: string) {
 }
 
 test.describe("3D Map Viewer E2E", () => {
-  test("opens synthetic map folder, scrubs timeline, switches cameras, and plays/pauses", async () => {
+  test("opens synthetic map folder, tests YouTube seek overlay, hitsound/quality toggles, cameras, and playback", async () => {
     const tmpMap = fs.mkdtempSync(path.join(os.tmpdir(), "bsm-viewer-synth-"));
     const cl = path.join(tmpMap, "CustomLevels");
     const mapDir = path.join(tmpMap, "SampleMap");
@@ -139,14 +139,56 @@ test.describe("3D Map Viewer E2E", () => {
       await seek.dispatchEvent("change");
       await expect(page.getByTestId("viewer-beat")).toContainText("Beat 10.0");
 
+      // Hover tooltip on seek bar
+      const box = await seek.boundingBox();
+      if (box) {
+        await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+        await expect(page.getByTestId("viewer-seek-tooltip")).toBeVisible();
+      }
+
+      // YouTube-style ±5s arrow seek + accumulation
+      await page.keyboard.press("ArrowRight");
+      await expect(page.getByTestId("viewer-seek-overlay")).toContainText("5 seconds »");
+      await page.keyboard.press("ArrowRight");
+      await expect(page.getByTestId("viewer-seek-overlay")).toContainText("10 seconds »");
+      await page.keyboard.press("ArrowLeft");
+      await expect(page.getByTestId("viewer-seek-overlay")).toContainText("« 5 seconds");
+
+      // Hitsound toggle, volume sliders percentage readout (default 40%/40%), & Quality toggle
+      await expect(page.getByTestId("viewer-volume-percent")).toHaveText("40%");
+      await expect(page.getByTestId("viewer-hitsound-percent")).toHaveText("40%");
+      const musicSlider = page.getByTestId("viewer-volume-slider");
+      await musicSlider.fill("35");
+      await musicSlider.dispatchEvent("input");
+      await expect(page.getByTestId("viewer-volume-percent")).toHaveText("35%");
+      const hitsoundSlider = page.getByTestId("viewer-hitsound-volume");
+      await hitsoundSlider.fill("65");
+      await hitsoundSlider.dispatchEvent("input");
+      await expect(page.getByTestId("viewer-hitsound-percent")).toHaveText("65%");
+
+      const hitsoundToggle = page.getByTestId("viewer-hitsound-toggle");
+      await expect(hitsoundToggle).toHaveAttribute("aria-pressed", "true");
+      await hitsoundToggle.click();
+      await expect(hitsoundToggle).toHaveAttribute("aria-pressed", "false");
+      await expect(page.getByTestId("viewer-hitsound-percent")).toHaveText("0%");
+      await hitsoundToggle.click();
+      await expect(page.getByTestId("viewer-hitsound-percent")).toHaveText("65%");
+
+      const qualityToggle = page.getByTestId("viewer-quality-toggle");
+      await expect(qualityToggle).toContainText("High");
+      await qualityToggle.click();
+      await expect(qualityToggle).toContainText("Fast");
+      await qualityToggle.click();
+
       // Camera presets
       await page.getByRole("button", { name: "Side" }).click();
       await page.getByRole("button", { name: "Top" }).click();
       await page.getByRole("button", { name: "Player" }).click();
 
-      // Speed & play/pause toggle with Spacebar
+      // Speed & play/pause toggle with Spacebar + centered flash
       await page.getByRole("button", { name: "1.5x" }).click();
       await page.keyboard.press("Space");
+      await expect(page.getByTestId("viewer-play-flash")).toBeVisible();
       await page.waitForTimeout(350);
       await page.keyboard.press("Space");
 
@@ -163,7 +205,7 @@ test.describe("3D Map Viewer E2E", () => {
     }
   });
 
-  test("renders real CustomLevels maps (Shut Up and Dance + GHOST) and captures screenshots", async () => {
+  test("renders real CustomLevels maps (Shut Up and Dance + GHOST), captures screenshots, and checks FPS", async () => {
     const hasMaps = fs.existsSync(MAP_SHUT_UP) && fs.existsSync(MAP_GHOST);
     test.skip(!hasMaps, "Real CustomLevels sample maps are not present on this machine");
 
@@ -183,21 +225,27 @@ test.describe("3D Map Viewer E2E", () => {
       await expect(page.getByText("Shut Up and Dance")).toBeVisible();
       await expect(page.getByText(/Notes:\s*623/)).toBeVisible();
 
-      for (const sec of [26, 30, 60, 90]) {
+      for (const sec of [1.2, 10.6, 26, 30, 60, 90]) {
         const seek = page.getByTestId("viewer-seek");
         await seek.fill(String(sec));
         await seek.dispatchEvent("change");
-        await page.waitForTimeout(350);
-        await page.screenshot({ path: path.join(SHOTS_DIR, `shutup-${sec}s-player.png`) });
+        await page.waitForTimeout(400);
+        const tag =
+          sec === 1.2
+            ? "1.2s-walls-bombs"
+            : sec === 10.6
+              ? "10.6s-arc"
+              : `${sec}s-player`;
+        await page.screenshot({ path: path.join(SHOTS_DIR, `shutup-${tag}.png`) });
       }
       await page.getByRole("button", { name: "Side" }).click();
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(350);
       await page.screenshot({ path: path.join(SHOTS_DIR, "shutup-90s-side.png") });
       await page.getByRole("button", { name: "Top" }).click();
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(350);
       await page.screenshot({ path: path.join(SHOTS_DIR, "shutup-90s-top.png") });
 
-      // 2. Camellia - GHOST (ExpertPlus, ~1831 notes)
+      // 2. Camellia - GHOST (ExpertPlus, 1831 notes)
       await electronApp.evaluate(async ({ dialog }, picked) => {
         dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [picked] });
       }, MAP_GHOST);
@@ -206,13 +254,28 @@ test.describe("3D Map Viewer E2E", () => {
       await expect(page.getByText(/Notes:\s*1831/)).toBeVisible();
 
       await page.getByRole("button", { name: "Player" }).click();
-      for (const sec of [30, 60, 90]) {
+      for (const sec of [12.8, 30, 60, 90]) {
         const seek = page.getByTestId("viewer-seek");
         await seek.fill(String(sec));
         await seek.dispatchEvent("change");
-        await page.waitForTimeout(350);
-        await page.screenshot({ path: path.join(SHOTS_DIR, `ghost-${sec}s-player.png`) });
+        await page.waitForTimeout(400);
+        const tag = sec === 12.8 ? "12.8s-arcs-walls" : `${sec}s-player`;
+        await page.screenshot({ path: path.join(SHOTS_DIR, `ghost-${tag}.png`) });
       }
+
+      // Play GHOST around 88s (dense section) and sample FPS
+      const seek = page.getByTestId("viewer-seek");
+      await seek.fill("88");
+      await seek.dispatchEvent("change");
+      await page.keyboard.press("Space");
+      await page.waitForTimeout(1600);
+      const ghostFps = await page.evaluate(
+        () => (window as unknown as { __bsmViewerFps?: number }).__bsmViewerFps ?? 0,
+      );
+      await page.screenshot({ path: path.join(SHOTS_DIR, "ghost-playing-cut.png") });
+      await page.keyboard.press("Space");
+      console.log(`[viewer-e2e] GHOST Expert+ High quality FPS: ${ghostFps}`);
+      expect(ghostFps).toBeGreaterThan(0);
     } finally {
       await electronApp.close();
       fs.rmSync(tmp, { recursive: true, force: true });
