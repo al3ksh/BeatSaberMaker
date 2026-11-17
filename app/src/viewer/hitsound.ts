@@ -1,10 +1,11 @@
 import type { AudioContextLike, BufferSourceLike, GainNodeLike } from "./audioPlayer";
+import { DEFAULT_VOLUME_PERCENT, sliderToHitsoundGain } from "./audioVolume";
 import type { ViewerNote } from "./types";
 
 export const HITSOUND_DEDUP_EPS_S = 0.01;
 export const HITSOUND_LOOKAHEAD_S = 0.15;
 export const HITSOUND_PEAK_AMPLITUDE = 0.3;
-export const DEFAULT_HITSOUND_VOLUME = 0.5;
+export const DEFAULT_HITSOUND_VOLUME = sliderToHitsoundGain(DEFAULT_VOLUME_PERCENT);
 
 export interface HitsoundClockSnapshot {
   isPlaying: boolean;

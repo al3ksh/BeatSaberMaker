@@ -1,32 +1,44 @@
-import { DEFAULT_HITSOUND_VOLUME } from "./hitsound";
+import { DEFAULT_VOLUME_PERCENT, clampVolumePercent } from "./audioVolume";
 
 export type ViewerQualityMode = "high" | "fast";
 
-const KEY_HITSOUND_ENABLED = "bsm.viewer.hitsoundEnabled";
-const KEY_HITSOUND_VOLUME = "bsm.viewer.hitsoundVolume";
-const KEY_QUALITY_MODE = "bsm.viewer.qualityMode";
+// Bumped v2 keys intentionally drop pre-scale (0..1) stored preferences.
+const KEY_MUSIC_VOLUME_PERCENT = "bsm.viewer.v2.musicVolumePercent";
+const KEY_HITSOUND_ENABLED = "bsm.viewer.v2.hitsoundEnabled";
+const KEY_HITSOUND_VOLUME_PERCENT = "bsm.viewer.v2.hitsoundVolumePercent";
+const KEY_QUALITY_MODE = "bsm.viewer.v2.qualityMode";
 
 export interface ViewerPrefs {
+  musicVolumePercent: number;
   hitsoundEnabled: boolean;
-  hitsoundVolume: number;
+  hitsoundVolumePercent: number;
   qualityMode: ViewerQualityMode;
 }
 
 export function loadViewerPrefs(): ViewerPrefs {
+  let musicVolumePercent = DEFAULT_VOLUME_PERCENT;
   let hitsoundEnabled = true;
-  let hitsoundVolume = DEFAULT_HITSOUND_VOLUME;
+  let hitsoundVolumePercent = DEFAULT_VOLUME_PERCENT;
   let qualityMode: ViewerQualityMode = "high";
 
   try {
+    const rawMusic = window.localStorage.getItem(KEY_MUSIC_VOLUME_PERCENT);
+    if (rawMusic !== null) {
+      const parsed = Number(rawMusic);
+      if (Number.isFinite(parsed)) {
+        musicVolumePercent = clampVolumePercent(parsed);
+      }
+    }
+
     const rawEnabled = window.localStorage.getItem(KEY_HITSOUND_ENABLED);
     if (rawEnabled === "false") hitsoundEnabled = false;
     else if (rawEnabled === "true") hitsoundEnabled = true;
 
-    const rawVol = window.localStorage.getItem(KEY_HITSOUND_VOLUME);
+    const rawVol = window.localStorage.getItem(KEY_HITSOUND_VOLUME_PERCENT);
     if (rawVol !== null) {
       const parsed = Number(rawVol);
       if (Number.isFinite(parsed)) {
-        hitsoundVolume = Math.max(0, Math.min(1, parsed));
+        hitsoundVolumePercent = clampVolumePercent(parsed);
       }
     }
 
@@ -38,7 +50,15 @@ export function loadViewerPrefs(): ViewerPrefs {
     // Ignore storage unavailability
   }
 
-  return { hitsoundEnabled, hitsoundVolume, qualityMode };
+  return { musicVolumePercent, hitsoundEnabled, hitsoundVolumePercent, qualityMode };
+}
+
+export function saveMusicVolumePercent(percent: number): void {
+  try {
+    window.localStorage.setItem(KEY_MUSIC_VOLUME_PERCENT, String(clampVolumePercent(percent)));
+  } catch {
+    // Ignore
+  }
 }
 
 export function saveHitsoundEnabled(enabled: boolean): void {
@@ -49,9 +69,9 @@ export function saveHitsoundEnabled(enabled: boolean): void {
   }
 }
 
-export function saveHitsoundVolume(volume: number): void {
+export function saveHitsoundVolumePercent(percent: number): void {
   try {
-    window.localStorage.setItem(KEY_HITSOUND_VOLUME, String(Math.max(0, Math.min(1, volume))));
+    window.localStorage.setItem(KEY_HITSOUND_VOLUME_PERCENT, String(clampVolumePercent(percent)));
   } catch {
     // Ignore
   }

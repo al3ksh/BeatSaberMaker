@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ViewerAudioPlayer, type AudioContextLike } from "./audioPlayer";
+import { DEFAULT_VOLUME_PERCENT, sliderToMusicGain } from "./audioVolume";
 
 function createFakeAudioContext() {
   let currentTime = 10;
@@ -116,13 +117,17 @@ describe("ViewerAudioPlayer", () => {
     await player.dispose();
   });
 
-  it("defaults music volume to 0.7 and clamps gain strictly to [0, 1]", async () => {
+  it("defaults music volume to 40% perceptual gain and clamps gain strictly to [0, 1]", async () => {
+    const expectedDefaultGain = sliderToMusicGain(DEFAULT_VOLUME_PERCENT);
     const fake = createFakeAudioContext();
     const player = new ViewerAudioPlayer(() => fake.ctx);
-    expect(player.volume).toBe(0.7);
+    expect(player.volume).toBeCloseTo(expectedDefaultGain, 6);
 
     await player.load(new Uint8Array([1, 2, 3]), 120);
-    expect(fake.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.7, expect.any(Number));
+    expect(fake.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(
+      expectedDefaultGain,
+      expect.any(Number),
+    );
 
     player.setVolume(1.8);
     expect(player.volume).toBe(1);

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AudioContextLike } from "./audioPlayer";
+import { DEFAULT_VOLUME_PERCENT, sliderToHitsoundGain } from "./audioVolume";
 import { HitsoundScheduler, extractHitsoundTimes, synthesizeHitsoundBuffer } from "./hitsound";
 
 function createHitsoundMockAudio() {
@@ -144,7 +145,10 @@ describe("hitsound extraction & scheduling", () => {
 
     const scheduler = new HitsoundScheduler();
     scheduler.attachContext(mock.ctx);
-    expect(mock.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(0.5, expect.any(Number));
+    expect(mock.gainNode.gain.setValueAtTime).toHaveBeenCalledWith(
+      sliderToHitsoundGain(DEFAULT_VOLUME_PERCENT),
+      expect.any(Number),
+    );
 
     scheduler.setVolume(2.5);
     expect(mock.gainNode.gain.setValueAtTime).toHaveBeenLastCalledWith(1, expect.any(Number));

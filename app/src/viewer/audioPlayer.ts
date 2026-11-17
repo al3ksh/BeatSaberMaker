@@ -1,9 +1,10 @@
+import { DEFAULT_VOLUME_PERCENT, sliderToMusicGain } from "./audioVolume";
 import { HitsoundScheduler } from "./hitsound";
 
 export type PlaybackRate = 0.5 | 0.75 | 1 | 1.25 | 1.5;
 
 export const PLAYBACK_RATES: readonly PlaybackRate[] = [0.5, 0.75, 1, 1.25, 1.5];
-export const DEFAULT_MUSIC_VOLUME = 0.7;
+export const DEFAULT_MUSIC_VOLUME = sliderToMusicGain(DEFAULT_VOLUME_PERCENT);
 
 export interface GainNodeLike {
   gain: {
