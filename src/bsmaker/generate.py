@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +24,7 @@ from bsmaker.models.pattern.sample import LoadedPattern, SampleReport, sample_no
 from bsmaker.models.timing.decode import LoadedTiming, predict_events
 from bsmaker.playability.checker import Report, check
 from bsmaker.playability.config import PlayabilityConfig
-from bsmaker.playability.layers import NoteIndex, bomb_mask_ok, check_layers, wall_ok
+from bsmaker.playability.layers import check_layers
 
 MIN_AUDIO_S = 30.0
 MIN_EVENTS = 20
@@ -78,6 +78,8 @@ class LevelResult:
     n_arcs: int = 0
     n_chains: int = 0
     ornament_report: OrnamentReport | None = None
+    n_walls: int = 0
+    n_bombs: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,20 @@ class _BuiltLevel:
     arcs: list[Arc]
     chains: list[Chain]
     ornament_report: OrnamentReport
+    obstacles: list[Obstacle] = field(default_factory=list)
+    bombs: list[Bomb] = field(default_factory=list)
+    decor_report: dict = field(default_factory=dict)
+
+
+def _merge_decor_reports(reps: list[dict]) -> dict:
+    """Sum per-level decor reports (counts add up, flags are OR-ed)."""
+    if len(reps) == 1:
+        return reps[0]
+    out: dict = {}
+    for rep in reps:
+        for k, v in rep.items():
+            out[k] = (out.get(k, False) or v) if isinstance(v, bool) else out.get(k, 0) + v
+    return out
 
 
 def parse_levels(levels: Sequence[str] | str) -> tuple[str, ...]:
@@ -283,52 +299,6 @@ def _generate_level_notes(
     return notes, grid, report, rounds, early_stop, _measured_nps(notes)
 
 
-def _filter_shared_decor(
-    obstacles: list[Obstacle],
-    bombs: list[Bomb],
-    decor_rep: dict,
-    other_idxs: Sequence[NoteIndex],
-) -> tuple[list[Obstacle], list[Bomb], dict]:
-    """Drop shared walls/bomb groups that violate hard rules on another difficulty level."""
-    rep = dict(decor_rep)
-    if obstacles:
-        kept_obs: list[Obstacle] = []
-        dropped_obs: list[Obstacle] = []
-        for o in obstacles:
-            if all(wall_ok(o, idx) for idx in other_idxs):
-                kept_obs.append(o)
-            else:
-                dropped_obs.append(o)
-        if dropped_obs:
-            dropped_gp = sum(1 for o in dropped_obs if o.w > 1)
-            dropped_decor = len(dropped_obs) - dropped_gp
-            obstacles = kept_obs
-            rep["decor_walls_placed"] = max(0, rep["decor_walls_placed"] - dropped_decor)
-            rep["gameplay_walls_placed"] = max(0, rep["gameplay_walls_placed"] - dropped_gp)
-            rep["walls_placed"] = len(kept_obs)
-            rep["walls_skipped"] += len(dropped_obs)
-            rep["skipped_by_rules"] += len(dropped_obs)
-    if bombs:
-        by_time: dict[float, list[Bomb]] = {}
-        for b in bombs:
-            by_time.setdefault(b.time_s, []).append(b)
-        kept_bombs: list[Bomb] = []
-        groups_dropped = 0
-        for t_s, grp in by_time.items():
-            mask = sum(1 << (b.y * 4 + b.x) for b in grp)
-            if all(bomb_mask_ok(mask, idx, t_s) for idx in other_idxs):
-                kept_bombs.extend(grp)
-            else:
-                groups_dropped += 1
-        if groups_dropped:
-            bombs = kept_bombs
-            rep["bomb_groups_placed"] = max(0, rep["bomb_groups_placed"] - groups_dropped)
-            rep["bombs_placed"] = len(kept_bombs)
-            rep["bombs_skipped"] += groups_dropped
-            rep["skipped_by_rules"] += groups_dropped
-    return obstacles, bombs, rep
-
-
 def generate_map(
     audio_path: Path,
     *,
@@ -447,15 +417,15 @@ def generate_map(
     tracker.emit("layers", 80)
 
     densest = max(built, key=lambda lv: (lv.measured_nps, _RANK_ORDER[lv.rank]))
-    decor_level = auto_ornaments_level(densest.target_nps) if ornaments is None else ornaments
-    obstacles, bombs, decor_rep = generate_decor(
-        models, mel, densest.notes, densest.target_nps, base_grid.bpm, duration_s,
-        decor_level, layer_stats, seed, device, is_cancelled=is_cancelled,
-    )
-    if len(built) > 1 and (obstacles or bombs):
-        other_idxs = [NoteIndex(lv.notes) for lv in built if lv is not densest]
-        obstacles, bombs, decor_rep = _filter_shared_decor(obstacles, bombs, decor_rep, other_idxs)
-    tracker.emit("layers", 86)
+    for i, lv in enumerate(built):
+        _check_cancel(is_cancelled)
+        decor_level = auto_ornaments_level(lv.target_nps) if ornaments is None else ornaments
+        lv.obstacles, lv.bombs, lv.decor_report = generate_decor(
+            models, mel, lv.notes, lv.target_nps, base_grid.bpm, duration_s,
+            decor_level, layer_stats, seed, device, is_cancelled=is_cancelled,
+        )
+        tracker.emit("layers", 80 + int(round(6 * (i + 1) / len(built))))
+    decor_rep = _merge_decor_reports([lv.decor_report for lv in built])
 
     _check_cancel(is_cancelled)
     light_events, lights_rep = generate_lights(
@@ -466,7 +436,7 @@ def generate_map(
 
     for lv in built:
         lv_layers = Layers(
-            tuple(bombs), tuple(obstacles), tuple(lv.arcs), tuple(lv.chains),
+            tuple(lv.bombs), tuple(lv.obstacles), tuple(lv.arcs), tuple(lv.chains),
             tuple(light_events), False, 0,
         )
         if check_layers(lv.notes, lv_layers):
@@ -509,7 +479,7 @@ def generate_map(
     level_data = [
         LevelData(
             rank=lv.rank, njs=lv.njs, njs_offset=lv.njs_offset, notes=lv.notes,
-            bombs=bombs, obstacles=obstacles, arcs=lv.arcs, chains=lv.chains,
+            bombs=lv.bombs, obstacles=lv.obstacles, arcs=lv.arcs, chains=lv.chains,
         )
         for lv in built
     ]
@@ -533,6 +503,7 @@ def generate_map(
             rank=lv.rank, target_nps=lv.target_nps, n_notes=len(lv.notes),
             nps=lv.measured_nps, n_skipped=lv.report.n_skipped, density_rounds=lv.rounds,
             n_arcs=len(lv.arcs), n_chains=len(lv.chains), ornament_report=lv.ornament_report,
+            n_walls=len(lv.obstacles), n_bombs=len(lv.bombs),
         )
         for lv in built
     )
@@ -547,8 +518,8 @@ def generate_map(
         density_rounds=max(lv.rounds for lv in built),
         warnings=tuple(warnings),
         levels=level_results,
-        n_walls=len(obstacles),
-        n_bombs=len(bombs),
+        n_walls=len(densest.obstacles),
+        n_bombs=len(densest.bombs),
         n_lights=len(light_events),
         environment=environment,
         decor_report=decor_rep,

@@ -382,11 +382,10 @@ def test_all_layers_present_and_rule_clean_with_tiny_models(models, tmp_path):
         assert len(d.layers.arcs) > 0 and len(d.layers.chains) > 0
         assert len(d.layers.obstacles) > 0 and len(d.layers.bombs) > 0
         assert len(d.layers.lights) > 0
-    assert m.difficulties[0].layers.obstacles == m.difficulties[1].layers.obstacles
-    assert m.difficulties[0].layers.bombs == m.difficulties[1].layers.bombs
     assert m.difficulties[0].layers.lights == m.difficulties[1].layers.lights
-    assert res.n_walls == len(m.difficulties[0].layers.obstacles)
-    assert res.n_bombs == len(m.difficulties[0].layers.bombs)
+    assert res.n_walls == len(m.difficulties[-1].layers.obstacles)  # densest level
+    assert res.n_bombs == len(m.difficulties[-1].layers.bombs)
+    assert [lv.n_walls for lv in res.levels] == [len(d.layers.obstacles) for d in m.difficulties]
     assert res.n_lights == len(m.difficulties[0].layers.lights)
     assert res.lights_report is not None and res.lights_report["used_rules"] is False
 
@@ -454,30 +453,25 @@ def test_lights_rules_flag_and_check_layers_guard(models, tmp_path, monkeypatch)
         _gen(models, audio, tmp_path / "out_bad", ornaments=0, lights=0)
 
 
-def test_multi_level_filters_shared_decor_colliding_with_other_level(models, tmp_path, monkeypatch):
+def test_multi_level_decor_is_generated_per_level(models, tmp_path, monkeypatch):
     audio = write_audio(tmp_path / "a.wav", seconds=45.0)
     lm = make_layer_models()
+    calls = []
 
-    # Probe Easy notes by generating once, then force generate_decor to emit a wall/bomb hitting an Easy note
-    easy_res = _gen(models, audio, tmp_path / "probe", nps=1.0, seed=1)
-    easy_note = read_map(easy_res.folder).difficulties[0].notes[5]
-    bad_wall = Obstacle(max(0.0, easy_note.time_s - 0.05), 0.0, 0.2, 0.4, easy_note.x, 0, 1, 5)
-    safe_wall = Obstacle(1.0, 2.0, 0.2, 0.4, -1, 0, 1, 5)
-    bad_bomb = Bomb(easy_note.time_s, easy_note.beat, easy_note.x, easy_note.y)
-    safe_bomb = Bomb(0.2, 0.4, 3, 2)
-
-    def fake_decor(*a, **k):
-        return (
-            [safe_wall, bad_wall],
-            [safe_bomb, bad_bomb],
-            {
-                "walls_requested": 2, "bomb_groups_requested": 2,
-                "walls_placed": 2, "decor_walls_placed": 2, "gameplay_walls_placed": 0,
-                "bomb_groups_placed": 2, "bombs_placed": 2,
-                "walls_skipped": 0, "bombs_skipped": 0, "skipped_by_rules": 0,
-                "dropped_by_gameplay": 0, "missing_models": False, "missing_stats": False,
-            },
-        )
+    def fake_decor(models_, mel, notes, nps, bpm, duration_s, level, layer_stats, seed, device, **k):
+        calls.append((list(notes), nps, level))
+        # a different amount of decor per level, placed on a free spot
+        n = len(calls)
+        obs = [Obstacle(1.0 + 3.0 * i, 2.0 + 3.0 * i, 0.2, 0.4, -1, 0, 1, 5) for i in range(n)]
+        bombs = [Bomb(0.2, 0.4, 3, 2)] * n
+        rep = {
+            "walls_requested": n, "bomb_groups_requested": n,
+            "walls_placed": n, "decor_walls_placed": n, "gameplay_walls_placed": 0,
+            "bomb_groups_placed": n, "bombs_placed": n,
+            "walls_skipped": 0, "bombs_skipped": 0, "skipped_by_rules": 0,
+            "dropped_by_gameplay": 0, "missing_models": False, "missing_stats": False,
+        }
+        return obs, bombs, rep
 
     monkeypatch.setattr(G, "generate_decor", fake_decor)
     res = generate_map(
@@ -486,12 +480,19 @@ def test_multi_level_filters_shared_decor_colliding_with_other_level(models, tmp
         mask_cfg=MASK, stats=STATS, device="cpu",
         ornaments=2, lights=0, layer_models=lm, layer_stats=LAYER_STATS,
     )
-    assert res.n_walls == 1
-    assert res.decor_report["walls_placed"] == 1
-    assert res.decor_report["walls_skipped"] == 1
+    assert len(calls) == 2  # once per level
     m = read_map(res.folder, layers=True)
+    by_rank = {d.rank: d for d in m.difficulties}
+    for i, lv in enumerate(res.levels):
+        notes, nps, level = calls[i]
+        assert nps == lv.target_nps and level == 2
+        assert len(notes) == lv.n_notes
+        assert lv.n_walls == i + 1 and lv.n_bombs == i + 1
+    assert [len(by_rank[lv.rank].layers.obstacles) for lv in res.levels] == [1, 2]
     for d in m.difficulties:
         assert check_layers(d.notes, d.layers) == []
+    assert res.decor_report["walls_placed"] == 3
+    assert res.n_walls == res.levels[-1].n_walls  # densest level
 
 
 def test_generate_map_artist_cover_unique_folder_and_progress(models, tmp_path):
