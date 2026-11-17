@@ -13,17 +13,16 @@ from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
 from bsmaker.errors import GenerateCancelled
-from bsmaker.flow_rules import FlowReport, apply_flow, auto_flow_level, validation_cfg
-from bsmaker.formats.events import Event, to_events
+from bsmaker.flow_rules import FlowReport, apply_flow, final_flow_ok
+from bsmaker.formats.events import to_events
 from bsmaker.formats.layer_tokens import SUPPORTED_ENVIRONMENTS
 from bsmaker.formats.model import Arc, Bomb, Chain, Layers, Note, Obstacle
-from bsmaker.formats.tokens import NONE_TOKEN, encode_token
 from bsmaker.formats.writer import LevelData, write_map_multi
 from bsmaker.layers_generate import LayerModels, generate_decor, generate_lights
 from bsmaker.models.ornaments.sample import OrnamentReport, sample_ornaments
 from bsmaker.models.pattern.sample import LoadedPattern, SampleReport, sample_notes
 from bsmaker.models.timing.decode import LoadedTiming, predict_events
-from bsmaker.playability.checker import Report, check
+from bsmaker.playability.checker import Report, check, exact_events
 from bsmaker.playability.config import PlayabilityConfig
 from bsmaker.playability.layers import check_layers
 
@@ -240,11 +239,7 @@ def _measured_nps(notes: Sequence[Note]) -> float:
 
 def check_exact(notes: Sequence[Note], cfg: PlayabilityConfig) -> Report:
     """Playability check on the exact note times: group identical times, no frame rounding."""
-    groups: dict[float, dict[int, int]] = {}
-    for n in notes:
-        groups.setdefault(n.time_s, {})[n.color] = encode_token(n.x, n.y, n.direction)
-    events = [Event(t, g.get(0, NONE_TOKEN), g.get(1, NONE_TOKEN)) for t, g in sorted(groups.items())]
-    return check(events, cfg)
+    return check(exact_events(notes), cfg)
 
 
 def _generate_level_notes(
@@ -323,7 +318,7 @@ def generate_map(
     levels: Sequence[str] | None = None,
     ornaments: int | None = 0,
     lights: int = 0,
-    flow: int | None = None,
+    flow: int = 0,
     environment: str = "DefaultEnvironment",
     layer_models: LayerModels | None = None,
     layer_stats: dict | None = None,
@@ -340,8 +335,8 @@ def generate_map(
         raise ValueError(f"ornaments must be 0-3 or None, got {ornaments}")
     if lights not in (0, 1, 2, 3):
         raise ValueError(f"lights must be 0-3, got {lights}")
-    if flow is not None and flow not in (0, 1, 2, 3):
-        raise ValueError(f"flow must be 0-3 or None, got {flow}")
+    if flow not in (0, 1, 2, 3):
+        raise ValueError(f"flow must be 0-3, got {flow}")
     if environment not in SUPPORTED_ENVIRONMENTS:
         raise ValueError(
             f"unsupported environment {environment!r}; expected one of {', '.join(SUPPORTED_ENVIRONMENTS)}"
@@ -379,8 +374,7 @@ def generate_map(
     tracker.emit("analyzing", 10)
 
     base_grid: Grid = detect_grid(audio)
-    onset_env, onset_hop_s = onset_envelope(audio)
-    flow_level = auto_flow_level(styles) if flow is None else flow
+    onset_env, onset_hop_s = onset_envelope(audio) if flow > 0 else (np.zeros(0, np.float32), 0.0)
     _check_cancel(is_cancelled)
     tracker.emit("analyzing", 15)
 
@@ -401,18 +395,19 @@ def generate_map(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
             is_cancelled=is_cancelled, on_progress=_on_note_progress,
         )
-        vcfg = validation_cfg(mask_cfg)
-        pre_hard = set(check(to_events(notes)[0], vcfg).hard) if flow_level > 0 else set()
-        notes, flow_report = apply_flow(
-            notes, bpm=grid.bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
-            level=flow_level, seed=seed, mask_cfg=mask_cfg,
-        )
-        final_events, dropped = to_events(notes)
-        check_cfg = vcfg if flow_level > 0 else mask_cfg
-        new_hard = set(check(final_events, check_cfg).hard) - pre_hard
-        if dropped or new_hard:
-            raise RuntimeError("flow layer broke a hard playability rule (bug)")
-        measured = _measured_nps(notes)
+        if flow > 0:
+            pre_flow = notes
+            notes, flow_report = apply_flow(
+                notes, bpm=grid.bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
+                level=flow, seed=seed, mask_cfg=mask_cfg,
+            )
+            # Without the added stack dots the map must pass the mask profile like any base map;
+            # with them (as slider tails) it must add no hard violation.
+            if not final_flow_ok(pre_flow, notes, mask_cfg):
+                raise RuntimeError("flow layer broke a hard playability rule (bug)")
+            measured = _measured_nps(notes)
+        else:
+            flow_report = FlowReport(level=0)
         tracker.emit("notes", band_end)
 
         njs, _ = pick_njs(target_nps, stats)

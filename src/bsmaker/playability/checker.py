@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from bsmaker.formats.events import Event
-from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE, decode_token
+from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE, decode_token, encode_token
 from bsmaker.playability.config import PlayabilityConfig
 from bsmaker.playability.geometry import angle_diff, direction_angle
 from bsmaker.playability.state import HandState, State, initial_state
@@ -239,3 +239,16 @@ def check(events: Sequence[Event], cfg: PlayabilityConfig) -> Report:
                     soft.append(Violation(e.time_s, hand, name))
         state = advance(state, e.time_s, e.left, e.right)
     return Report(n_notes, tuple(hard), tuple(soft))
+
+
+def exact_events(notes: Sequence) -> list[Event]:
+    """Events on the exact note times: identical times grouped, no frame rounding."""
+    groups: dict[float, dict[int, int]] = {}
+    for n in notes:
+        groups.setdefault(n.time_s, {})[n.color] = encode_token(n.x, n.y, n.direction)
+    return [Event(t, g.get(0, NONE_TOKEN), g.get(1, NONE_TOKEN)) for t, g in sorted(groups.items())]
+
+
+def check_exact(notes: Sequence, cfg: PlayabilityConfig) -> Report:
+    """Playability check on the exact note times: group identical times, no frame rounding."""
+    return check(exact_events(notes), cfg)

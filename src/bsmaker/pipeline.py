@@ -11,6 +11,7 @@ import torch
 from bsmaker.audio.decode import require_ffmpeg
 from bsmaker.config import Config
 from bsmaker.data.layer_stats import load_layer_stats
+from bsmaker.flow_rules import auto_flow_level
 from bsmaker.generate import (
     CancelCheck,
     GenerateError,
@@ -214,6 +215,7 @@ def run_generate(
             f"missing layer_stats.json: {pipeline.layer_stats_missing_path}; learned layers switched off"
         )
 
+    flow_level = auto_flow_level(styles) if flow is None else flow
     return generate_map(
         audio_path,
         nps=nps,
@@ -234,7 +236,7 @@ def run_generate(
         levels=parsed_levels,
         ornaments=ornaments,
         lights=lights,
-        flow=flow,
+        flow=flow_level,
         environment=environment,
         layer_models=active_lm,
         layer_stats=pipeline.layer_stats,

@@ -648,7 +648,8 @@ def generate_cmd(
             fr = lv.flow_report
             typer.echo(
                 f"flow {lv.rank}: {fr.runs_rewritten} snake runs ({fr.notes_rewritten} notes), "
-                f"{fr.dot_stacks} dot stacks ({fr.dots_added} dots), {fr.reverted} reverted"
+                f"{fr.dot_stacks} dot stacks ({fr.dots_added} dots), "
+                f"{fr.dots_repaired} loose dots repaired, {fr.reverted} reverted"
             )
     per_level = "; ".join(
         f"{lv.rank}: {lv.n_notes} notes, {lv.nps:.2f} nps, {lv.n_arcs} arcs, {lv.n_chains} chains "
