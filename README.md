@@ -48,6 +48,17 @@ The maps come from machine-learning models trained on curated community maps fro
   </tr>
 </table>
 
+### Built-in 3D preview
+
+Before you put on the headset, watch the generated map play in sync with the song, right in the app. The preview shows what the generator wrote: notes being cut, arcs and chains, walls, bombs and the lightshow. You can switch difficulties, change the camera and playback speed, and seek anywhere in the song.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/viewer-walls-arcs.png" alt="3D preview: walls and arcs on an Expert map"><br><sub>Walls and arcs</sub></td>
+    <td align="center"><img src="docs/images/viewer-cuts-lights.png" alt="3D preview: cut notes and lasers"><br><sub>Cut notes and the lightshow</sub></td>
+  </tr>
+</table>
+
 ## Download and install
 
 1. Download **`BeatSaberMaker-Setup-0.1.0.exe`** from the [latest release](https://github.com/al3ksh/BeatSaberMaker/releases/latest) and run it.
