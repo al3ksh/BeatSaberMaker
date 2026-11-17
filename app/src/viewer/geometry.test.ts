@@ -5,6 +5,7 @@ import {
   gridX,
   gridY,
   isDotDirection,
+  obstacleBox,
 } from "./geometry";
 
 describe("viewer geometry", () => {
@@ -37,5 +38,17 @@ describe("viewer geometry", () => {
     const v = cutDirectionVector(0, 90);
     expect(v.x).toBeCloseTo(-1, 6);
     expect(v.y).toBeCloseTo(0, 6);
+  });
+
+  it("computes wall bounding boxes for full-height and crouch walls", () => {
+    const full = obstacleBox(0, 0, 1, 5);
+    expect(full.centerX).toBeCloseTo(-0.9, 6);
+    expect(full.width).toBeCloseTo(0.6, 6);
+    expect(full.centerY - full.height / 2).toBeCloseTo(0.05, 6);
+
+    const crouch = obstacleBox(1, 2, 2, 3);
+    expect(crouch.centerX).toBeCloseTo(0.0, 6);
+    expect(crouch.width).toBeCloseTo(1.2, 6);
+    expect(crouch.centerY - crouch.height / 2).toBeCloseTo(1.65, 6);
   });
 });

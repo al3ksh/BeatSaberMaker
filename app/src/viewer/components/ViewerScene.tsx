@@ -6,6 +6,7 @@ import type { ParsedDifficultyData } from "../types";
 import { CAMERA_PRESETS, type CameraPreset } from "../geometry";
 import { TrackEnvironment } from "./TrackEnvironment";
 import { NotesLayer } from "./NotesLayer";
+import { WallsAndBombsLayer } from "./WallsAndBombsLayer";
 
 function CameraRig({ preset }: { preset: CameraPreset }) {
   const { camera } = useThree();
@@ -74,6 +75,13 @@ export function ViewerScene({
       <TrackEnvironment />
       <NotesLayer
         notes={difficulty.notes}
+        njs={njs}
+        halfJumpDurationSec={halfJumpDurationSec}
+        getTimeS={getTimeS}
+      />
+      <WallsAndBombsLayer
+        bombs={difficulty.bombs}
+        obstacles={difficulty.obstacles}
         njs={njs}
         halfJumpDurationSec={halfJumpDurationSec}
         getTimeS={getTimeS}
