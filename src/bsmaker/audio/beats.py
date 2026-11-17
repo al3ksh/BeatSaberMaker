@@ -88,6 +88,15 @@ def _unsteady(bpm: float | None = None) -> Grid:
     return Grid(float(bpm), 0.0, False)
 
 
+def onset_envelope(audio: np.ndarray) -> tuple[np.ndarray, float]:
+    """Compute the onset strength envelope and hop duration in seconds."""
+    import librosa
+
+    y = np.asarray(audio, dtype=np.float32)
+    env = librosa.onset.onset_strength(y=y, sr=SAMPLE_RATE, hop_length=ENV_HOP)
+    return np.asarray(env, dtype=np.float32), ENV_HOP / SAMPLE_RATE
+
+
 def detect_grid(audio: np.ndarray) -> Grid:
     """Comb-filter fit of one constant BPM and phase to the onset envelope."""
     import librosa
