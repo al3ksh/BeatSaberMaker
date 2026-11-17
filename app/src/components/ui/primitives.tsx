@@ -23,25 +23,25 @@ export function Button({
 }: ButtonProps) {
   const variants = {
     primary:
-      "bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-500 hover:to-indigo-400 text-white shadow-md shadow-blue-950/50 border border-blue-400/25",
+      "bg-zinc-100 text-zinc-950 border border-zinc-100 hover:bg-white hover:border-white active:bg-zinc-200 active:border-zinc-200",
     secondary:
-      "bg-zinc-800/85 hover:bg-zinc-700/85 text-zinc-100 border border-zinc-700/80 shadow-sm",
+      "bg-transparent text-zinc-200 border border-zinc-700 hover:bg-zinc-800/70 hover:border-zinc-600 hover:text-zinc-50 active:bg-zinc-800",
     danger:
-      "bg-red-600/90 hover:bg-red-500 text-white border border-red-400/25 shadow-sm",
+      "bg-transparent text-red-300 border border-red-500/50 hover:bg-red-500/10 hover:border-red-400/70 hover:text-red-200 active:bg-red-500/15",
     ghost:
-      "bg-transparent hover:bg-zinc-800/70 text-zinc-300 hover:text-zinc-100 border border-transparent",
+      "bg-transparent text-zinc-400 border border-transparent hover:bg-zinc-800/60 hover:text-zinc-100 active:bg-zinc-800",
   };
   const sizes = {
-    sm: "px-3 py-1.5 text-xs rounded-lg",
-    md: "px-4 py-2 text-sm rounded-xl",
-    lg: "px-5 py-2.5 text-sm font-semibold rounded-xl",
+    sm: "h-8 px-3 text-xs rounded-md [&_svg]:h-3.5 [&_svg]:w-3.5",
+    md: "h-9 px-3.5 text-sm rounded-lg [&_svg]:h-4 [&_svg]:w-4",
+    lg: "h-10 px-4 text-sm rounded-lg [&_svg]:h-4 [&_svg]:w-4",
   };
 
   return (
     <button
       type={type}
       className={cn(
-        "inline-flex items-center justify-center gap-2 font-medium transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-40 disabled:pointer-events-none cursor-pointer",
+        "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:opacity-40 disabled:pointer-events-none cursor-pointer",
         variants[variant],
         sizes[size],
         className,

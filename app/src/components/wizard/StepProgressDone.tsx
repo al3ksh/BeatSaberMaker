@@ -8,6 +8,7 @@ import {
   FileText,
   FolderOpen,
   Info,
+  Library,
   Loader2,
   RotateCcw,
 } from "lucide-react";
@@ -178,7 +179,7 @@ export function StepProgressDone({
                 {EN.settings.openLogs}
               </Button>
             )}
-            <Button onClick={onReset}>
+            <Button variant="primary" onClick={onReset}>
               <RotateCcw className="h-4 w-4" />
               {EN.wizard.done.createAnother}
             </Button>
@@ -340,7 +341,7 @@ export function StepProgressDone({
 
         {exportNote && <p className="text-xs text-emerald-400">{exportNote}</p>}
 
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
+        <div className="space-y-3 pt-4 border-t border-zinc-800/80">
           <div className="flex flex-wrap gap-2">
             {onPreview && (
               <Button variant="primary" onClick={() => onPreview(result.folder)}>
@@ -361,13 +362,14 @@ export function StepProgressDone({
             </Button>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 -ml-3.5">
             {onGoToLibrary && (
               <Button variant="ghost" onClick={onGoToLibrary}>
+                <Library className="h-4 w-4" />
                 {EN.wizard.done.goToLibrary}
               </Button>
             )}
-            <Button onClick={onReset}>
+            <Button variant="ghost" onClick={onReset}>
               <RotateCcw className="h-4 w-4" />
               {EN.wizard.done.createAnother}
             </Button>
