@@ -55,14 +55,14 @@ export function TrackEnvironment() {
         <meshStandardMaterial color="#0b0c12" roughness={0.35} metalness={0.55} />
       </mesh>
 
-      {/* Side glowing track trim rails */}
+      {/* Side glowing track trim rails (left=red, right=blue) */}
       <mesh position={[-TRACK_WIDTH / 2 - 0.03, 0.01, -TRACK_LENGTH / 2 + 2]}>
         <boxGeometry args={[0.04, 0.04, TRACK_LENGTH]} />
-        <meshStandardMaterial color="#1e293b" emissive="#3b82f6" emissiveIntensity={0.4} />
+        <meshStandardMaterial color="#1e293b" emissive="#ef4444" emissiveIntensity={0.45} />
       </mesh>
       <mesh position={[TRACK_WIDTH / 2 + 0.03, 0.01, -TRACK_LENGTH / 2 + 2]}>
         <boxGeometry args={[0.04, 0.04, TRACK_LENGTH]} />
-        <meshStandardMaterial color="#1e293b" emissive="#ef4444" emissiveIntensity={0.4} />
+        <meshStandardMaterial color="#1e293b" emissive="#3b82f6" emissiveIntensity={0.45} />
       </mesh>
 
       {/* Lane guide lines along the floor */}

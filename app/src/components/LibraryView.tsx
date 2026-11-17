@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Disc3,
+  Eye,
   FolderHeart,
   FolderOpen,
   PlusCircle,
@@ -37,6 +38,7 @@ function visiblePageNumbers(current: number, total: number): Array<number | "ell
 
 export interface LibraryViewProps {
   onRegenerate: (entry: LibraryEntry, immediate?: boolean) => void;
+  onPreview?: (folder: string) => void;
   onGoToCreate?: () => void;
   initialEntries?: LibraryEntry[];
   initialCovers?: Record<string, string>;
@@ -86,6 +88,7 @@ function LibrarySkeleton() {
 
 export function LibraryView({
   onRegenerate,
+  onPreview,
   onGoToCreate,
   initialEntries,
   initialCovers,
@@ -181,6 +184,14 @@ export function LibraryView({
     }
   }
 
+  async function handleOpenExternalMap() {
+    if (!onPreview) return;
+    const picked = await window.bsm.pickFolder(EN.library.openMapFolder);
+    if (picked) {
+      onPreview(picked);
+    }
+  }
+
   if (loading) {
     return <LibrarySkeleton />;
   }
@@ -192,12 +203,20 @@ export function LibraryView({
           <FolderHeart className="h-7 w-7 text-zinc-500" />
         </div>
         <p className="text-sm text-zinc-400 max-w-md">{EN.library.empty}</p>
-        {onGoToCreate && (
-          <Button onClick={onGoToCreate}>
-            <PlusCircle className="h-4 w-4" />
-            {EN.library.createFirst}
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {onGoToCreate && (
+            <Button onClick={onGoToCreate}>
+              <PlusCircle className="h-4 w-4" />
+              {EN.library.createFirst}
+            </Button>
+          )}
+          {onPreview && (
+            <Button variant="secondary" onClick={handleOpenExternalMap}>
+              <FolderOpen className="h-4 w-4" />
+              {EN.library.openMapFolder}
+            </Button>
+          )}
+        </div>
       </Card>
     );
   }
@@ -217,31 +236,39 @@ export function LibraryView({
           )}
         </div>
 
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-500" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              setPage(1);
-            }}
-            placeholder={EN.library.searchPlaceholder}
-            aria-label={EN.library.searchPlaceholder}
-            className="pl-9 pr-8 py-1.5 text-xs"
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery("");
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          {onPreview && (
+            <Button variant="secondary" size="sm" onClick={handleOpenExternalMap}>
+              <FolderOpen className="h-3.5 w-3.5" />
+              {EN.library.openMapFolder}
+            </Button>
+          )}
+          <div className="relative flex-1 sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-500" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
                 setPage(1);
               }}
-              aria-label={EN.library.clearSearch}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/80 transition-colors cursor-pointer"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
+              placeholder={EN.library.searchPlaceholder}
+              aria-label={EN.library.searchPlaceholder}
+              className="pl-9 pr-8 py-1.5 text-xs"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setPage(1);
+                }}
+                aria-label={EN.library.clearSearch}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/80 transition-colors cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -323,6 +350,16 @@ export function LibraryView({
                   ) : (
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-800/80">
                       <div className="flex flex-wrap gap-1.5">
+                        {onPreview && (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => onPreview(entry.folder)}
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            {EN.library.preview}
+                          </Button>
+                        )}
                         <Button
                           variant="secondary"
                           size="sm"

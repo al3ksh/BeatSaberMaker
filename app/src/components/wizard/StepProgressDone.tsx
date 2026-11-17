@@ -4,6 +4,7 @@ import {
   Archive,
   CheckCircle2,
   Disc3,
+  Eye,
   FileText,
   FolderOpen,
   Info,
@@ -26,6 +27,7 @@ export interface StepProgressDoneProps {
   errorCode: string | null;
   onReset: () => void;
   onGoToLibrary?: () => void;
+  onPreview?: (folder: string) => void;
 }
 
 export function StepProgressDone({
@@ -39,6 +41,7 @@ export function StepProgressDone({
   errorCode,
   onReset,
   onGoToLibrary,
+  onPreview,
 }: StepProgressDoneProps) {
   const [cancelling, setCancelling] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
@@ -288,6 +291,12 @@ export function StepProgressDone({
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
           <div className="flex flex-wrap gap-2">
+            {onPreview && (
+              <Button variant="primary" onClick={() => onPreview(result.folder)}>
+                <Eye className="h-4 w-4" />
+                {EN.wizard.done.preview}
+              </Button>
+            )}
             <Button
               variant="secondary"
               onClick={() => window.bsm.openPath(result.folder)}

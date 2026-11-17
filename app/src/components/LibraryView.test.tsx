@@ -44,8 +44,12 @@ describe("LibraryView", () => {
       readCoverDataUrl: vi.fn(async () => null),
     };
     const onRegenerate = vi.fn();
-    render(<LibraryView onRegenerate={onRegenerate} />);
+    const onPreview = vi.fn();
+    render(<LibraryView onRegenerate={onRegenerate} onPreview={onPreview} />);
     expect(await screen.findByText("GHOST")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    expect(onPreview).toHaveBeenCalledWith(entry.folder);
 
     fireEvent.click(screen.getByRole("button", { name: /regenerate/i }));
     expect(onRegenerate).toHaveBeenCalledWith(entry);

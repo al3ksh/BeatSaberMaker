@@ -63,10 +63,13 @@ describe("StepProgressDone", () => {
         }}
         errorCode={null}
         onReset={() => {}}
+        onPreview={openPath}
       />,
     );
     expect(screen.getByText(/map is in the game/i)).toBeInTheDocument();
     expect(screen.getByText(/layer models/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+    expect(openPath).toHaveBeenCalledWith("C:\\CL\\BSM - Song");
     fireEvent.click(screen.getByRole("button", { name: /open folder/i }));
     expect(openPath).toHaveBeenCalledWith("C:\\CL\\BSM - Song");
 

@@ -13,7 +13,7 @@ export interface CameraPresetConfig {
 }
 
 export const CAMERA_PRESETS: Record<CameraPreset, CameraPresetConfig> = {
-  player: { position: [0, 1.7, 1.45], target: [0, 1.35, -8], fov: 62 },
+  player: { position: [0, 1.7, 2.0], target: [0, 1.35, -8], fov: 62 },
   side: { position: [9.5, 2.3, -4.5], target: [0, 1.35, -5.5], fov: 50 },
   top: { position: [0, 12.5, -4.2], target: [0, 1.1, -6.5], fov: 52 },
 };
