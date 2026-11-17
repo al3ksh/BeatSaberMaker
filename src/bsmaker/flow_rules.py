@@ -60,7 +60,20 @@ _DOUBLE_GAP_S = 0.040
 _MIN_RUN_GAP_S = 0.10
 _MAX_RUN_GAP_S = 0.30
 _MAX_RUN_HAND_GAP_S = 0.60
+# Matches the reference windmill (rotation) swing share of about 0.10 (patterns.txt F2).
 _ROTATION_PROB = 0.30
+# SLITHER = the reference diagonal sweep (patterns.txt F2; motifs "10DL 31UR 10DL" in 21/23
+# reference difficulties, "12U 10D 01UL", "31UR 20DL 22U"). Each hand keeps its anchor pair:
+# down cuts on its inner bottom cell (straight down, or down-inward after an outward-up
+# diagonal), up cuts alternately outward-diagonal on its outer middle cell (the reference's
+# 27%/26% anchor cells) or straight up above the down cut. Up cuts never sit on row 0.
+_SWEEP_DOWN_CELL = {0: (1, 0), 1: (2, 0)}
+_SWEEP_UP_CELL = {0: (0, 1), 1: (3, 1)}
+_SWEEP_DOWN_DIAG = {0: 7, 1: 6}  # DR (left), DL (right)
+_SWEEP_UP_DIAG = {0: 4, 1: 5}  # UL (left), UR (right)
+# Full-height (row delta 2) straight ups only with a same-hand gap >= 0.25 s; shorter gaps
+# (0.15-0.25 s, and below 0.15 s) put the up cut on row 1 (patterns.txt F2 thresholds).
+_SWEEP_FULL_HEIGHT_GAP_S = 0.25
 _ROTATION_CYCLE: tuple[tuple[int, int, int], ...] = (
     (0, 1, 4),  # L UL
     (1, 0, 6),  # R DL
@@ -571,6 +584,62 @@ def _best_up_down(prev_angle: float | None) -> int:
     return min((1, 0), key=lambda d: angle_diff(direction_angle(d), expected))
 
 
+def _prev_same_hand_time(notes: Sequence[Note], k: int) -> float | None:
+    h = notes[k].color
+    for m in range(k - 1, -1, -1):
+        if notes[m].color == h:
+            return notes[m].time_s
+    return None
+
+
+def _rewrite_sweep(
+    notes: Sequence[Note],
+    out: list[Note],
+    i: int,
+    j: int,
+    prev_angles: dict[int, float | None],
+    rng: random.Random,
+) -> list[Note]:
+    """SLITHER: the reference diagonal sweep, each hand on its anchor pair (see _SWEEP_*)."""
+    angle = dict(prev_angles)
+    down_next = {h: _best_up_down(prev_angles[h]) == 1 for h in (0, 1)}
+    up_diag = {h: rng.random() < 0.5 for h in (0, 1)}
+    last_up_diag: dict[int, bool | None] = {0: None, 1: None}
+    first = {0: True, 1: True}
+    for k in range(i, j):
+        n = notes[k]
+        h = n.color
+        prev_t = _prev_same_hand_time(notes, k)
+        gap = math.inf if prev_t is None else n.time_s - prev_t
+        dx, dy = _SWEEP_DOWN_CELL[h]
+        if down_next[h]:
+            diag = (_SWEEP_DOWN_DIAG[h], dx, dy)
+            vert = (1, dx, dy)
+            cands = [diag, vert] if last_up_diag[h] else [vert, diag]
+        else:
+            uy = 2 if gap >= _SWEEP_FULL_HEIGHT_GAP_S - _EPS else 1
+            diag = (_SWEEP_UP_DIAG[h], *_SWEEP_UP_CELL[h])
+            vert = (0, dx, uy)
+            cands = [diag, vert] if up_diag[h] else [vert, diag]
+        prev = angle[h]
+        if prev is not None:
+            expected = (prev + 180.0) % 360.0
+            ok = [c for c in cands if angle_diff(direction_angle(c[0]), expected) <= 45.0 + _EPS]
+            if first[h]:
+                # Entering the run: the cut closest to the hand's parity (ties keep preference).
+                ok = sorted(ok or cands, key=lambda c: angle_diff(direction_angle(c[0]), expected))
+            cands = ok or cands
+        d, x, y = cands[0]
+        if not down_next[h]:
+            last_up_diag[h] = d != 0
+            up_diag[h] = not last_up_diag[h]
+        out[k] = replace(n, x=x, y=y, direction=d)
+        angle[h] = direction_angle(d)
+        down_next[h] = not down_next[h]
+        first[h] = False
+    return out
+
+
 def rewrite_run(
     notes: Sequence[Note],
     i: int,
@@ -587,21 +656,7 @@ def rewrite_run(
 
     prev_angles = _prev_hand_angles(notes, i)
     if template == SLITHER:
-        dirs = {h: _best_up_down(prev_angles[h]) for h in (0, 1)}
-        lx, rx = 1, 2
-        for k in range(i, j):
-            n = notes[k]
-            d = dirs[n.color]
-            dirs[n.color] = 1 - d
-            step = rng.choice((-1, 0, 1))
-            if n.color == 0:
-                lx = max(0, min(2, rx, lx + step))
-                nx = lx
-            else:
-                rx = max(1, lx, min(3, rx + step))
-                nx = rx
-            out[k] = replace(n, x=nx, y=0, direction=d)
-        return out
+        return _rewrite_sweep(notes, out, i, j, prev_angles, rng)
 
     if template == ROTATION:
         h0 = notes[i].color

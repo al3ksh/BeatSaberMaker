@@ -234,29 +234,53 @@ def test_run_gap_limits() -> None:
     assert find_runs(first + second_fast) == [(0, 8), (8, 16)]
 
 
-def test_slither_shape() -> None:
-    notes = _alternating_run(16, gap=0.2, start_hand=0)
-    out = rewrite_run(notes, 0, len(notes), SLITHER, random.Random(3))
+_UPS = (0, 4, 5)
+_SWEEP_CELLS = {
+    0: {(1, 0, 1), (1, 0, 7), (0, 1, 4), (1, 1, 0), (1, 2, 0)},
+    1: {(2, 0, 1), (2, 0, 6), (3, 1, 5), (2, 1, 0), (2, 2, 0)},
+}
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("gap", [0.10, 0.15])
+def test_slither_is_reference_sweep(seed: int, gap: float) -> None:
+    from bsmaker.playability.geometry import angle_diff, direction_angle
+
+    notes = _alternating_run(16, gap=gap, start_hand=0)
+    out = rewrite_run(notes, 0, len(notes), SLITHER, random.Random(seed))
     assert len(out) == len(notes)
-    last_dir: dict[int, int] = {}
-    last_x: dict[int, int] = {}
-    prev_left_x: int | None = None
+    assert [n.time_s for n in out] == [n.time_s for n in notes]
+    last: dict[int, Note] = {}
     for n in out:
-        assert n.y == 0
-        assert n.direction in (0, 1)
-        if n.color in last_dir:
-            assert n.direction != last_dir[n.color]
-        last_dir[n.color] = n.direction
-        if n.color == 0:
-            assert 0 <= n.x <= 2
-            prev_left_x = n.x
-        else:
-            assert 1 <= n.x <= 3
-            if prev_left_x is not None:
-                assert n.x >= prev_left_x
-        if n.color in last_x:
-            assert abs(n.x - last_x[n.color]) <= 1
-        last_x[n.color] = n.x
+        # Each hand stays on its anchor pair; up cuts never sit on the bottom row.
+        assert (n.x, n.y, n.direction) in _SWEEP_CELLS[n.color]
+        if n.direction in _UPS:
+            assert n.y >= 1
+        p = last.get(n.color)
+        if p is not None:
+            # alternating parity, every turn within 45 deg of a clean flip
+            assert (p.direction in _UPS) != (n.direction in _UPS)
+            expected = (direction_angle(p.direction) + 180.0) % 360.0
+            assert angle_diff(direction_angle(n.direction), expected) <= 45.0
+            assert max(abs(n.x - p.x), abs(n.y - p.y)) <= 2
+        last[n.color] = n
+
+
+def test_slither_mixes_sweeps_and_verticals() -> None:
+    notes = _alternating_run(16, gap=0.15, start_hand=0)
+    out = rewrite_run(notes, 0, len(notes), SLITHER, random.Random(0))
+    dirs = {n.direction for n in out}
+    assert {4, 5} <= dirs  # outward-up diagonals (UL left, UR right)
+    assert 0 in dirs  # straight ups
+
+
+def test_slither_full_height_only_with_long_gap() -> None:
+    # Same-hand gap 0.30 s (>= 0.25): vertical ups go to the top row.
+    slow = rewrite_run(_alternating_run(16, gap=0.15), 0, 16, SLITHER, random.Random(1))
+    assert {n.y for n in slow if n.direction == 0} == {2}
+    # Same-hand gap 0.20 s (< 0.25): vertical ups only one row up.
+    fast = rewrite_run(_alternating_run(16, gap=0.10), 0, 16, SLITHER, random.Random(1))
+    assert {n.y for n in fast if n.direction == 0} == {1}
 
 
 def test_slither_parity_with_previous() -> None:
@@ -287,9 +311,10 @@ def test_rotation_falls_back() -> None:
     from bsmaker.formats.tokens import encode_token
 
     notes = _alternating_run(10, gap=0.2, start_hand=0)
-    # Block L(0, 1, 4) as a rare token so ROTATION fails window_ok and falls back to SLITHER
-    bad_rot = encode_token(0, 1, 4)
-    cfg = PlayabilityConfig(rare_tokens=(frozenset({bad_rot}), frozenset()))
+    # Block R(1, 0, 6) (rotation only; the sweep never uses it) as a rare token so ROTATION
+    # fails window_ok and falls back to SLITHER
+    bad_rot = encode_token(1, 0, 6)
+    cfg = PlayabilityConfig(rare_tokens=(frozenset(), frozenset({bad_rot})))
     # Pick a seed that selects ROTATION first (rng.random() < 0.3)
     seed = next(s for s in range(100) if random.Random(s).random() < 0.3)
     # Use a two-step rng check: share=1.0 draws once (< 1.0), then template draws (< 0.3)
@@ -303,7 +328,7 @@ def test_rotation_falls_back() -> None:
         notes, share=1.0, rng=random.Random(seed), mask_cfg=cfg,
     )
     assert found == 1 and rewritten == 1 and n_rewritten == 10 and reverted == 0
-    assert all(n.y == 0 and n.direction in (0, 1) for n in out)
+    assert all((n.x, n.y, n.direction) in _SWEEP_CELLS[n.color] for n in out)
     assert final_flow_ok(notes, out, cfg)
 
 
