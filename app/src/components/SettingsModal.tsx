@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Cpu, FileText, FolderOpen, LocateFixed, RefreshCw } from "lucide-react";
+import { Cpu, FileText, FolderOpen, LocateFixed } from "lucide-react";
 import { EN } from "../i18n/en";
 import type { DevicePref, EngineInfo, Settings, UpdateStatus } from "../types";
+import { UpdateStatusCard } from "./UpdateStatusCard";
 import { Button, Modal, SegmentedControl } from "./ui/primitives";
 
 export interface SettingsModalProps {
@@ -140,6 +141,8 @@ export function SettingsModal({
           </div>
         </div>
 
+        <UpdateStatusCard status={updateStatus} appVersion={appVersion} />
+
         <div className="border-t border-zinc-800/80 pt-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="text-xs font-mono text-zinc-500">
             v{appVersion} · Engine {info?.version ?? "-"}
@@ -149,26 +152,9 @@ export function SettingsModal({
               <FileText className="h-3.5 w-3.5" />
               {EN.settings.openLogs}
             </Button>
-            {updateStatus.state === "downloaded" ? (
-              <Button size="sm" onClick={() => window.bsm.installUpdate()}>
-                {EN.settings.installUpdate}
-              </Button>
-            ) : (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => window.bsm.checkForUpdates()}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                {EN.settings.checkUpdates}
-              </Button>
-            )}
           </div>
         </div>
 
-        {updateStatus.state !== "idle" && (
-          <p className="text-xs text-zinc-400">{EN.settings.updates[updateStatus.state]}</p>
-        )}
       </div>
     </Modal>
   );

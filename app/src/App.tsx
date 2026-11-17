@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Cpu, FolderHeart, PlusCircle, Settings as SettingsIcon } from "lucide-react";
+import { Cpu, FolderHeart, PlusCircle } from "lucide-react";
 import appIcon from "./assets/icon.png";
 import { EN } from "./i18n/en";
 import { EngineForgeAnimation } from "./components/EngineForgeAnimation";
 import { FirstRun } from "./components/FirstRun";
 import { LibraryView } from "./components/LibraryView";
+import { SettingsButton } from "./components/SettingsButton";
 import { SettingsModal } from "./components/SettingsModal";
 import { Badge, Button, SegmentedControl } from "./components/ui/primitives";
 import { Wizard } from "./components/wizard/Wizard";
 import { MapViewer } from "./viewer/components/MapViewer";
+import { mergeUpdateStatus } from "./lib/updateStatus";
 import type { EngineInfo, LibraryEntry, Settings, StartupState, UpdateStatus } from "./types";
 
 type Tab = "create" | "library";
@@ -56,7 +58,7 @@ export function App() {
       }
     }).catch(() => {});
     const unsubUpdate = window.bsm?.onUpdateStatus?.((st) => {
-      setUpdateStatus(st);
+      setUpdateStatus((prev) => mergeUpdateStatus(prev, st));
     });
     return () => {
       active = false;
@@ -177,16 +179,10 @@ export function App() {
                   ]}
                 />
 
-                <Button
-                  variant="secondary"
-                  size="sm"
+                <SettingsButton
+                  updateState={updateStatus.state}
                   onClick={() => setSettingsOpen(true)}
-                  aria-label={EN.nav.settings}
-                  title={EN.nav.settings}
-                  className="rounded-xl px-2.5 h-8 w-8 p-0"
-                >
-                  <SettingsIcon className="h-4 w-4" />
-                </Button>
+                />
               </nav>
             </header>
 
