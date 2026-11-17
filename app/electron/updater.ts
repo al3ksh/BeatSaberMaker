@@ -43,8 +43,9 @@ export function setupUpdater(
     send({ state: "error" });
   });
 
+  // Plain check, no Windows toast: the gear dot and the in-app banner show updates.
   if (app.isPackaged && process.env.BSM_DISABLE_UPDATER !== "1") {
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    autoUpdater.checkForUpdates().catch((err) => {
       logger.warn(`Startup update check failed: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
