@@ -28,6 +28,12 @@ const SPARKS_PER_CUT = 4;
 const HALF_OFFSET = NOTE_SIZE / 4;
 const WHITE = new THREE.Color(1, 1, 1);
 
+/** Deterministic per-note pseudo-random in [0, 1): same note always breaks the same way, neighbours differ. */
+function noteRand(timeS: number, x: number, y: number, k: number): number {
+  const v = Math.sin(timeS * 12.9898 + x * 78.233 + y * 37.719 + k * 4.581) * 43758.5453;
+  return v - Math.floor(v);
+}
+
 const LEFT_COLOR = new THREE.Color("#dc142c");
 const RIGHT_COLOR = new THREE.Color("#1864f5");
 const LEFT_GLOW = new THREE.Color(2.4, 0.26, 0.42);
@@ -180,27 +186,50 @@ export function NotesLayer({
         continue;
       }
 
-      // Hit cut effect (~0.2 s) strictly at or forward of z = 0 (never behind camera)
+      // Hit cut effect: short, and every note breaks a little differently
       const p = cutEffectProgress(note.timeS, t, CUT_EFFECT_DURATION_S);
       if (p === null) continue;
 
+      const r0 = noteRand(note.timeS, note.x, note.y, 0);
+      const r1 = noteRand(note.timeS, note.x, note.y, 1);
+      const r2 = noteRand(note.timeS, note.x, note.y, 2);
+      const r3 = noteRand(note.timeS, note.x, note.y, 3);
+      const r4 = noteRand(note.timeS, note.x, note.y, 4);
+      const r5 = noteRand(note.timeS, note.x, note.y, 5);
+
+      // Real swings are never perfectly on the arrow; dots get any angle
+      const cutRot = isDotDirection(note.direction)
+        ? r0 * Math.PI * 2
+        : rotZ + (r0 - 0.5) * 0.6;
+
       const easeOut = 1 - (1 - p) * (1 - p);
       const fadeOut = (1 - p) * (1 - p);
-      const perpX = Math.cos(rotZ);
-      const perpY = Math.sin(rotZ);
+      const perpX = Math.cos(cutRot);
+      const perpY = Math.sin(cutRot);
       const cutX = -perpY;
       const cutY = perpX;
 
-      // Two halves of the sliced note: split along the cut line, opening outward and dropping
+      // Two halves: split along the cut line, fly apart with per-note speed, tumble and drop
       if (cutHalfMesh && halfCount + 1 < MAX_CUT_HALVES) {
-        const open = 0.01 + easeOut * 0.085;
-        const fall = 0.32 * p * p;
-        const shrink = Math.max(0.05, 1 - p * 0.35 - p * p * 0.5);
-        const zCut = -0.02 - easeOut * 0.12;
+        const shrink = Math.max(0.02, 1 - p * 0.2 - p * p * 0.78);
+        const fall = (0.2 + r1 * 0.3) * p * p;
+        const zCut = -0.02 - easeOut * (0.06 + r2 * 0.16);
+        // Whole-note drift along the swing direction
+        const drift = (r3 - 0.5) * 0.14 * easeOut;
         for (let side = -1; side <= 1; side += 2) {
+          const rs = side < 0 ? r4 : r5;
+          const open = 0.01 + easeOut * (0.05 + rs * 0.1);
           const off = (HALF_OFFSET + open) * side;
-          dummy.position.set(wx + perpX * off, wy + perpY * off - fall, zCut);
-          dummy.rotation.set(0, side * 0.55 * easeOut, rotZ - side * 0.22 * easeOut);
+          dummy.position.set(
+            wx + perpX * off + cutX * drift,
+            wy + perpY * off + cutY * drift - fall,
+            zCut,
+          );
+          dummy.rotation.set(
+            (rs - 0.5) * 2.2 * easeOut,
+            side * (0.25 + rs * 0.7) * easeOut,
+            cutRot - side * (0.1 + r1 * 0.3) * easeOut,
+          );
           dummy.scale.setScalar(shrink);
           dummy.updateMatrix();
           cutHalfMesh.setMatrixAt(halfCount, dummy.matrix);
@@ -213,7 +242,7 @@ export function NotesLayer({
             faceLocal.setPosition(-side * (HALF_OFFSET + 0.003), 0, 0);
             faceWorld.multiplyMatrices(dummy.matrix, faceLocal);
             cutFaceMesh.setMatrixAt(faceCount, faceWorld);
-            tmpColor.copy(glowColor).lerp(WHITE, 0.25 * (1 - p)).multiplyScalar(0.35 + 0.9 * (1 - p));
+            tmpColor.copy(glowColor).lerp(WHITE, 0.25 * (1 - p)).multiplyScalar(0.2 + 0.95 * fadeOut);
             cutFaceMesh.setColorAt(faceCount, tmpColor);
             faceCount += 1;
           }
@@ -223,32 +252,33 @@ export function NotesLayer({
       if (cutFlashMesh && flashCount + 1 < MAX_CUT_FLASHES) {
         // Thin slash streak along the cut direction
         dummy.position.set(wx, wy, -0.01);
-        dummy.rotation.set(0, 0, rotZ);
-        dummy.scale.set(0.16 * (1 - p * 0.6), 0.9 + easeOut * 1.5, 1);
+        dummy.rotation.set(0, 0, cutRot);
+        dummy.scale.set(0.14 * (1 - p * 0.6), 0.8 + easeOut * (1.1 + r2 * 0.8), 1);
         dummy.updateMatrix();
         cutFlashMesh.setMatrixAt(flashCount, dummy.matrix);
-        tmpColor.copy(glowColor).lerp(WHITE, 0.35).multiplyScalar(fadeOut * 1.25);
+        tmpColor.copy(glowColor).lerp(WHITE, 0.35).multiplyScalar(fadeOut * 1.2);
         cutFlashMesh.setColorAt(flashCount, tmpColor);
         flashCount += 1;
 
         // Small soft bloom at the impact point
-        dummy.scale.setScalar(0.55 + easeOut * 0.45);
+        dummy.scale.setScalar(0.5 + easeOut * 0.4);
         dummy.updateMatrix();
         cutFlashMesh.setMatrixAt(flashCount, dummy.matrix);
-        tmpColor.copy(glowColor).multiplyScalar(fadeOut * 0.4);
+        tmpColor.copy(glowColor).multiplyScalar(fadeOut * 0.35);
         cutFlashMesh.setColorAt(flashCount, tmpColor);
         flashCount += 1;
       }
 
       if (cutSparkMesh && sparkCount + SPARKS_PER_CUT <= MAX_CUT_SPARKS) {
-        // A few sparks thrown out sideways from the cut line
+        // A few sparks thrown out sideways from the cut line, scattered per note
         for (let k = 0; k < SPARKS_PER_CUT; k += 1) {
+          const rk = noteRand(note.timeS, note.x, note.y, 10 + k);
           const side = k % 2 === 0 ? 1 : -1;
-          const along = k < 2 ? 0.55 : -0.25;
+          const along = (rk - 0.35) * 1.4;
           const dx = perpX * side + cutX * along;
           const dy = perpY * side + cutY * along;
           const len = Math.hypot(dx, dy);
-          const dist = 0.1 + easeOut * (0.34 + k * 0.04);
+          const dist = 0.08 + easeOut * (0.22 + rk * 0.26);
           dummy.position.set(
             wx + (dx / len) * dist,
             wy + (dy / len) * dist - 0.12 * p * p,

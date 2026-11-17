@@ -9,6 +9,7 @@ import {
   gridX,
   type CameraPreset,
 } from "../geometry";
+import { PlayerAvatar } from "./PlayerAvatar";
 
 const TRACK_WIDTH = LANE_WIDTH * 4 + 0.28; // 2.68m
 const TRACK_LENGTH = 90;
@@ -222,47 +223,9 @@ export function TrackEnvironment({ cameraPreset }: TrackEnvironmentProps) {
         </mesh>
       </group>
 
-      {/* Stylized player silhouette + left/right saber stubs (visible in Top/Side or pulled-back Orbit) */}
+      {/* Floating VR avatar holding both sabers (hidden only at first-person head height) */}
       <group ref={playerBodyGroupRef} position={[0, 0, PLAYER_MARKER_Z]} visible={cameraPreset !== "player"}>
-        {/* Torso */}
-        <mesh position={[0, 1.15, 0]}>
-          <capsuleGeometry args={[0.18, 0.36, 6, 12]} />
-          <meshStandardMaterial color="#171d2c" roughness={0.4} metalness={0.65} />
-        </mesh>
-        {/* Head */}
-        <mesh position={[0, 1.62, 0]}>
-          <sphereGeometry args={[0.14, 16, 12]} />
-          <meshStandardMaterial color="#1f273b" roughness={0.35} metalness={0.7} />
-        </mesh>
-        {/* VR headset visor facing -Z */}
-        <mesh position={[0, 1.63, -0.11]}>
-          <boxGeometry args={[0.2, 0.08, 0.07]} />
-          <meshBasicMaterial color={[0.45, 1.1, 2.0]} toneMapped={false} />
-        </mesh>
-
-        {/* Left Red Saber (hilt + glowing blade stub angled toward hit plane) */}
-        <group position={[-0.36, 1.08, -0.18]} rotation={[Math.PI * 0.42, 0, 0.14]}>
-          <mesh position={[0, -0.09, 0]}>
-            <cylinderGeometry args={[0.018, 0.018, 0.18, 10]} />
-            <meshStandardMaterial color="#1e293b" roughness={0.3} metalness={0.9} />
-          </mesh>
-          <mesh position={[0, 0.28, 0]}>
-            <cylinderGeometry args={[0.014, 0.016, 0.56, 10]} />
-            <meshBasicMaterial color={[2.4, 0.25, 0.4]} toneMapped={false} />
-          </mesh>
-        </group>
-
-        {/* Right Blue Saber (hilt + glowing blade stub angled toward hit plane) */}
-        <group position={[0.36, 1.08, -0.18]} rotation={[Math.PI * 0.42, 0, -0.14]}>
-          <mesh position={[0, -0.09, 0]}>
-            <cylinderGeometry args={[0.018, 0.018, 0.18, 10]} />
-            <meshStandardMaterial color="#1e293b" roughness={0.3} metalness={0.9} />
-          </mesh>
-          <mesh position={[0, 0.28, 0]}>
-            <cylinderGeometry args={[0.014, 0.016, 0.56, 10]} />
-            <meshBasicMaterial color={[0.26, 1.05, 2.6]} toneMapped={false} />
-          </mesh>
-        </group>
+        <PlayerAvatar />
       </group>
 
       {/* Flanking segmented matte deck panels with dim inner-edge accent strips */}

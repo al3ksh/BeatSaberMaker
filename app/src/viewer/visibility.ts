@@ -1,4 +1,4 @@
-export const CUT_EFFECT_DURATION_S = 0.3;
+export const CUT_EFFECT_DURATION_S = 0.22;
 
 /** Notes & bombs appear during [timeS - hjd, timeS) and vanish at exact hit time b. */
 export function isHitObjectVisible(

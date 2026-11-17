@@ -355,6 +355,7 @@ export function LibraryView({
                             variant="primary"
                             size="sm"
                             onClick={() => onPreview(entry.folder)}
+                            className="whitespace-nowrap gap-1.5 px-2.5"
                           >
                             <Eye className="h-3.5 w-3.5" />
                             {EN.library.preview}
@@ -368,6 +369,7 @@ export function LibraryView({
                             else onRegenerate(entry);
                           }}
                           title={EN.library.regenerateHint}
+                          className="whitespace-nowrap gap-1.5 px-2.5"
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
                           {EN.library.regenerate}
@@ -376,6 +378,7 @@ export function LibraryView({
                           variant="secondary"
                           size="sm"
                           onClick={() => handleExport(entry)}
+                          className="whitespace-nowrap gap-1.5 px-2.5"
                         >
                           <Archive className="h-3.5 w-3.5" />
                           {EN.library.exportZip}
