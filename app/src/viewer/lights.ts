@@ -41,9 +41,9 @@ export interface LightTimeline {
 
 const RGB_MAP: Record<LightColorKind, [number, number, number]> = {
   off: [0, 0, 0],
-  blue: [0.23, 0.51, 0.96],
-  red: [0.94, 0.27, 0.27],
-  white: [0.97, 0.98, 1.0],
+  blue: [0.16, 0.56, 1.0],
+  red: [1.0, 0.14, 0.24],
+  white: [0.95, 0.98, 1.0],
 };
 
 function decodeValue(value: number): {

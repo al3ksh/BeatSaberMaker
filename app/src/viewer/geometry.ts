@@ -1,8 +1,9 @@
 export const LANE_WIDTH = 0.6;
 export const ROW_HEIGHT = 0.55;
 export const BASE_Y = 0.8;
-export const NOTE_SIZE = 0.44;
-export const BOMB_RADIUS = 0.21;
+export const NOTE_SIZE = 0.42;
+export const BOMB_RADIUS = 0.2;
+export const PLAYER_MARKER_Z = 1.15;
 
 export type CameraPreset = "player" | "side" | "top";
 
@@ -13,9 +14,9 @@ export interface CameraPresetConfig {
 }
 
 export const CAMERA_PRESETS: Record<CameraPreset, CameraPresetConfig> = {
-  player: { position: [0, 1.7, 2.0], target: [0, 1.35, -8], fov: 62 },
-  side: { position: [9.5, 2.3, -4.5], target: [0, 1.35, -5.5], fov: 50 },
-  top: { position: [0, 12.5, -4.2], target: [0, 1.1, -6.5], fov: 52 },
+  player: { position: [0, 1.72, 2.55], target: [0, 1.35, -10], fov: 68 },
+  side: { position: [11.2, 2.15, -5.2], target: [0, 1.35, -5.2], fov: 50 },
+  top: { position: [0, 18.0, -3.0], target: [0, 1.0, -5.2], fov: 56 },
 };
 
 const DIRECTION_ANGLES_RAD: Record<number, number> = {

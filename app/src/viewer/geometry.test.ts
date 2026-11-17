@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import * as THREE from "three";
 import {
+  CAMERA_PRESETS,
+  PLAYER_MARKER_Z,
   cutDirectionAngleRad,
   cutDirectionVector,
   gridX,
@@ -50,5 +53,37 @@ describe("viewer geometry", () => {
     expect(crouch.centerX).toBeCloseTo(0.0, 6);
     expect(crouch.width).toBeCloseTo(1.2, 6);
     expect(crouch.centerY - crouch.height / 2).toBeCloseTo(1.65, 6);
+  });
+
+  it("frames both the player marker and hit plane in Top and Side camera presets", () => {
+    const projectNdc = (presetName: "top" | "side", point: [number, number, number]) => {
+      const cfg = CAMERA_PRESETS[presetName];
+      const cam = new THREE.PerspectiveCamera(cfg.fov, 16 / 9, 0.1, 140);
+      cam.position.set(...cfg.position);
+      cam.lookAt(...cfg.target);
+      cam.updateMatrixWorld();
+      cam.updateProjectionMatrix();
+      return new THREE.Vector3(...point).project(cam);
+    };
+
+    // Top view: player marker near bottom of frame (y < -0.5) and inside [-1, 1], hit plane above it, track forward (-Z) higher
+    const topPlayer = projectNdc("top", [0, 0.9, PLAYER_MARKER_Z]);
+    const topHit = projectNdc("top", [0, 0.9, 0]);
+    const topAhead = projectNdc("top", [0, 0.9, -10]);
+    expect(topPlayer.y).toBeGreaterThan(-0.92);
+    expect(topPlayer.y).toBeLessThan(-0.4);
+    expect(topHit.y).toBeGreaterThan(topPlayer.y);
+    expect(topAhead.y).toBeGreaterThan(topHit.y);
+    expect(topAhead.y).toBeLessThan(0.95);
+
+    // Side view: player marker and hit plane cleanly inside left side of frame, track extends right
+    const sidePlayer = projectNdc("side", [0, 1.2, PLAYER_MARKER_Z]);
+    const sideHit = projectNdc("side", [0, 1.2, 0]);
+    const sideAhead = projectNdc("side", [0, 1.2, -10]);
+    expect(sidePlayer.x).toBeGreaterThan(-0.92);
+    expect(sidePlayer.x).toBeLessThan(-0.3);
+    expect(sideHit.x).toBeGreaterThan(sidePlayer.x);
+    expect(sideAhead.x).toBeGreaterThan(sideHit.x);
+    expect(sideAhead.x).toBeLessThan(0.95);
   });
 });
