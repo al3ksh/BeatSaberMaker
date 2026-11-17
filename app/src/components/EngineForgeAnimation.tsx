@@ -267,21 +267,6 @@ export function EngineForgeAnimation() {
 
         {/* Tunnel receding into the furnace, clipped to the hearth mouth */}
         <g clipPath="url(#bsm-hearth-clip)">
-          {[0, 2].map((i) => {
-            const a = i === 0 ? HEARTH[1] : HEARTH[2];
-            const a2 = lerpPt(a, 0.12);
-            return (
-              <motion.line
-                key={i}
-                x1={a2[0]} y1={a2[1]} x2={a[0]} y2={a[1]}
-                stroke={i === 0 ? "#4f8fe0" : "#e05561"}
-                strokeWidth={0.6}
-                animate={{ opacity: [0.25, 0.5, 0.25] }}
-                transition={{ repeat: Infinity, duration: 2.4, ease: "easeInOut", delay: i * 0.6 }}
-               
-              />
-            );
-          })}
           {Array.from({ length: TUNNEL_FRAMES }).map((_, i) => (
             <motion.polygon
               key={i}
