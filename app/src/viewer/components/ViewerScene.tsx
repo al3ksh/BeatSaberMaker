@@ -8,6 +8,7 @@ import { TrackEnvironment } from "./TrackEnvironment";
 import { NotesLayer } from "./NotesLayer";
 import { WallsAndBombsLayer } from "./WallsAndBombsLayer";
 import { ArcsAndChainsLayer } from "./ArcsAndChainsLayer";
+import { DefaultEnvironmentLights } from "./DefaultEnvironmentLights";
 
 function CameraRig({ preset }: { preset: CameraPreset }) {
   const { camera } = useThree();
@@ -73,6 +74,7 @@ export function ViewerScene({
       <directionalLight position={[-5, 6, -4]} intensity={0.45} color="#93c5fd" />
 
       <CameraRig preset={cameraPreset} />
+      <DefaultEnvironmentLights lightEvents={difficulty.lightEvents} getTimeS={getTimeS} />
       <TrackEnvironment />
       <NotesLayer
         notes={difficulty.notes}
