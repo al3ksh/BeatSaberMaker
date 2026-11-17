@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { app, BrowserWindow, Menu } from "electron";
 import { createDefaultResolveLaunch, EngineManager } from "./engineManager";
-import { defaultManifestUrl, EnginePackInstaller, resolveExpectedEngineVersion } from "./enginePack";
+import { defaultManifestUrl, EnginePackInstaller, readEngineVersionInfo } from "./enginePack";
 import { registerIpcHandlers } from "./ipc";
 import { LibraryStore } from "./library";
 import { createLogger } from "./logger";
@@ -92,12 +92,13 @@ if (gotLock) {
       },
     });
 
-    const expectedEngineVersion = resolveExpectedEngineVersion(app.getAppPath());
+    const engineInfo = readEngineVersionInfo(app.getAppPath());
+    const expectedEngineVersion = engineInfo.engineVersion;
     const enginePack = new EnginePackInstaller({
       engineDir: path.join(userDataDir, "engine"),
       downloadDir: path.join(userDataDir, "engine-downloads"),
       expectedVersion: expectedEngineVersion,
-      manifestUrl: defaultManifestUrl(app.getVersion()),
+      manifestUrl: defaultManifestUrl(app.getVersion(), engineInfo.releaseTag),
     });
     const updater = setupUpdater(() => mainWindow, logger);
 

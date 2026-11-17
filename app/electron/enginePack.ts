@@ -25,7 +25,12 @@ export interface EnginePackInstallerOptions {
   manifestUrl: string;
 }
 
-export function resolveExpectedEngineVersion(appPath: string): string {
+export interface EngineVersionInfo {
+  engineVersion: string;
+  releaseTag?: string;
+}
+
+export function readEngineVersionInfo(appPath: string): EngineVersionInfo {
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, "engine-version.json") : "",
     path.join(appPath, "engine-version.json"),
@@ -33,22 +38,32 @@ export function resolveExpectedEngineVersion(appPath: string): string {
   ].filter(Boolean);
   for (const cand of candidates) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(cand, "utf8")) as { engineVersion?: string };
+      const parsed = JSON.parse(fs.readFileSync(cand, "utf8")) as {
+        engineVersion?: string;
+        releaseTag?: string;
+      };
       if (typeof parsed.engineVersion === "string" && parsed.engineVersion) {
-        return parsed.engineVersion;
+        const releaseTag =
+          typeof parsed.releaseTag === "string" && parsed.releaseTag ? parsed.releaseTag : undefined;
+        return { engineVersion: parsed.engineVersion, releaseTag };
       }
     } catch {
       // Try next candidate.
     }
   }
-  return "1";
+  return { engineVersion: "1" };
 }
 
-export function defaultManifestUrl(appVersion: string): string {
+export function resolveExpectedEngineVersion(appPath: string): string {
+  return readEngineVersionInfo(appPath).engineVersion;
+}
+
+export function defaultManifestUrl(appVersion: string, engineReleaseTag?: string): string {
   if (process.env.BSM_ENGINE_MANIFEST_URL) {
     return process.env.BSM_ENGINE_MANIFEST_URL;
   }
-  const tag = appVersion.startsWith("v") ? appVersion : `v${appVersion}`;
+  const raw = engineReleaseTag || appVersion;
+  const tag = raw.startsWith("v") ? raw : `v${raw}`;
   return `https://github.com/al3ksh/BeatSaberMaker/releases/download/${tag}/engine-pack-manifest.json`;
 }
 

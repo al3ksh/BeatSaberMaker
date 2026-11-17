@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { EnginePackInstaller } from "./enginePack";
+import { defaultManifestUrl, EnginePackInstaller, readEngineVersionInfo } from "./enginePack";
 
 function sha256(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -141,5 +141,34 @@ describe("EnginePackInstaller", () => {
     } finally {
       srv.close();
     }
+  });
+});
+
+describe("engine release tag", () => {
+  const base = "https://github.com/al3ksh/BeatSaberMaker/releases/download";
+  it("uses the engine tag when present", () => {
+    delete process.env.BSM_ENGINE_MANIFEST_URL;
+    expect(defaultManifestUrl("0.2.0", "v0.1.0")).toBe(`${base}/v0.1.0/engine-pack-manifest.json`);
+    expect(defaultManifestUrl("0.2.0", "0.1.0")).toBe(`${base}/v0.1.0/engine-pack-manifest.json`);
+  });
+  it("falls back to the app version", () => {
+    delete process.env.BSM_ENGINE_MANIFEST_URL;
+    expect(defaultManifestUrl("0.2.0")).toBe(`${base}/v0.2.0/engine-pack-manifest.json`);
+  });
+  it("env override wins", () => {
+    process.env.BSM_ENGINE_MANIFEST_URL = "http://x/m.json";
+    try {
+      expect(defaultManifestUrl("0.2.0", "v0.1.0")).toBe("http://x/m.json");
+    } finally {
+      delete process.env.BSM_ENGINE_MANIFEST_URL;
+    }
+  });
+  it("reads releaseTag from engine-version.json", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bsm-ev-"));
+    await fs.writeFile(path.join(dir, "engine-version.json"), '{"engineVersion":"3","releaseTag":"v0.1.0"}');
+    expect(readEngineVersionInfo(dir)).toEqual({ engineVersion: "3", releaseTag: "v0.1.0" });
+    await fs.writeFile(path.join(dir, "engine-version.json"), '{"engineVersion":"3"}');
+    expect(readEngineVersionInfo(dir).releaseTag).toBeUndefined();
+    await fs.rm(dir, { recursive: true, force: true });
   });
 });

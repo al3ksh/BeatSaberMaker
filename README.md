@@ -144,6 +144,7 @@ npx electron-builder --win --publish never
 - `fetch_tools.py` downloads pinned, hash-checked ffmpeg (LGPL) and yt-dlp.
 - `slim_checkpoints.py` prepares the trained checkpoints for shipping.
 - `build_engine_pack.py` freezes the engine with PyInstaller, splits it into parts small enough for a release, and writes a manifest.
+- When the engine changes, bump `engineVersion` and set `releaseTag` in `app/engine-version.json` to the release that will carry the new pack. App-only releases upload just the installer, blockmap and latest.yml.
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) runs the whole release pipeline. Versions 0.1.0 and 0.1.1 were built locally with the same steps.
 
