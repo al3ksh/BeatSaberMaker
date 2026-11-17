@@ -150,7 +150,7 @@
 **Files:**
 - Create: `.superpowers/sdd/2026-11-17-flow-layer/e2e.md` (results; git-ignored scratch)
 
-- [ ] **Step 1:** Find the GHOST audio: the `song.egg` inside `C:\Program Files (x86)\Steam\steamapps\common\Beat Saber\Beat Saber_Data\CustomLevels\BSM - Camellia - GHOST (from Cyphisonia E.P.) [nps 7.5, tech]`. Copy it to `.superpowers/sdd/2026-11-17-flow-layer/ghost.ogg` first, because the generator overwrites that folder.
+- [ ] **Step 1:** Find the GHOST audio: the `song.egg` inside `C:\Program Files (x86)\Steam\steamapps\common\Beat Saber\Beat Saber_Data\CustomLevels\BSM - Camellia - GHOST (from Cyphisonia E.P.) [nps 7.5, tech]`. Copy it to `.superpowers/sdd/2026-11-17-flow-layer/Camellia - GHOST (from Cyphisonia E.P.).ogg` first, because the generator overwrites that folder and the map title comes from the file name.
 - [ ] **Step 2:** Run `BSM_MUTE_AUDIO=1 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 .venv/Scripts/python -I -X utf8 -m bsmaker generate ".superpowers/sdd/2026-11-17-flow-layer/Camellia - GHOST (from Cyphisonia E.P.).ogg" --nps 7.5 --style tech --seed 0 --overwrite`. Expected: it writes the folder and prints a `flow ExpertPlus:` line.
 - [ ] **Step 3:** From `.superpowers/scratch`, run `../../.venv/Scripts/python -I -X utf8 compare_tech.py "TECH75=<Windows path to the new ExpertPlusStandard.dat>@109.999"`. Use a Windows-style path; the comma in the folder name breaks MSYS path conversion.
   - Expected: `dots` 6–15 and `dots_as_extension` ≥ 70.
