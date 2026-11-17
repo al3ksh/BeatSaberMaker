@@ -149,7 +149,15 @@ test.describe("3D Map Viewer E2E", () => {
       // YouTube-style ±5s arrow seek + accumulation
       await page.keyboard.press("ArrowRight");
       await expect(page.getByTestId("viewer-seek-overlay")).toContainText("5 seconds »");
-      await page.keyboard.press("ArrowRight");
+      // Accumulation needs the second press inside the 0.6 s window. On a slow CI runner two
+      // separate key presses can land further apart, so let the overlay expire and then fire
+      // both presses in one tick.
+      await expect(page.getByTestId("viewer-seek-overlay")).toBeHidden();
+      await page.evaluate(() => {
+        for (let i = 0; i < 2; i++) {
+          window.dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowRight", key: "ArrowRight" }));
+        }
+      });
       await expect(page.getByTestId("viewer-seek-overlay")).toContainText("10 seconds »");
       await page.keyboard.press("ArrowLeft");
       await expect(page.getByTestId("viewer-seek-overlay")).toContainText("« 5 seconds");
