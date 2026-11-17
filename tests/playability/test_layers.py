@@ -38,6 +38,18 @@ def test_wall_cells_clipped():
     assert wall_cells(wall(0, 1, w=0)) == set()
 
 
+def test_hanging_wall_also_blocks_row_below_its_bottom():
+    # a hanging top wall (x, y=2, h=3) visibly clips a note cube in the middle row below it
+    hang = wall(1.0, 1.0, x=3, y=2, w=1, h=3)
+    assert wall_cells(hang) == {(3, 2), (3, 1)}
+    assert not wall_ok(hang, [note(1.5, x=3, y=1)])
+    assert wall_ok(hang, [note(1.5, x=3, y=0)])      # bottom row stays free (humans use it)
+    assert wall_ok(hang, [note(1.5, x=2, y=1)])      # other lane
+    # full-height / floor walls are unchanged
+    assert wall_cells(wall(0, 1, x=1, y=0, w=1, h=5)) == {(1, y) for y in range(3)}
+    assert wall_cells(wall(0, 1, x=1, y=0, w=1, h=1)) == {(1, 0)}
+
+
 def test_wall_margin_boundaries():
     w = wall(1.0, 1.0)  # 1.0 s to 2.0 s, margin 0.1 s on both sides
     assert not wall_ok(w, [note(0.95)])

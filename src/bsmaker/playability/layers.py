@@ -59,10 +59,20 @@ def _in_grid(x: int, y: int) -> bool:
 
 
 def wall_cells(ob: Obstacle) -> set[Cell]:
-    """Grid cells (x 0-3, y 0-2) covered by the wall; cells outside the grid are dropped."""
-    return {(x, y)
-            for x in range(max(ob.x, 0), min(ob.x + ob.w, 4))
-            for y in range(max(ob.y, 0), min(ob.y + ob.h, 3))}
+    """Grid cells (x 0-3, y 0-2) blocked by the wall; cells outside the grid are dropped.
+
+    A hanging wall (bottom y >= 1, reaching the top row) also blocks the row directly below
+    its bottom edge: a note cube is taller than the gap between rows and visibly clips into
+    the wall. Row y-2 is left free (human maps use it freely: the bottom row under a y=2 wall
+    is used about 1.6x as often as chance)."""
+    y0 = max(ob.y, 0)
+    y1 = min(ob.y + ob.h, 3)
+    cells = {(x, y)
+             for x in range(max(ob.x, 0), min(ob.x + ob.w, 4))
+             for y in range(y0, y1)}
+    if cells and 1 <= ob.y <= 2 and ob.y + ob.h >= 3:
+        cells |= {(x, ob.y - 1) for x, _ in cells}
+    return cells
 
 
 def wall_ok(ob: Obstacle, notes: "Sequence[Note] | NoteIndex") -> bool:
