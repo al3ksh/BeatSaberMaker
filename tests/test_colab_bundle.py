@@ -478,12 +478,22 @@ def test_vm_train_layer_models_dry_run(model: str, tmp_path: Path, capsys) -> No
     assert capsys.readouterr().out.splitlines()[0] == expected
 
 
+def _usable_bash() -> str:
+    """Path to a real bash, or skip. On Windows a bare "bash" can be the WSL launcher in System32."""
+    import shutil
+    import sys
+    bash = shutil.which("bash")
+    if bash is None or sys.platform == "win32" and "system32" in bash.lower():
+        pytest.skip("no usable bash on this machine")
+    return bash
+
+
 def test_run_queue_script_syntax() -> None:
     script = ROOT / "scripts" / "colab" / "run_queue.sh"
     assert script.is_file()
-    subprocess.run(["bash", "-n", str(script)], check=True)
     text = script.read_text("utf-8")
     assert "flush_and_unmount" in text and "RESULTS" in text and "colab" in text
+    subprocess.run([_usable_bash(), "-n", str(script)], check=True)
 
 
 def test_run_queue_script_has_lf_endings() -> None:
@@ -491,11 +501,7 @@ def test_run_queue_script_has_lf_endings() -> None:
 
 
 def _run_queue(tmp_path: Path, queue: str, code: str, results: str | None = None):
-    import shutil
-    import sys
-    bash = shutil.which("bash")
-    if bash is None or sys.platform == "win32" and "system32" in bash.lower():
-        pytest.skip("no usable bash on this machine")
+    bash = _usable_bash()
     home = tmp_path / "bsm home"
     home.mkdir()
     (home / "queue.txt").write_text(queue, newline="\n")
