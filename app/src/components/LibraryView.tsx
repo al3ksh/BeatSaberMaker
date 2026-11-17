@@ -396,11 +396,11 @@ export function LibraryView({
                           if (e.shiftKey) void handleConfirmDelete(entry.id);
                           else setConfirmDeleteId(entry.id);
                         }}
-                        title={EN.library.deleteHint}
+                        title={`${EN.library.delete} (${EN.library.deleteHint})`}
+                        aria-label={EN.library.delete}
                         className="text-red-400 hover:text-red-300"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                        {EN.library.delete}
                       </Button>
                     </div>
                   )}

@@ -666,20 +666,26 @@ export function MapViewer({ folder, onClose, onSwitchFolder }: MapViewerProps) {
             {/* YouTube-style Space Play/Pause Centered Flash */}
             <AnimatePresence>
               {playFlash && (
+                // Centering lives on the wrapper: framer-motion's `scale` writes `transform` and
+                // would wipe out Tailwind's translate-based centering on the scaled element.
                 <motion.div
                   key={playFlash.seq}
-                  data-testid="viewer-play-flash"
-                  initial={{ opacity: 0.95, scale: 0.85 }}
-                  animate={{ opacity: 0, scale: 1.3 }}
                   exit={{ opacity: 0 }}
-                  transition={{ duration: 0.45, ease: "easeOut" }}
-                  className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-16 w-16 rounded-full bg-black/60 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-2xl text-white"
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center"
                 >
-                  {playFlash.icon === "play" ? (
-                    <Play className="h-7 w-7 fill-white translate-x-0.5" />
-                  ) : (
-                    <Pause className="h-7 w-7 fill-white" />
-                  )}
+                  <motion.div
+                    data-testid="viewer-play-flash"
+                    initial={{ opacity: 0.95, scale: 0.85 }}
+                    animate={{ opacity: 0, scale: 1.3 }}
+                    transition={{ duration: 0.45, ease: "easeOut" }}
+                    className="h-16 w-16 rounded-full bg-black/60 border border-white/20 backdrop-blur-md flex items-center justify-center shadow-2xl text-white"
+                  >
+                    {playFlash.icon === "play" ? (
+                      <Play className="h-7 w-7 fill-white translate-x-0.5" />
+                    ) : (
+                      <Pause className="h-7 w-7 fill-white" />
+                    )}
+                  </motion.div>
                 </motion.div>
               )}
             </AnimatePresence>
