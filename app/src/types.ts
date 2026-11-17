@@ -139,6 +139,29 @@ export interface StartupState {
   info: EngineInfo | null;
 }
 
+export interface ViewerDifficultyRaw {
+  characteristic: string;
+  rank: string;
+  difficultyRank: number;
+  filename: string;
+  njs: number;
+  njsOffset: number;
+  raw: Record<string, unknown>;
+}
+
+export interface ViewerMapPackage {
+  folder: string;
+  title: string;
+  artist: string;
+  mapper: string;
+  bpm: number;
+  songTimeOffset: number;
+  environment: string;
+  coverDataUrl: string | null;
+  audioBytes: Uint8Array | null;
+  difficulties: ViewerDifficultyRaw[];
+}
+
 export interface BsmApi {
   getStartupState(): Promise<StartupState>;
   installEnginePack(): Promise<void>;
@@ -162,6 +185,7 @@ export interface BsmApi {
   exportMapZip(folder: string, suggestedName?: string): Promise<string>;
   checkForUpdates(): Promise<void>;
   installUpdate(): Promise<void>;
+  readMapForViewer(folder: string): Promise<ViewerMapPackage>;
   onProgress(cb: (ev: ProgressEvent) => void): () => void;
   onEnginePackProgress(cb: (ev: EnginePackProgress) => void): () => void;
   onUpdateStatus(cb: (ev: UpdateStatus) => void): () => void;

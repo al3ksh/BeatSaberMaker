@@ -138,3 +138,26 @@ export interface StartupState {
   settings: Settings;
   info: EngineInfo | null;
 }
+
+export interface ViewerDifficultyRaw {
+  characteristic: string;
+  rank: string;
+  difficultyRank: number;
+  filename: string;
+  njs: number;
+  njsOffset: number;
+  raw: Record<string, unknown>;
+}
+
+export interface ViewerMapPackage {
+  folder: string;
+  title: string;
+  artist: string;
+  mapper: string;
+  bpm: number;
+  songTimeOffset: number;
+  environment: string;
+  coverDataUrl: string | null;
+  audioBytes: Uint8Array | null;
+  difficulties: ViewerDifficultyRaw[];
+}

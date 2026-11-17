@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("bsm", {
     ipcRenderer.invoke("bsm:exportMapZip", folder, suggestedName),
   checkForUpdates: () => ipcRenderer.invoke("bsm:checkForUpdates"),
   installUpdate: () => ipcRenderer.invoke("bsm:installUpdate"),
+  readMapForViewer: (folder: string) => ipcRenderer.invoke("bsm:readMapForViewer", folder),
   onProgress: (cb: (ev: ProgressEvent) => void) => subscribe<ProgressEvent>("bsm:progress", cb),
   onEnginePackProgress: (cb: (ev: EnginePackProgress) => void) =>
     subscribe<EnginePackProgress>("bsm:enginePackProgress", cb),

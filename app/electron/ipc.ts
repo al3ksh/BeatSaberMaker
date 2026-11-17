@@ -7,6 +7,7 @@ import { EngineError, EngineManager } from "./engineManager";
 import type { EnginePackInstaller } from "./enginePack";
 import type { LibraryStore } from "./library";
 import type { AppLogger } from "./logger";
+import { readMapFolderForViewer } from "./mapReader";
 import type { SettingsStore } from "./store";
 import type {
   EngineInfo,
@@ -441,6 +442,15 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:installUpdate", async (): Promise<void> => {
     if (deps.installUpdate) {
       deps.installUpdate();
+    }
+  });
+
+  ipcMain.handle("bsm:readMapForViewer", async (_ev, folder: string) => {
+    try {
+      return await readMapFolderForViewer(folder);
+    } catch (err) {
+      logger.warn(`readMapForViewer failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error("BSM_CODE:not_found");
     }
   });
 }
