@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, Menu } from "electron";
+import { app, BrowserWindow, Menu, nativeTheme } from "electron";
 import { createDefaultResolveLaunch, EngineManager } from "./engineManager";
 import { defaultManifestUrl, EnginePackInstaller, readEngineVersionInfo } from "./enginePack";
 import { registerIpcHandlers } from "./ipc";
@@ -10,6 +10,8 @@ import { SettingsStore } from "./store";
 import { setupUpdater } from "./updater";
 
 app.setName("BeatSaberMaker");
+// Dark title bar on Windows even when the system uses the light theme.
+nativeTheme.themeSource = "dark";
 if (process.env.BSM_USER_DATA_DIR) {
   app.setPath("userData", path.resolve(process.env.BSM_USER_DATA_DIR));
 }
@@ -33,6 +35,8 @@ function createWindow(): BrowserWindow {
     minWidth: 880,
     minHeight: 640,
     backgroundColor: "#09090b",
+    // Shown on ready-to-show so the window never paints a blank (white) frame first.
+    show: false,
     title: "BeatSaberMaker",
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
@@ -44,6 +48,12 @@ function createWindow(): BrowserWindow {
   });
 
   Menu.setApplicationMenu(null);
+
+  const reveal = () => {
+    if (!win.isDestroyed() && !win.isVisible()) win.show();
+  };
+  win.once("ready-to-show", reveal);
+  setTimeout(reveal, 3000); // Fallback if the first paint never comes.
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
