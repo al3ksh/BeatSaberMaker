@@ -348,8 +348,8 @@ export function LibraryView({
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-800/80">
-                      <div className="flex flex-wrap gap-1.5">
+                    <div className="flex items-center gap-1.5 pt-2 border-t border-zinc-800/80">
+                      <div className="flex min-w-0 items-center gap-1.5">
                         {onPreview && (
                           <Button
                             variant="primary"
@@ -385,6 +385,8 @@ export function LibraryView({
                           size="sm"
                           onClick={() => window.bsm.openPath(entry.folder)}
                           aria-label={EN.library.openFolder}
+                          title={EN.library.openFolder}
+                          className="px-2"
                         >
                           <FolderOpen className="h-3.5 w-3.5" />
                         </Button>
@@ -398,7 +400,7 @@ export function LibraryView({
                         }}
                         title={`${EN.library.delete} (${EN.library.deleteHint})`}
                         aria-label={EN.library.delete}
-                        className="text-red-400 hover:text-red-300"
+                        className="ml-auto shrink-0 px-2 text-red-400 hover:text-red-300"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
