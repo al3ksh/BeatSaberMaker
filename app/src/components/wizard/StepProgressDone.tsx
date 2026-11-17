@@ -192,6 +192,11 @@ export function StepProgressDone({
     return null;
   }
 
+  // Walls/bombs differ per difficulty; older engines only report the densest level's counts
+  const perLevelDecor =
+    result.levels.length > 1 &&
+    result.levels.every((lv) => typeof lv.n_walls === "number" && typeof lv.n_bombs === "number");
+
   const infoNotices: string[] = [];
   const hasLayerMissingWarning = result.warnings.some(
     (w) => /checkpoint|layer_stats/i.test(w),
@@ -232,40 +237,86 @@ export function StepProgressDone({
           )}
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {result.levels.map((lv) => (
-            <Badge key={lv.rank} variant={rankToBadgeVariant(lv.rank)}>
-              {RANK_LABELS_EN[lv.rank] ?? lv.rank}: {lv.n_notes} ({lv.nps.toFixed(1)} NPS)
-            </Badge>
-          ))}
-        </div>
+        {perLevelDecor ? (
+          <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 overflow-hidden">
+            <table className="w-full text-sm" data-testid="done-levels-table">
+              <thead>
+                <tr className="text-[11px] text-zinc-500 border-b border-zinc-800/80">
+                  <th className="text-left font-normal px-3 py-1.5">{EN.wizard.done.levelLabel}</th>
+                  <th className="text-right font-normal px-3 py-1.5">{EN.wizard.done.notesLabel}</th>
+                  <th className="text-right font-normal px-3 py-1.5">{EN.wizard.done.npsLabel}</th>
+                  <th className="text-right font-normal px-3 py-1.5">{EN.wizard.done.wallsLabel}</th>
+                  <th className="text-right font-normal px-3 py-1.5">{EN.wizard.done.bombsLabel}</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono text-zinc-100">
+                {result.levels.map((lv) => (
+                  <tr key={lv.rank} className="border-t border-zinc-800/50 first:border-t-0">
+                    <td className="px-3 py-1.5 font-sans">
+                      <Badge variant={rankToBadgeVariant(lv.rank)}>
+                        {RANK_LABELS_EN[lv.rank] ?? lv.rank}
+                      </Badge>
+                    </td>
+                    <td className="text-right px-3 py-1.5">{lv.n_notes}</td>
+                    <td className="text-right px-3 py-1.5">{lv.nps.toFixed(1)}</td>
+                    <td className="text-right px-3 py-1.5">{lv.n_walls}</td>
+                    <td className="text-right px-3 py-1.5">{lv.n_bombs}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {result.levels.map((lv) => (
+              <Badge key={lv.rank} variant={rankToBadgeVariant(lv.rank)}>
+                {RANK_LABELS_EN[lv.rank] ?? lv.rank}: {lv.n_notes} ({lv.nps.toFixed(1)} NPS)
+              </Badge>
+            ))}
+          </div>
+        )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+        <div
+          className={
+            perLevelDecor
+              ? "grid grid-cols-3 gap-2.5"
+              : "grid grid-cols-2 sm:grid-cols-5 gap-2.5"
+          }
+        >
           <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
             <div className="text-[11px] text-zinc-500">{EN.wizard.done.bpmLabel}</div>
             <div className="text-sm font-semibold font-mono text-zinc-100">
               {Math.round(result.bpm)}
             </div>
           </div>
-          <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
-            <div className="text-[11px] text-zinc-500">{EN.wizard.done.wallsLabel}</div>
-            <div className="text-sm font-semibold font-mono text-zinc-100">
-              {result.n_walls}
-            </div>
-          </div>
-          <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
-            <div className="text-[11px] text-zinc-500">{EN.wizard.done.bombsLabel}</div>
-            <div className="text-sm font-semibold font-mono text-zinc-100">
-              {result.n_bombs}
-            </div>
-          </div>
+          {!perLevelDecor && (
+            <>
+              <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+                <div className="text-[11px] text-zinc-500">{EN.wizard.done.wallsLabel}</div>
+                <div className="text-sm font-semibold font-mono text-zinc-100">
+                  {result.n_walls}
+                </div>
+              </div>
+              <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+                <div className="text-[11px] text-zinc-500">{EN.wizard.done.bombsLabel}</div>
+                <div className="text-sm font-semibold font-mono text-zinc-100">
+                  {result.n_bombs}
+                </div>
+              </div>
+            </>
+          )}
           <div className="rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
             <div className="text-[11px] text-zinc-500">{EN.wizard.done.lightsLabel}</div>
             <div className="text-sm font-semibold font-mono text-zinc-100">
               {result.n_lights}
             </div>
           </div>
-          <div className="col-span-2 sm:col-span-1 rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2">
+          <div
+            className={cn(
+              "rounded-xl bg-zinc-950/70 border border-zinc-800/80 px-3 py-2 min-w-0",
+              !perLevelDecor && "col-span-2 sm:col-span-1",
+            )}
+          >
             <div className="text-[11px] text-zinc-500">{EN.wizard.map.environmentLabel}</div>
             <div className="text-xs font-medium text-zinc-200 truncate mt-0.5">
               {ENVIRONMENT_LABELS_EN[result.environment] ?? result.environment}

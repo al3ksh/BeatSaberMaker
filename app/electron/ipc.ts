@@ -356,6 +356,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
             nNotes: lv.n_notes,
             nArcs: lv.n_arcs,
             nChains: lv.n_chains,
+            nWalls: lv.n_walls,
+            nBombs: lv.n_bombs,
           })),
           nWalls: result.n_walls,
           nBombs: result.n_bombs,

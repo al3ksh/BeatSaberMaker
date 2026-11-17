@@ -87,4 +87,53 @@ describe("StepProgressDone", () => {
     fireEvent.click(screen.getByRole("button", { name: /open logs/i }));
     expect(openLogs).toHaveBeenCalled();
   });
+
+  it("shows walls and bombs per difficulty when the engine reports them", () => {
+    (window as unknown as { bsm: unknown }).bsm = {};
+    const level = (rank: string, walls: number, bombs: number) => ({
+      rank,
+      target_nps: 4.0,
+      n_notes: 300,
+      nps: 4.0,
+      n_arcs: 0,
+      n_chains: 0,
+      n_walls: walls,
+      n_bombs: bombs,
+    });
+    render(
+      <StepProgressDone
+        hasDownloadStage={false}
+        status="done"
+        progress={{ stage: "writing", pct: 100 }}
+        result={{
+          folder: "C:\\CL\\BSM - Song",
+          title: "Song",
+          artist: "Artist",
+          bpm: 120,
+          grid_steady: true,
+          n_notes: 300,
+          nps: 4.0,
+          rank: "ExpertPlus",
+          levels: [level("Hard", 58, 52), level("Expert", 67, 17), level("ExpertPlus", 24, 14)],
+          n_walls: 24,
+          n_bombs: 14,
+          n_lights: 40,
+          environment: "DefaultEnvironment",
+          warnings: [],
+          used_rule_lights: false,
+          device_used: "cuda",
+        }}
+        errorCode={null}
+        onReset={() => {}}
+      />,
+    );
+    const rows = screen.getByTestId("done-levels-table").querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("58");
+    expect(rows[0].textContent).toContain("52");
+    expect(rows[1].textContent).toContain("67");
+    expect(rows[1].textContent).toContain("17");
+    // The single densest-level walls tile is gone in per-level mode
+    expect(screen.getAllByText("Walls")).toHaveLength(1);
+  });
 });

@@ -221,13 +221,15 @@ rl.on("line", (line) => {
         n_notes: 300,
         nps: 4.5,
         rank: levels[levels.length - 1],
-        levels: levels.map((rk) => ({
+        levels: levels.map((rk, i) => ({
           rank: rk,
           target_nps: 4.5,
           n_notes: 300,
           nps: 4.5,
           n_arcs: 0,
           n_chains: 0,
+          n_walls: 11 + i * 10,
+          n_bombs: 3 + i,
         })),
         n_walls: 0,
         n_bombs: 0,

@@ -60,6 +60,9 @@ export interface LevelSummary {
   nps: number;
   n_arcs: number;
   n_chains: number;
+  /** Per-level decor counts (engine >= multi-level decor fix); absent from older engines. */
+  n_walls?: number;
+  n_bombs?: number;
 }
 
 export interface GenerateOutput {
@@ -94,6 +97,8 @@ export interface LibraryEntry {
     nNotes: number;
     nArcs: number;
     nChains: number;
+    nWalls?: number;
+    nBombs?: number;
   }>;
   nWalls: number;
   nBombs: number;

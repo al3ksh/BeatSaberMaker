@@ -194,6 +194,8 @@ export const EN = {
       wallsLabel: "Walls",
       bombsLabel: "Bombs",
       lightsLabel: "Lights",
+      levelLabel: "Difficulty",
+      npsLabel: "NPS",
       openFolder: "Open Folder",
       preview: "Preview",
       exportZip: "Export ZIP",
