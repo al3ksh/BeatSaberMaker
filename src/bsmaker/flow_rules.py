@@ -12,9 +12,12 @@ from bsmaker.formats.events import to_events
 from bsmaker.formats.model import Note
 from bsmaker.playability.checker import check
 from bsmaker.playability.config import PlayabilityConfig
+from bsmaker.playability.geometry import angle_diff, direction_angle
 
 RUN_SHARE = (0.0, 0.25, 0.5, 0.8)
 STACK_CHANCE = (0.0, 0.15, 0.3, 0.5)
+SLITHER = "slither"
+ROTATION = "rotation"
 
 _MIN_STACK_SPACING_S = 0.045
 _MAX_STACK_SPACING_S = 0.090
@@ -25,6 +28,19 @@ _CELL_CLEARANCE_S = 0.15
 _ONSET_PERCENTILE = 70.0
 _SLIDER_VALIDATION_GAP_S = 0.12
 _WINDOW_PAD_S = 1.0
+
+_MIN_RUN_LEN = 8
+_DOUBLE_GAP_S = 0.040
+_MIN_RUN_GAP_S = 0.10
+_MAX_RUN_GAP_S = 0.30
+_MAX_RUN_HAND_GAP_S = 0.60
+_ROTATION_PROB = 0.30
+_ROTATION_CYCLE: tuple[tuple[int, int, int], ...] = (
+    (0, 1, 4),  # L UL
+    (1, 0, 6),  # R DL
+    (2, 0, 7),  # L DR
+    (3, 1, 5),  # R UR
+)
 
 _DIRS: dict[int, tuple[int, int]] = {
     0: (0, 1),    # up
@@ -204,3 +220,147 @@ def add_dot_stacks(
 
     working.sort(key=lambda n: (n.time_s, n.color, n.x, n.y))
     return working, stacks, dots_added, reverted
+
+
+def find_runs(notes: Sequence[Note]) -> list[tuple[int, int]]:
+    """Return half-open [i, j) ranges of >= 8 alternating single-note events (0.1-0.3 s gaps)."""
+    n = len(notes)
+    if n < _MIN_RUN_LEN:
+        return []
+    is_double = [False] * n
+    for k in range(n - 1):
+        if notes[k + 1].time_s - notes[k].time_s < _DOUBLE_GAP_S - 1e-9:
+            is_double[k] = True
+            is_double[k + 1] = True
+
+    runs: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        if is_double[i]:
+            i += 1
+            continue
+        j = i + 1
+        while j < n:
+            if is_double[j] or notes[j].color == notes[j - 1].color:
+                break
+            dt = notes[j].time_s - notes[j - 1].time_s
+            if not (_MIN_RUN_GAP_S - 1e-9 <= dt <= _MAX_RUN_GAP_S + 1e-9):
+                break
+            if j - i >= 2 and notes[j].time_s - notes[j - 2].time_s > _MAX_RUN_HAND_GAP_S + 1e-9:
+                break
+            j += 1
+        if j - i >= _MIN_RUN_LEN:
+            runs.append((i, j))
+        i = j
+    return runs
+
+
+def _prev_hand_angles(notes: Sequence[Note], end: int) -> dict[int, float | None]:
+    angles: dict[int, float | None] = {0: None, 1: None}
+    for n in notes[:end]:
+        ang = direction_angle(n.direction)
+        if ang is not None:
+            angles[n.color] = ang
+        elif angles[n.color] is not None:
+            angles[n.color] = (angles[n.color] + 180.0) % 360.0
+    return angles
+
+
+def _best_up_down(prev_angle: float | None) -> int:
+    if prev_angle is None:
+        return 1
+    expected = (prev_angle + 180.0) % 360.0
+    return min((1, 0), key=lambda d: angle_diff(direction_angle(d), expected))
+
+
+def rewrite_run(
+    notes: Sequence[Note],
+    i: int,
+    j: int,
+    template: str,
+    rng: random.Random,
+) -> list[Note]:
+    """Return a copy of `notes` with indices i..j-1 rewritten to a snake template."""
+    if not (0 <= i <= j <= len(notes)):
+        raise ValueError(f"invalid run range [{i}, {j}) for {len(notes)} notes")
+    out = list(notes)
+    if i == j:
+        return out
+
+    prev_angles = _prev_hand_angles(notes, i)
+    if template == SLITHER:
+        dirs = {h: _best_up_down(prev_angles[h]) for h in (0, 1)}
+        lx, rx = 1, 2
+        for k in range(i, j):
+            n = notes[k]
+            d = dirs[n.color]
+            dirs[n.color] = 1 - d
+            step = rng.choice((-1, 0, 1))
+            if n.color == 0:
+                lx = max(0, min(2, rx, lx + step))
+                nx = lx
+            else:
+                rx = max(1, lx, min(3, rx + step))
+                nx = rx
+            out[k] = replace(n, x=nx, y=0, direction=d)
+        return out
+
+    if template == ROTATION:
+        h0 = notes[i].color
+        cands = (0, 2) if h0 == 0 else (1, 3)
+        prev_ang = prev_angles[h0]
+        if prev_ang is None:
+            offset = cands[0]
+        else:
+            expected = (prev_ang + 180.0) % 360.0
+            offset = min(
+                cands,
+                key=lambda off: angle_diff(direction_angle(_ROTATION_CYCLE[off][2]), expected),
+            )
+        for step, k in enumerate(range(i, j)):
+            x, y, d = _ROTATION_CYCLE[(offset + step) % 4]
+            out[k] = replace(notes[k], x=x, y=y, direction=d)
+        return out
+
+    raise ValueError(f"unknown snake template: {template!r}")
+
+
+def apply_snakes(
+    notes: list[Note],
+    *,
+    share: float,
+    rng: random.Random,
+    mask_cfg: PlayabilityConfig,
+) -> tuple[list[Note], int, int, int, int]:
+    """Rewrite a share of eligible runs into snakes; return (notes, found, rewritten, n_notes, reverted)."""
+    ordered = sorted(notes, key=lambda n: (n.time_s, n.color, n.x, n.y))
+    runs = find_runs(ordered)
+    if share <= 0.0 or not runs:
+        return (list(notes) if share <= 0.0 else ordered), len(runs), 0, 0, 0
+
+    vcfg = validation_cfg(mask_cfg)
+    working = ordered
+    runs_rewritten = 0
+    notes_rewritten = 0
+    reverted = 0
+
+    for i, j in runs:
+        if rng.random() >= share:
+            continue
+        chosen = ROTATION if rng.random() < _ROTATION_PROB else SLITHER
+        trials = (ROTATION, SLITHER) if chosen == ROTATION else (SLITHER,)
+        t0, t1 = working[i].time_s, working[j - 1].time_s
+        accepted = False
+        for tmpl in trials:
+            cand = rewrite_run(working, i, j, tmpl, rng)
+            if window_ok(cand, t0, t1, vcfg):
+                working = cand
+                runs_rewritten += 1
+                notes_rewritten += j - i
+                accepted = True
+                break
+        if not accepted:
+            reverted += 1
+
+    return working, len(runs), runs_rewritten, notes_rewritten, reverted
+

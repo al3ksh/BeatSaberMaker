@@ -10,8 +10,13 @@ import pytest
 from bsmaker.audio.beats import ENV_HOP, onset_envelope
 from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.flow_rules import (
+    ROTATION,
+    SLITHER,
     FlowReport,
     add_dot_stacks,
+    apply_snakes,
+    find_runs,
+    rewrite_run,
     stack_spacing_s,
     validation_cfg,
     window_ok,
@@ -180,4 +185,132 @@ def test_failing_stack_reverted(monkeypatch) -> None:
     )
     assert out == notes
     assert (stacks, dots, reverted) == (0, 0, 1)
+
+
+def _alternating_run(n: int, *, start_t: float = 1.0, gap: float = 0.2, start_hand: int = 0) -> list[Note]:
+    notes: list[Note] = []
+    for k in range(n):
+        hand = (start_hand + k) % 2
+        x = 1 if hand == 0 else 2
+        d = (k // 2) % 2
+        notes.append(_note(start_t + k * gap, x, 0, hand, d))
+    return notes
+
+
+def test_find_runs_basic() -> None:
+    notes = _alternating_run(10, gap=0.2)
+    assert find_runs(notes) == [(0, 10)]
+
+
+def test_run_breaks_on_double() -> None:
+    notes = _alternating_run(12, gap=0.2)
+    # Replace index 5..6 with a double at the time of index 5
+    t5 = notes[5].time_s
+    notes[5] = _note(t5, 1, 0, 0, 0)
+    notes[6] = _note(t5, 2, 0, 1, 0)
+    runs = find_runs(notes)
+    assert all(not (i <= 5 < j) and not (i <= 6 < j) for i, j in runs)
+    assert runs == []
+
+
+def test_run_gap_limits() -> None:
+    # A 0.35 s gap splits 16 notes into two 8-note runs
+    first = _alternating_run(8, start_t=1.0, gap=0.2, start_hand=0)
+    second = _alternating_run(8, start_t=first[-1].time_s + 0.35, gap=0.2, start_hand=0)
+    assert find_runs(first + second) == [(0, 8), (8, 16)]
+
+    # A 0.08 s gap also splits
+    second_fast = _alternating_run(8, start_t=first[-1].time_s + 0.08, gap=0.2, start_hand=0)
+    assert find_runs(first + second_fast) == [(0, 8), (8, 16)]
+
+
+def test_slither_shape() -> None:
+    notes = _alternating_run(16, gap=0.2, start_hand=0)
+    out = rewrite_run(notes, 0, len(notes), SLITHER, random.Random(3))
+    assert len(out) == len(notes)
+    last_dir: dict[int, int] = {}
+    last_x: dict[int, int] = {}
+    prev_left_x: int | None = None
+    for n in out:
+        assert n.y == 0
+        assert n.direction in (0, 1)
+        if n.color in last_dir:
+            assert n.direction != last_dir[n.color]
+        last_dir[n.color] = n.direction
+        if n.color == 0:
+            assert 0 <= n.x <= 2
+            prev_left_x = n.x
+        else:
+            assert 1 <= n.x <= 3
+            if prev_left_x is not None:
+                assert n.x >= prev_left_x
+        if n.color in last_x:
+            assert abs(n.x - last_x[n.color]) <= 1
+        last_x[n.color] = n.x
+
+
+def test_slither_parity_with_previous() -> None:
+    # Previous left note before run cuts up (0) -> first left note in run must cut down (1)
+    prev = [
+        _note(0.2, 1, 0, 0, 0),
+        _note(0.4, 2, 0, 1, 1),
+    ]
+    run = _alternating_run(8, start_t=1.0, gap=0.2, start_hand=0)
+    notes = prev + run
+    out = rewrite_run(notes, 2, len(notes), SLITHER, random.Random(0))
+    assert out[:2] == prev
+    assert out[2].color == 0 and out[2].direction == 1
+    assert out[3].color == 1 and out[3].direction == 0
+
+
+def test_rotation_cycle() -> None:
+    notes = _alternating_run(8, gap=0.2, start_hand=0)
+    out = rewrite_run(notes, 0, 8, ROTATION, random.Random(0))
+    expected = [
+        (0, 1, 4), (1, 0, 6), (2, 0, 7), (3, 1, 5),
+        (0, 1, 4), (1, 0, 6), (2, 0, 7), (3, 1, 5),
+    ]
+    assert [(n.x, n.y, n.direction) for n in out] == expected
+
+
+def test_rotation_falls_back() -> None:
+    from bsmaker.formats.tokens import encode_token
+
+    notes = _alternating_run(10, gap=0.2, start_hand=0)
+    # Block L(0, 1, 4) as a rare token so ROTATION fails window_ok and falls back to SLITHER
+    bad_rot = encode_token(0, 1, 4)
+    cfg = PlayabilityConfig(rare_tokens=(frozenset({bad_rot}), frozenset()))
+    # Pick a seed that selects ROTATION first (rng.random() < 0.3)
+    seed = next(s for s in range(100) if random.Random(s).random() < 0.3)
+    # Use a two-step rng check: share=1.0 draws once (< 1.0), then template draws (< 0.3)
+    def picks_rotation(s: int) -> bool:
+        r = random.Random(s)
+        r.random()
+        return r.random() < 0.3
+
+    seed = next(s for s in range(100) if picks_rotation(s))
+    out, found, rewritten, n_rewritten, reverted = apply_snakes(
+        notes, share=1.0, rng=random.Random(seed), mask_cfg=cfg,
+    )
+    assert found == 1 and rewritten == 1 and n_rewritten == 10 and reverted == 0
+    assert all(n.y == 0 and n.direction in (0, 1) for n in out)
+    assert window_ok(out, 0.0, math.inf, validation_cfg(cfg))
+
+
+def test_share_zero_identity() -> None:
+    notes = _alternating_run(10, gap=0.2)
+    out, found, rewritten, n_rewritten, reverted = apply_snakes(
+        notes, share=0.0, rng=random.Random(0), mask_cfg=PlayabilityConfig(),
+    )
+    assert out == notes
+    assert found == 1 and (rewritten, n_rewritten, reverted) == (0, 0, 0)
+
+
+def test_seed_deterministic() -> None:
+    notes = _alternating_run(16, gap=0.2)
+    cfg = PlayabilityConfig()
+    out1 = apply_snakes(notes, share=0.8, rng=random.Random(99), mask_cfg=cfg)
+    out2 = apply_snakes(notes, share=0.8, rng=random.Random(99), mask_cfg=cfg)
+    assert out1 == out2
+
 
