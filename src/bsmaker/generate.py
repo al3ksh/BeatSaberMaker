@@ -258,8 +258,10 @@ def _generate_level_notes(
     is_cancelled: CancelCheck | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     repeats: BarRepeats | None = None,
+    links_out: list | None = None,
 ) -> tuple[list[Note], Grid, SampleReport, int, str, float]:
     count_scale = 1.0
+    best_links = None  # F7: the kept round's phrase links (for the flow layer)
     best = None  # (relative error, notes, planned, report, aligned grid)
     rounds = 0
     early_stop = ""
@@ -279,7 +281,8 @@ def _generate_level_notes(
         round_grid = align_grid(base_grid, events)
         planned = snap_times(events, round_grid)
         # F7 phrase repetition: repeated music gets the earlier bar's rhythm and pattern
-        planned, links, _ = plan_phrases(planned, probs[0] if probs else np.zeros(0), repeats, seed)
+        planned, links, _ = plan_phrases(planned, probs[0] if probs else np.zeros(0), repeats, seed,
+                                         snap=lambda ts: snap_times(ts, round_grid))
         notes, report = sample_notes(
             pattern, planned, mel, target_nps, styles, seed, mask_cfg, device,
             is_cancelled=is_cancelled, on_progress=on_progress, phrase=links,
@@ -288,10 +291,13 @@ def _generate_level_notes(
         err = abs(measured / target_nps - 1.0) if measured > 0 else float("inf")
         if best is None or err < best[0]:
             best = (err, notes, planned, report, round_grid)
+            best_links = links
         if err <= DENSITY_TOLERANCE:
             break
         count_scale *= target_nps / measured if measured > 0 else 2.0
     _, notes, _, report, grid = best  # the grid aligned in the kept round
+    if links_out is not None:
+        links_out.append(best_links)
     if len(notes) < 2:
         raise GenerateError("no notes could be placed")
 
@@ -400,15 +406,17 @@ def generate_map(
             if total > 0:
                 tracker.emit("notes", _s + int(round((_e - _s) * done / total)))
 
+        links_out: list = []  # F7 phrase repetition hook
         notes, grid, report, rounds, early_stop, measured = _generate_level_notes(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
             is_cancelled=is_cancelled, on_progress=_on_note_progress, repeats=repeats,
+            links_out=links_out,
         )
         if flow > 0:
             pre_flow = notes
             notes, flow_report = apply_flow(
                 notes, bpm=grid.bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
-                level=flow, seed=seed, mask_cfg=mask_cfg,
+                level=flow, seed=seed, mask_cfg=mask_cfg, phrase=links_out[0],
             )
             # Without the added stack dots the map must pass the mask profile like any base map;
             # with them (as slider tails) it must add no hard violation.

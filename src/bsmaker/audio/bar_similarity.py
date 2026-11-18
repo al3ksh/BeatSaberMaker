@@ -76,7 +76,8 @@ def find_repeats(feats: np.ndarray, loud: np.ndarray, bar_s: float,
     Candidates are earlier bars whose similarity is above the song's `quantile` of all pairs of
     audible bars. Among them the one whose neighbours also match best wins (similarity averaged
     along the diagonal, bars j-1..j+1 against i-1..i+1), so a repeated phrase copies bar by bar
-    from one place instead of jumping between look-alike bars.
+    from one place instead of jumping between look-alike bars. Even-aligned bar pairs are then
+    re-pointed at one earlier pair where possible (`_pair_sources`).
     """
     n = len(feats)
     source = np.full(n, -1, dtype=np.int64)
@@ -107,7 +108,28 @@ def find_repeats(feats: np.ndarray, loud: np.ndarray, bar_s: float,
         cand = np.nonzero(sim[j, :j] >= thr)[0]
         if len(cand):
             source[j] = int(cand[np.argmax(smooth[j, cand])])
+    _pair_sources(sim, thr, source)
     return BarRepeats(bar_s, source, sim)
+
+
+def _pair_sources(sim: np.ndarray, thr: float, source: np.ndarray) -> None:
+    """Re-point 2-bar phrases (bars 2k, 2k+1) at one earlier phrase (bars 2m, 2m+1), in place.
+
+    Mappers repeat phrases, not lone bars: when a bar of an even-aligned pair repeats, the pair
+    copies the earlier even-aligned pair with the best mean similarity, if that mean is above
+    `thr`. Pairs where no such phrase exists keep their per-bar sources.
+    """
+    n = len(source)
+    for j in range(0, n - 1, 2):
+        if source[j] < 0 and source[j + 1] < 0:
+            continue
+        i = np.arange(0, j - 1, 2)
+        if len(i) == 0:
+            continue
+        score = (sim[j, i] + sim[j + 1, i + 1]) / 2.0
+        k = int(np.argmax(score))
+        if score[k] >= thr:
+            source[j], source[j + 1] = int(i[k]), int(i[k]) + 1
 
 
 def bar_repeats(audio: np.ndarray, bpm: float) -> BarRepeats:

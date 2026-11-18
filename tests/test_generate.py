@@ -321,7 +321,7 @@ def make_layer_models(seed: int = 0) -> LayerModels:
 
 def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path, monkeypatch):
     # the golden predates F7 phrase repetition (it changes notes, not layers): keep it off here
-    monkeypatch.setattr(G, "plan_phrases", lambda planned, probs, repeats, seed: (planned, None, 0))
+    monkeypatch.setattr(G, "plan_phrases", lambda planned, probs, repeats, seed, **kw: (planned, None, 0))
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
@@ -619,7 +619,7 @@ def test_generate_map_flow_defaults_to_zero(models, tmp_path):
 def test_generate_map_flow_final_check_raises(models, tmp_path, monkeypatch):
     from bsmaker.flow_rules import FlowReport
 
-    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, phrase=None):
         return list(notes), FlowReport(level=level)
 
     seen = []
@@ -639,7 +639,7 @@ def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
     audio = write_audio(tmp_path / "a.wav", seconds=45.0)
     res0 = _gen(models, audio, tmp_path / "out0", flow=0)
 
-    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, phrase=None):
         from bsmaker.flow_rules import FlowReport
         return list(notes), FlowReport(level=0)
 
