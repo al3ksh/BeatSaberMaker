@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -721,52 +722,68 @@ def test_window_chance_zero_identity() -> None:
     assert out == notes and stacks == 0
 
 
-def _right_filler(n: int = 40, start: float = 1.25) -> list[Note]:
-    return [_note(start + 0.5 * k, 3, 1, 1, 1 if k % 2 == 0 else 0) for k in range(n)]
+def _right_filler(n: int = 40, start: float = 100.0) -> list[Note]:
+    # Fast right-hand stream far from the left notes: no rest spots, adds swings only.
+    return [_note(start + 0.25 * k, 3, 1, 1, 1 if k % 2 == 0 else 0) for k in range(n)]
 
 
 def _free(notes, bpm=120.0):
     return add_free_dots(notes, bpm=bpm, rng=random.Random(0), mask_cfg=PlayabilityConfig())
 
 
-def test_free_dot_replaces_reset_after_rest() -> None:
-    # Left: D, then D again 2 beats later (a reset), then U 1 s later.
-    left = [_note(1.0, 0, 1, 0, 1), _note(2.0, 0, 1, 0, 1), _note(3.0, 0, 1, 0, 0)]
-    notes = _sorted(left + _right_filler())
+def _left_alt(n: int, spacing: float = 2.0, reset_every: int = 0) -> list[Note]:
+    out = []
+    for k in range(n):
+        flip = 1 if k % 2 == 0 else 0
+        if reset_every and k % reset_every == 0:
+            flip = 1 if (k - 1) % 2 == 0 else 0  # same direction as the previous note
+        out.append(_note(1.0 + spacing * k, 0, 1, 0, flip))
+    return out
+
+
+def test_free_dots_on_calm_rest_spots_up_to_target() -> None:
+    # 12 left swings 2 s apart (11 rest spots) + 40 filler swings: target round(0.045 * 52) = 2.
+    notes = _sorted(_left_alt(12) + _right_filler())
     out, dots, _ = _free(notes)
-    assert dots == 1
-    assert [(n.time_s, n.color) for n in out if n.direction == 8] == [(2.0, 0)]
+    assert dots == 2
+    assert all(n.color == 0 for n in out if n.direction == 8)
     assert final_flow_ok(notes, out, PlayabilityConfig())
 
 
-def test_free_dot_needs_rest_and_reset() -> None:
-    # Rest shorter than one beat (0.5 s at 120 bpm): no dot.
-    left = [_note(1.0, 0, 1, 0, 1), _note(1.4, 0, 1, 0, 1), _note(2.4, 0, 1, 0, 0)]
-    assert _free(_sorted(left + _right_filler()))[1] == 0
-    # A normal flip after the rest: no dot.
-    left = [_note(1.0, 0, 1, 0, 1), _note(2.0, 0, 1, 0, 0), _note(3.0, 0, 1, 0, 1)]
-    assert _free(_sorted(left + _right_filler()))[1] == 0
-    # A full-height flip (D on row 2, then U on row 0) is no jump: the D ends where the U starts.
-    left = [_note(1.0, 0, 2, 0, 1), _note(2.0, 0, 0, 0, 0), _note(3.0, 0, 2, 0, 1)]
-    assert _free(_sorted(left + _right_filler()))[1] == 0
-
-
-def test_free_dot_on_big_jump() -> None:
-    # L at (0, 0) exits at (-1, 0); R at (3, 2) enters from (2, 2): 3 cells of travel -> dot.
-    left = [_note(1.0, 0, 0, 0, 2), _note(2.0, 3, 2, 0, 3), _note(3.0, 0, 0, 0, 2)]
+def test_free_dots_resets_go_first() -> None:
+    # Notes 0..11 alternate D/U; note 5 repeats note 4's direction (a reset after the rest).
+    left = _left_alt(12)
+    left[5] = _note(left[5].time_s, 0, 1, 0, left[4].direction)
     out, dots, _ = _free(_sorted(left + _right_filler()))
-    assert dots == 1
-    assert [(n.time_s, n.color) for n in out if n.direction == 8] == [(2.0, 0)]
-    # Same flip with R at (2, 2), entering from (1, 2): 2 cells, an ordinary swing -> no dot.
-    left = [_note(1.0, 0, 0, 0, 2), _note(2.0, 2, 2, 0, 3), _note(3.0, 0, 0, 0, 2)]
+    assert dots == 2
+    assert 5.0 * 2 + 1.0 in [n.time_s for n in out if n.direction == 8]
+
+
+def test_free_dot_needs_rest() -> None:
+    # Every gap 0.4 s < one beat (0.5 s at 120 bpm): no rest, no dot.
+    notes = _sorted(_left_alt(12, spacing=0.4) + _right_filler())
+    assert _free(notes)[1] == 0
+
+
+def test_free_dot_not_in_dense_pattern() -> None:
+    # Other hand plays 0.2 s before and after every left note: not calm, no dot.
+    left = _left_alt(12)
+    busy = [_note(n.time_s + d, 3, 1, 1, 8) for n in left for d in (-0.2, 0.2)]
+    assert _free(_sorted(left + busy + _right_filler()))[1] == 0
+
+
+def test_free_dots_capped_by_spot_share() -> None:
+    # 5 rest spots -> at most floor(0.25 * 5) = 1 dot, although the 4.5% target is 2.
+    notes = _sorted(_left_alt(6) + _right_filler(n=46))
+    assert _free(notes)[1] == 1
+
+
+def test_free_dots_count_existing_dots() -> None:
+    # Two dots already there: the target of 2 is met, nothing is added.
+    left = _left_alt(12)
+    left[3] = replace(left[3], direction=8)
+    left[7] = replace(left[7], direction=8)
     assert _free(_sorted(left + _right_filler()))[1] == 0
-
-
-def test_free_dots_capped_at_three_percent() -> None:
-    # 10 left-hand resets after rests among 50 swings: at most floor(0.03 * 50) = 1 dot.
-    left = [_note(1.0 + 2.0 * k, 0, 1, 0, 1) for k in range(10)]
-    _, dots, _ = _free(_sorted(left + _right_filler(start=1.5)))
-    assert dots == 1
 
 
 def test_apply_flow_level1_uses_window_profile() -> None:
@@ -781,3 +798,16 @@ def test_apply_flow_level1_uses_window_profile() -> None:
                             mask_cfg=cfg)
     assert rep2.arrow_stacks == 0 and rep2.free_dots == 0 and rep2.dot_stacks >= 1
     assert final_flow_ok(notes, out2, cfg)
+
+
+def test_repair_keeps_rest_dot_in_window_profile() -> None:
+    from bsmaker.flow_rules import repair_loose_dots
+
+    left = _left_alt(12)
+    left[6] = replace(left[6], direction=8)
+    notes = _sorted(left + _right_filler())
+    cfg = PlayabilityConfig()
+    kept, _, _ = repair_loose_dots(notes, mask_cfg=cfg, bpm=120.0)
+    assert sum(n.direction == 8 for n in kept) == 1
+    gone, repaired, _ = repair_loose_dots(notes, mask_cfg=cfg)
+    assert sum(n.direction == 8 for n in gone) == 0 and repaired == 1
