@@ -135,3 +135,36 @@ def test_cli_features_workers_option(tmp_path: Path, monkeypatch) -> None:
     result = CliRunner().invoke(app, ["data", "features", "--workers", "2"])
     assert result.exit_code == 0, result.output
     assert "workers: 2" in result.output
+
+
+def test_stack_aware_cfg_makes_stack_one_swing() -> None:
+    from bsmaker.cli import stack_aware_cfg
+    from bsmaker.formats.events import Event
+    from bsmaker.formats.tokens import encode_token
+    from bsmaker.playability.checker import check
+    from bsmaker.playability.config import PlayabilityConfig
+
+    DOWN, UP, DOT = 1, 0, 8
+    t = lambda x, y, d: encode_token(x, y, d)  # noqa: E731
+    # Down swing continued by a down arrow 60 ms later and a dot 110 ms later (one swing),
+    # then an up swing a beat later.
+    stack = [Event(0.0, 0, t(2, 1, DOWN)), Event(0.06, 0, t(2, 0, DOWN)),
+             Event(0.11, 0, t(2, 0, DOT)), Event(0.50, 0, t(2, 1, UP))]
+    plain = PlayabilityConfig()
+    assert check(stack, plain).hard  # stacks are violations without stack awareness
+    assert check(stack, stack_aware_cfg(plain)).hard == ()
+
+
+def test_stack_aware_cfg_still_reports_real_break() -> None:
+    from bsmaker.cli import stack_aware_cfg
+    from bsmaker.formats.events import Event
+    from bsmaker.formats.tokens import encode_token
+    from bsmaker.playability.checker import check
+    from bsmaker.playability.config import PlayabilityConfig
+
+    DOWN = 1
+    t = lambda x, y, d: encode_token(x, y, d)  # noqa: E731
+    # Stack, then another down swing 0.25 s later: parity break after the stack.
+    ev = [Event(0.0, 0, t(2, 1, DOWN)), Event(0.06, 0, t(2, 0, DOWN)),
+          Event(0.31, 0, t(2, 1, DOWN))]
+    assert "parity" in [v.rule for v in check(ev, stack_aware_cfg(PlayabilityConfig())).hard]

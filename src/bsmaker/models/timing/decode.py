@@ -46,18 +46,32 @@ Z_CLIP = (-1.8, 1.2)
 
 
 def bar_edges(duration_s: float, bar_s: float | None) -> np.ndarray:
-    """Bar boundaries in seconds from MIN_FIRST_EVENT_S; `bar_s` is folded into 1.3-2.7 s."""
+    """Bar boundaries in seconds from MIN_FIRST_EVENT_S; `bar_s` is folded into 1.3-2.7 s.
+
+    Inner edges are multiples of the bar length from t=0, the same grid as the map's bars (beat 0
+    at t=0, 4 beats each): emptied bars then line up with the bars the empty-bar metric counts.
+    Starting the grid at MIN_FIRST_EVENT_S instead (the old behaviour) put emptied bars across
+    two map bars, so the measured empty-bar share was 0.029 for an emptied share of 0.07.
+    """
     bar = bar_s if bar_s and bar_s > 0 else DEFAULT_BAR_S
     while bar < 1.3:  # half/double tempo detection
         bar *= 2
     while bar > 2.7:
         bar /= 2
-    edges = np.arange(MIN_FIRST_EVENT_S, duration_s, bar)
+    first = int(np.floor(MIN_FIRST_EVENT_S / bar + 1e-9)) + 1
+    inner = np.arange(first, int(np.ceil(duration_s / bar)) + 1) * bar
+    inner = inner[(inner > MIN_FIRST_EVENT_S + 1e-6) & (inner < duration_s - 1e-6)]
+    edges = np.concatenate([[MIN_FIRST_EVENT_S], inner])
     return np.append(edges, duration_s) if len(edges) else np.array([MIN_FIRST_EVENT_S, duration_s])
 
 
-def density_weights(mel: np.ndarray, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(per-frame weight `[frames]`, empty-bar mask `[bars]`) from per-bar loudness."""
+def density_weights(mel: np.ndarray, edges: np.ndarray,
+                    span: tuple[int, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(per-frame weight `[frames]`, empty-bar mask `[bars]`) from per-bar loudness.
+
+    Bars are emptied only strictly inside `span` (first and last bar that will hold events);
+    default: first and last live bar.
+    """
     n = len(mel)
     power = np.maximum(np.exp(mel.astype(np.float64)) - 1e-5, 0.0).sum(axis=1)
     f = np.minimum((edges * FRAMES_PER_SECOND).astype(int), n)
@@ -70,7 +84,15 @@ def density_weights(mel: np.ndarray, edges: np.ndarray) -> tuple[np.ndarray, np.
     z = (db - db[live].mean()) / max(float(db[live].std()), 1.5)
     w = np.exp(DENSITY_ALPHA * np.clip(z, *Z_CLIP))
     empty = np.zeros(nb, dtype=bool)
-    for b in np.argsort(z)[:int(round(EMPTY_BAR_SHARE * nb))]:
+    # Only bars between the first and last bar with events: the quietest bars are the intro and
+    # outro, which the map (and the empty-bar metric) never counts, so emptying them gave a
+    # measured share of 0.029 for 0.07 asked.
+    live_idx = np.nonzero(live)[0]
+    first, last = span if span is not None else (int(live_idx[0]), int(live_idx[-1]))
+    lo, hi = first + 1, last  # interior bars lo..hi-1
+    inner = np.arange(lo, hi)
+    n_empty = int(round(EMPTY_BAR_SHARE * (hi - lo + 1)))
+    for b in inner[np.argsort(z[inner])[:n_empty]]:
         empty[b] = z[b] <= EMPTY_Z_MAX
     w[empty] = 0.0
     frame_w = np.ones(n, dtype=np.float32)
@@ -238,6 +260,13 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
         return trim_stray_lead_in(pick_peaks(curve, thr, min_gap_frames))
     edges = bar_edges(len(p) / FRAMES_PER_SECOND, bar_s)
     weights, empty = density_weights(mel, edges)
+    # Second pass: empty only bars inside the span the events really cover (intro and outro
+    # bars are invisible to the empty-bar metric).
+    first_pass = curve * weights
+    fr = pick_peaks(first_pass, threshold_for_count(first_pass, n_events, min_gap_frames), min_gap_frames)
+    if len(fr):
+        bars = np.clip(np.searchsorted(edges, fr / FRAMES_PER_SECOND, side="right") - 1, 0, len(edges) - 2)
+        weights, empty = density_weights(mel, edges, (int(bars.min()), int(bars.max())))
     cand = np.sort(_greedy(len(curve), _candidates(curve), min_gap_frames))
 
     def pick(n: int) -> np.ndarray:
