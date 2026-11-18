@@ -38,8 +38,8 @@ STRAY_WINDOW_S = 30.0
 # 0.40 -> ~0.59, empty bars 5%, event count unchanged. Pattern doubles add noise on top, so the
 # final number is checked with eval.py.
 DENSITY_ALPHA = 0.9       # loudness -> weight strength (0 = flat)
-EMPTY_BAR_SHARE = 0.05    # share of bars emptied (lowest loudness first); reference 7.3%, no overshoot
-EMPTY_Z_MAX = -0.3        # only bars at least this quiet (z) are emptied
+EMPTY_BAR_SHARE = 0.07    # share of bars emptied (lowest loudness first); reference 7.3%, no overshoot
+EMPTY_Z_MAX = -0.1        # only bars at least this quiet (z) are emptied
 DEFAULT_BAR_S = 2.0
 LIVE_DB = 22.0            # bars this far below the p95 loudness are dead (excluded from mean/std)
 Z_CLIP = (-1.8, 1.2)
