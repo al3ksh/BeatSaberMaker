@@ -32,6 +32,52 @@ LOCAL_FLOOR = 0.2         # local reference never below this share of the global
 STRAY_MAX_EVENTS = 8
 STRAY_GAP_S = 6.0
 STRAY_WINDOW_S = 30.0
+# Density envelope (reference maps: bar density CV 0.63 vs ours 0.32, empty bars 7.3% vs 0.0%).
+# Peak heights are weighted by exp(ALPHA * z) of the bar loudness (z-score over live bars), a few of the
+# quietest bars are emptied, every other bar keeps at least one event. Offline on 4 songs: bar CV
+# 0.40 -> ~0.59, empty bars 5%, event count unchanged. Pattern doubles add noise on top, so the
+# final number is checked with eval.py.
+DENSITY_ALPHA = 0.9       # loudness -> weight strength (0 = flat)
+EMPTY_BAR_SHARE = 0.07    # share of bars emptied (lowest loudness first); reference 7.3%, no overshoot
+EMPTY_Z_MAX = -0.1        # only bars at least this quiet (z) are emptied
+DEFAULT_BAR_S = 2.0
+LIVE_DB = 22.0            # bars this far below the p95 loudness are dead (excluded from mean/std)
+Z_CLIP = (-1.8, 1.2)
+
+
+def bar_edges(duration_s: float, bar_s: float | None) -> np.ndarray:
+    """Bar boundaries in seconds from MIN_FIRST_EVENT_S; `bar_s` is folded into 1.3-2.7 s."""
+    bar = bar_s if bar_s and bar_s > 0 else DEFAULT_BAR_S
+    while bar < 1.3:  # half/double tempo detection
+        bar *= 2
+    while bar > 2.7:
+        bar /= 2
+    edges = np.arange(MIN_FIRST_EVENT_S, duration_s, bar)
+    return np.append(edges, duration_s) if len(edges) else np.array([MIN_FIRST_EVENT_S, duration_s])
+
+
+def density_weights(mel: np.ndarray, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(per-frame weight `[frames]`, empty-bar mask `[bars]`) from per-bar loudness."""
+    n = len(mel)
+    power = np.maximum(np.exp(mel.astype(np.float64)) - 1e-5, 0.0).sum(axis=1)
+    f = np.minimum((edges * FRAMES_PER_SECOND).astype(int), n)
+    nb = len(edges) - 1
+    db = np.array([10.0 * np.log10(power[f[i]:max(f[i + 1], f[i] + 1)].mean() + 1e-10) for i in range(nb)])
+    db = np.maximum(db, db.max() - 40.0)
+    live = db >= np.percentile(db, 95) - LIVE_DB
+    if live.sum() < 4 or db[live].std() < 0.25:  # flat audio: no modulation
+        return np.ones(n, dtype=np.float32), np.zeros(nb, dtype=bool)
+    z = (db - db[live].mean()) / max(float(db[live].std()), 1.5)
+    w = np.exp(DENSITY_ALPHA * np.clip(z, *Z_CLIP))
+    empty = np.zeros(nb, dtype=bool)
+    for b in np.argsort(z)[:int(round(EMPTY_BAR_SHARE * nb))]:
+        empty[b] = z[b] <= EMPTY_Z_MAX
+    w[empty] = 0.0
+    frame_w = np.ones(n, dtype=np.float32)
+    for i in range(nb):
+        frame_w[f[i]:f[i + 1]] = w[i]
+    frame_w[:f[0]] = 0.0
+    return frame_w, empty
 
 
 def frame_probs(model: TimingModel, mel: np.ndarray, nps: float, styles: Iterable[str],
@@ -174,7 +220,8 @@ def trim_stray_lead_in(frames: np.ndarray) -> np.ndarray:
     return f
 
 
-def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3) -> np.ndarray:
+def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
+                mel: np.ndarray | None = None, bar_s: float | None = None) -> np.ndarray:
     """Frame indices (sorted) of about `n_events` peaks spread over active sections.
 
     The lead-in (MIN_FIRST_EVENT_S) is silenced, the curve is locally normalised, then the usual
@@ -186,8 +233,31 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3) -> np
     if len(p) == 0:
         return np.zeros(0, dtype=np.int64)
     curve = local_normalise(p, min_gap_frames)
-    thr = threshold_for_count(curve, n_events, min_gap_frames)
-    return trim_stray_lead_in(pick_peaks(curve, thr, min_gap_frames))
+    if mel is None or len(mel) != len(p) or n_events < 8:
+        thr = threshold_for_count(curve, n_events, min_gap_frames)
+        return trim_stray_lead_in(pick_peaks(curve, thr, min_gap_frames))
+    edges = bar_edges(len(p) / FRAMES_PER_SECOND, bar_s)
+    weights, empty = density_weights(mel, edges)
+    cand = np.sort(_greedy(len(curve), _candidates(curve), min_gap_frames))
+
+    def pick(n: int) -> np.ndarray:
+        weighted = curve * weights
+        frames = pick_peaks(weighted, threshold_for_count(weighted, n, min_gap_frames), min_gap_frames)
+        # every non-empty bar keeps its best (unweighted) peak, so rests come only from `empty`
+        sec = frames / FRAMES_PER_SECOND
+        counts = np.histogram(sec, edges)[0]
+        cs = cand / FRAMES_PER_SECOND
+        extra = []
+        for b in np.where((counts == 0) & ~empty)[0]:
+            inside = cand[(cs >= edges[b]) & (cs < edges[b + 1])]
+            if len(inside):
+                extra.append(inside[np.argmax(curve[inside])])
+        return np.sort(np.concatenate([frames, np.array(extra, dtype=frames.dtype)])), len(extra)
+
+    frames, added = pick(n_events)
+    if added:
+        frames, _ = pick(max(n_events - added, 1))
+    return trim_stray_lead_in(frames)
 
 
 @dataclass
@@ -207,14 +277,14 @@ def load_timing(path: Path, device: str) -> LoadedTiming:
 
 
 def predict_events(loaded: LoadedTiming, mel: np.ndarray, nps: float, styles: Iterable[str],
-                   device: str, count_scale: float = 1.0) -> np.ndarray:
+                   device: str, count_scale: float = 1.0, bar_s: float | None = None) -> np.ndarray:
     """Event times in seconds (float64, sorted) at the density `nps`."""
     stats = loaded.stats
     probs = frame_probs(loaded.model, mel, nps, tuple(styles), stats, device)
     duration = len(mel) / FRAMES_PER_SECOND
     target = (nps * duration * float(stats["coverage_median"])
               / (1.0 + lookup(stats, "double_share_by_bin", nps)) * count_scale)
-    times = pick_events(probs, int(round(target))).astype(np.float64) * HOP / SAMPLE_RATE
+    times = pick_events(probs, int(round(target)), mel=mel, bar_s=bar_s).astype(np.float64) * HOP / SAMPLE_RATE
     return times[times >= MIN_FIRST_EVENT_S]
 
 

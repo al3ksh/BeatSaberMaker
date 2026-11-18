@@ -263,7 +263,8 @@ def _generate_level_notes(
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
         _check_cancel(is_cancelled)
         rounds = rnd
-        events = predict_events(timing, mel, target_nps, styles, device, count_scale)
+        events = predict_events(timing, mel, target_nps, styles, device, count_scale,
+                                bar_s=4 * 60.0 / base_grid.bpm if base_grid.steady and base_grid.bpm > 0 else None)
         _check_cancel(is_cancelled)
         if len(events) < MIN_EVENTS:
             if best is None:

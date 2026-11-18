@@ -133,7 +133,7 @@ def test_info_keeps_original_title(models, tmp_path):
 def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
         calls.append(count_scale)
         n = 240 if len(calls) == 1 else G.MIN_EVENTS - 2  # round 1 overshoots 2x
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -167,7 +167,7 @@ def _stub_sampler(monkeypatch):
 def test_density_loop_rescales(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
         calls.append(count_scale)
         n = int(120 * count_scale)  # 30 s span: 4 nps at scale 1
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -183,7 +183,7 @@ def test_density_loop_rescales(models, tmp_path, monkeypatch):
 def test_density_warning_when_not_reached(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
         calls.append(count_scale)
         return 2.0 + np.arange(120) * 0.25  # ignores count_scale: always 4 nps
 
