@@ -61,6 +61,19 @@ def _load_resume(out_dir: Path, log: Callable[[str], None]) -> dict | None:
     return None
 
 
+def _load_init(init_ckpt: Path, out_dir: Path, model_config: dict) -> dict:
+    """The checkpoint a fine-tune starts from; `out_dir` must not hold a run already."""
+    held = [n for n in ("last.pt", "prev.pt") if (out_dir / n).exists()]
+    if held:
+        raise ValueError(f"{out_dir} already holds {', '.join(held)}; a run with an initial "
+                         "checkpoint needs a fresh --out (drop the initial checkpoint to resume)")
+    ckpt = load_checkpoint(init_ckpt, map_location="cpu")
+    if ckpt["model_config"] != model_config:
+        raise ValueError(f"initial checkpoint {init_ckpt} was made with model_config "
+                         f"{ckpt['model_config']}; this run asks for {model_config}")
+    return ckpt
+
+
 def _batches(loader: DataLoader) -> Iterator[dict]:
     while True:
         yield from loader
@@ -73,10 +86,17 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
                  better: Callable[[dict, dict | None], bool],
                  log: Callable[[str], None], stats: dict | None = None,
                  sample_weights: np.ndarray | None = None,
-                 train_options: dict | None = None) -> dict:
-    """Train until `settings.max_steps`; returns `{"step": int, "best": dict | None}`."""
+                 train_options: dict | None = None, init_ckpt: Path | None = None) -> dict:
+    """Train until `settings.max_steps`; returns `{"step": int, "best": dict | None}`.
+
+    `init_ckpt` starts a fine-tune in an `out_dir` without last.pt/prev.pt: model weights only
+    (fresh optimizer, step 0, not its best record; a best.pt already in `out_dir`, e.g. from a
+    run cut off before its first save, is kept as usual); it is recorded in the train options.
+    Later runs in that folder resume without it.
+    """
     s = settings
     out_dir = Path(out_dir)
+    init = _load_init(Path(init_ckpt), out_dir, model_config) if init_ckpt is not None else None
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(s.device)
     use_amp = s.amp and device.type == "cuda"
@@ -86,9 +106,15 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
 
     step = 0
     best: dict | None = None
-    ckpt = _load_resume(out_dir, log)
+    ckpt = _load_resume(out_dir, log) if init is None else None
     stats = dict(stats or {})
     train_options = dict(train_options or {})
+    if init is not None:
+        model.load_state_dict(init["model"])
+        train_options["init_ckpt"] = str(init_ckpt)
+        log(f"initial weights from {init_ckpt} (its step {init.get('step')}, best "
+            f"{init.get('best')}); fresh optimizer, starting at step 0")
+        del init
     if ckpt is not None:
         if ckpt["model_config"] != model_config:
             raise ValueError(f"checkpoint in {out_dir} was made with {ckpt['model_config']}; "
@@ -99,6 +125,8 @@ def run_training(model: nn.Module, train_ds: Dataset, val_ds: Dataset,
             scaler.load_state_dict(ckpt["scaler"])
         if "train_options" in ckpt:
             old = ckpt["train_options"]
+            if "init_ckpt" in old and "init_ckpt" not in train_options:
+                train_options["init_ckpt"] = old["init_ckpt"]  # a fine-tune resumes without it
             diffs = [f"{k}: checkpoint {old.get(k)!r}, requested {train_options.get(k)!r}"
                      for k in sorted(set(old) | set(train_options))
                      if old.get(k) != train_options.get(k)]
