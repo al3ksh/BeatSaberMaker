@@ -449,13 +449,15 @@ def add_dot_stacks(
     mask_cfg: PlayabilityConfig,
     base_hard: Collection[Violation] | None = None,
     profile: str = TECH,
+    phrase=None,
 ) -> tuple[list[Note], int, int, int]:
     """Add stacks to eligible arrows; return (notes, stacks, dots, reverted).
 
     Profile "tech": swing-extension dot stacks after the arrow (slider tails). Profile
     "window": same-time arrow stacks on about 5% of swings (`chance` > 0 switches them on;
     dots is then 0). `base_hard` is the validation-profile violation set of the map before
-    the flow layer (default: computed from `notes`).
+    the flow layer (default: computed from `notes`). `phrase` (a bsmaker.phrase.PatternLinks)
+    makes a repeated bar stack where its earlier twin stacked (F7; tech profile only).
     """
     if profile not in (TECH, WINDOW):
         raise ValueError(f"unknown stack profile: {profile!r}")
@@ -515,7 +517,11 @@ def add_dot_stacks(
         if not dot_ok(n.time_s + spacing, cells[0], n.color, n.time_s):
             continue
 
-        if rng.random() >= chance:
+        skip = rng.random() >= chance
+        want = phrase.stack_wanted(n.time_s, n.color) if phrase is not None else None  # F7 hook
+        if want is not None:
+            skip = want == 0
+        if skip:
             continue
 
         n_dots = 1
@@ -525,7 +531,7 @@ def add_dot_stacks(
             and span2 <= _MAX_STACK_SPAN_S + _EPS
             and _gap_ok(nxt, n.time_s, span2)
             and dot_ok(n.time_s + span2, cells[1], n.color, n.time_s)
-            and rng.random() < _SECOND_DOT_CHANCE
+            and (rng.random() < _SECOND_DOT_CHANCE if want is None else want >= 2)
         ):
             n_dots = 2
 
@@ -548,6 +554,8 @@ def add_dot_stacks(
             added |= cand_keys
             stacks += 1
             dots_added += n_dots
+            if phrase is not None:  # F7 phrase repetition hook
+                phrase.stack_record(n.time_s, n.color, n_dots)
         else:
             reverted += 1
 
@@ -1099,11 +1107,13 @@ def apply_flow(
     level: int,
     seed: int,
     mask_cfg: PlayabilityConfig,
+    phrase=None,
 ) -> tuple[list[Note], FlowReport]:
     """Flow level 0-3: repair loose dots, lift flat up cuts, snake runs, then stacks.
 
     Level 1 uses the window stack profile (a few standalone dots after rests, then same-time
     arrow stacks); levels 2-3 use the tech profile (dot-tail stacks).
+    `phrase` (F7, a bsmaker.phrase.PatternLinks or None) is passed to `add_dot_stacks`.
     """
     if level not in (0, 1, 2, 3):
         raise ValueError(f"flow level must be 0, 1, 2, or 3, got {level}")
@@ -1131,6 +1141,7 @@ def apply_flow(
         after_snakes, bpm=bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
         chance=STACK_CHANCE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
         profile=profile,
+        phrase=phrase,
     )
     report = FlowReport(
         level=level,

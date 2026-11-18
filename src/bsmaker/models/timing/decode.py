@@ -207,10 +207,16 @@ def load_timing(path: Path, device: str) -> LoadedTiming:
 
 
 def predict_events(loaded: LoadedTiming, mel: np.ndarray, nps: float, styles: Iterable[str],
-                   device: str, count_scale: float = 1.0) -> np.ndarray:
-    """Event times in seconds (float64, sorted) at the density `nps`."""
+                   device: str, count_scale: float = 1.0,
+                   probs_out: list | None = None) -> np.ndarray:
+    """Event times in seconds (float64, sorted) at the density `nps`.
+
+    `probs_out`, when given, receives the frame probabilities (used by bsmaker.phrase).
+    """
     stats = loaded.stats
     probs = frame_probs(loaded.model, mel, nps, tuple(styles), stats, device)
+    if probs_out is not None:  # F7 phrase repetition hook
+        probs_out.append(probs)
     duration = len(mel) / FRAMES_PER_SECOND
     target = (nps * duration * float(stats["coverage_median"])
               / (1.0 + lookup(stats, "double_share_by_bin", nps)) * count_scale)
