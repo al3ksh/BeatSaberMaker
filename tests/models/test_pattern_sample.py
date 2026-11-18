@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from bsmaker.formats.events import FRAMES_PER_SECOND, to_events
-from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
+from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE, encode_token
 from bsmaker.models.pattern import sample as S
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import (
@@ -331,3 +331,129 @@ def test_sample_notes_defaults_use_default_dot_brake_and_double_bias() -> None:
 def test_dot_brake_rejects_bool_per_dot() -> None:
     with pytest.raises(ValueError):
         DotBrake(per_dot=True)
+
+
+# ---- F6: double geometry prior and loudness-tied doubles
+
+def _tok(x, y, d):
+    return encode_token(x, y, d)
+
+
+def test_double_geometry_bonus_for_45_and_135_degree_right_arrows() -> None:
+    g = S.DoubleGeometry(bonus_45=0.5, bonus_135=0.7, same_vertical=0.7)
+    left = _tok(1, 0, 0)                       # left U
+    mask = np.ones(VOCAB_SIZE, bool)
+    b = g.bias(left, mask)
+    for d, want in ((4, 0.5), (5, 0.5), (6, 0.7), (7, 0.7),   # UL UR (45), DL DR (135)
+                    (0, -0.7), (1, 0.0), (2, 0.0), (3, 0.0), (8, 0.0)):
+        assert b[_tok(2, 0, d)] == pytest.approx(want), d
+    assert b[NONE_TOKEN] == 0.0
+
+
+def test_double_geometry_same_vertical_penalty_needs_an_allowed_diagonal() -> None:
+    g = S.DoubleGeometry(bonus_45=0.5, bonus_135=0.7, same_vertical=0.7)
+    left = _tok(1, 0, 1)                       # left D
+    mask = np.ones(VOCAB_SIZE, bool)
+    for x in range(4):
+        for y in range(3):
+            mask[[_tok(x, y, 6), _tok(x, y, 7)]] = False   # no DL/DR for the right hand
+    assert g.bias(left, mask)[_tok(2, 0, 1)] == 0.0
+    mask[_tok(3, 1, 7)] = True
+    assert g.bias(left, mask)[_tok(2, 0, 1)] == pytest.approx(-0.7)
+
+
+def test_double_geometry_ignores_dots_and_empty_left() -> None:
+    g = S.DoubleGeometry(bonus_45=0.5, bonus_135=0.7, same_vertical=0.7)
+    mask = np.ones(VOCAB_SIZE, bool)
+    assert not g.bias(NONE_TOKEN, mask).any()
+    assert not g.bias(_tok(1, 0, 8), mask).any()
+
+
+def test_double_geometry_keeps_the_double_rate() -> None:
+    g = S.DoubleGeometry(bonus_45=0.5, bonus_135=0.7, same_vertical=0.7)
+    left = _tok(1, 0, 0)
+    logits = torch.randn(VOCAB_SIZE, generator=torch.Generator().manual_seed(0))
+    mask = np.random.default_rng(0).random(VOCAB_SIZE) < 0.6
+    mask[NONE_TOKEN] = True
+    out = g.apply(logits, left, mask, temperature=1.05)
+    m = torch.from_numpy(mask)
+
+    def p_none(lg):
+        return float(torch.softmax(torch.where(m, lg / 1.05, torch.tensor(-float("inf"))), 0)[0])
+    assert p_none(out) == pytest.approx(p_none(logits), abs=1e-5)
+    assert not torch.equal(out, logits)
+
+
+@pytest.mark.parametrize("bad", [dict(bonus_45=-0.1), dict(same_vertical=float("nan")), dict(bonus_135=True),
+                                 dict(bonus_135=float("inf"))])
+def test_double_geometry_rejects_invalid_values(bad) -> None:
+    with pytest.raises(ValueError):
+        S.DoubleGeometry(**bad)
+
+
+def test_event_loudness_is_centred_and_follows_the_mel() -> None:
+    n = int(20 * FRAMES_PER_SECOND)
+    mel = np.full((n, 80), -8.0, np.float16)
+    mel[n // 2:] = -2.0                         # second half is louder
+    times = np.linspace(1.0, 19.0, 60)
+    loud = S.event_loudness(mel, times)
+    assert loud.shape == (60,)
+    assert abs(float(loud.mean())) < 1e-6
+    assert loud[times > 12].min() > loud[times < 8].max()
+    assert loud.min() >= -1.0 - 2.0 - 1e-6 and loud.max() <= 3.0 + 1e-6
+    assert not S.event_loudness(np.zeros((n, 80), np.float16), times).any()
+
+
+def test_double_bias_loudness_term_lowers_none_bias_on_loud_events() -> None:
+    b = DoubleBias(base=0.5, loud=0.5)
+    assert b.at(0.5, 0, loud=1.0) == pytest.approx(0.0)
+    assert b.at(0.5, 0, loud=-1.0) == pytest.approx(1.0)
+    assert b.at(0.5, 0) == 0.5
+    with pytest.raises(ValueError):
+        DoubleBias(loud=-0.5)
+
+
+def test_loud_parts_get_more_doubles(loaded) -> None:
+    t = _times(600)
+    mel = _mel(t[-1] + 1).astype(np.float32) - 8.0
+    half = len(mel) // 2
+    mel[half:] = -1.0
+    loud_t = t >= half / FRAMES_PER_SECOND
+
+    def double_share(bias):
+        notes, _ = sample_notes(loaded, t, mel.astype(np.float16), 4.0, ("tech",), 3, CFG, "cpu",
+                                double_bias=bias)
+        events, _ = to_events(notes)
+        ev_t = np.array([e.time_s for e in events])
+        dbl = np.array([e.left != NONE_TOKEN and e.right != NONE_TOKEN for e in events])
+        loud = ev_t >= half / FRAMES_PER_SECOND
+        return dbl[loud].mean() - dbl[~loud].mean()
+    assert loud_t.any() and (~loud_t).any()
+    assert double_share(DoubleBias(loud=3.0)) > double_share(DoubleBias()) + 0.1
+
+
+def test_geometry_prior_raises_45_135_doubles(loaded) -> None:
+    from bsmaker.playability.geometry import angle_diff, direction_angle
+    t = _times(600)
+
+    def share(geo):
+        notes, _ = _run(loaded, t, seed=4, double_geometry=geo)
+        events, _ = to_events(notes)
+        n = hit = 0
+        for e in events:
+            if e.left == NONE_TOKEN or e.right == NONE_TOKEN:
+                continue
+            a = direction_angle(S.decode_token(e.left)[2])
+            b = direction_angle(S.decode_token(e.right)[2])
+            if a is None or b is None:
+                continue
+            n += 1
+            hit += angle_diff(a, b) in (45, 135)
+        return hit / max(n, 1)
+    assert share(S.DoubleGeometry(bonus_45=3.0, bonus_135=3.0, same_vertical=3.0)) > share(None) + 0.1
+
+
+def test_sample_notes_default_uses_default_double_geometry() -> None:
+    import inspect
+    params = inspect.signature(sample_notes).parameters
+    assert params["double_geometry"].default is S.DEFAULT_DOUBLE_GEOMETRY
