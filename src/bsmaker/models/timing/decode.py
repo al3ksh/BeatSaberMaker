@@ -46,13 +46,22 @@ Z_CLIP = (-1.8, 1.2)
 
 
 def bar_edges(duration_s: float, bar_s: float | None) -> np.ndarray:
-    """Bar boundaries in seconds from MIN_FIRST_EVENT_S; `bar_s` is folded into 1.3-2.7 s."""
+    """Bar boundaries in seconds from MIN_FIRST_EVENT_S; `bar_s` is folded into 1.3-2.7 s.
+
+    Inner edges are multiples of the bar length from t=0, the same grid as the map's bars (beat 0
+    at t=0, 4 beats each): emptied bars then line up with the bars the empty-bar metric counts.
+    Starting the grid at MIN_FIRST_EVENT_S instead (the old behaviour) put emptied bars across
+    two map bars, so the measured empty-bar share was 0.029 for an emptied share of 0.07.
+    """
     bar = bar_s if bar_s and bar_s > 0 else DEFAULT_BAR_S
     while bar < 1.3:  # half/double tempo detection
         bar *= 2
     while bar > 2.7:
         bar /= 2
-    edges = np.arange(MIN_FIRST_EVENT_S, duration_s, bar)
+    first = int(np.floor(MIN_FIRST_EVENT_S / bar + 1e-9)) + 1
+    inner = np.arange(first, int(np.ceil(duration_s / bar)) + 1) * bar
+    inner = inner[(inner > MIN_FIRST_EVENT_S + 1e-6) & (inner < duration_s - 1e-6)]
+    edges = np.concatenate([[MIN_FIRST_EVENT_S], inner])
     return np.append(edges, duration_s) if len(edges) else np.array([MIN_FIRST_EVENT_S, duration_s])
 
 

@@ -19,3 +19,13 @@ def test_pick_events_density_envelope_rests_and_loud_bars():
     assert abs(len(frames) - 200) <= 60  # synthetic peaks are near-tied, counts jump in steps
     assert counts.std() / counts.mean() > 0.4
     assert 0 < (counts == 0).mean() <= 0.12
+
+
+def test_bar_edges_are_on_the_map_bar_grid():
+    from bsmaker.models.timing.decode import MIN_FIRST_EVENT_S, bar_edges
+    bar = 4 * 60.0 / 140.0  # 4 beats at 140 bpm
+    edges = bar_edges(60.0, bar)
+    assert edges[0] == MIN_FIRST_EVENT_S and edges[-1] == 60.0
+    inner = edges[1:-1]
+    assert np.allclose(inner / bar, np.round(inner / bar))  # multiples of the bar from t=0
+    assert np.allclose(np.diff(inner), bar)
