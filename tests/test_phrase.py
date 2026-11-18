@@ -126,6 +126,16 @@ def test_links_need_matching_rhythm_and_no_copy_of_a_copy() -> None:
     assert links.link[P.PatternLinks.key(BAR + 0.5)][0] == P.PatternLinks.key(0.5)
 
 
+def test_a_looping_song_links_only_a_share_of_its_bars() -> None:
+    off = [0.0, 0.5, 1.0]
+    n = 40
+    times = np.array([k * BAR + o for k in range(n) for o in off])
+    source = [-1, -1] + [k - 2 - (k - 2) % 4 + (k % 2) for k in range(2, n)]  # A B A B ... from 0/1
+    links = P.pattern_links(times, _rep(source), seed=0)
+    assert 0 < links.n_bars <= P.MAX_LINKED_SHARE * n + 1
+    assert len(links.rhythm_link) == len(off) * (n - 2)  # unlinked bars still repeat the rhythm
+
+
 def test_bias_favours_source_tokens_and_mirror() -> None:
     lt, rt = encode_token(1, 0, 6), encode_token(2, 0, 1)
     links = P.PatternLinks({P.PatternLinks.key(2.5): (P.PatternLinks.key(0.5), False),

@@ -57,6 +57,10 @@ MIRROR_SHARE = 1 / 3
 # A bar that copies a pattern is never itself a pattern source, so a riff of similar bars gives
 # A A B B ... and not one bar looped (reference bar pattern reuse is only 4.7%).
 MAX_LINK_DEPTH = 1
+# At most this share of the bars so far (bars with MIN_BAR_EVENTS+ events) copies a pattern. Full
+# eval at bonus 2.5 without a cap: a loop-based song linked 51% of its bars and reused 60% of
+# them, a copy-paste loop (reference upper quartile 17%); other songs linked under 30%.
+MAX_LINKED_SHARE = 0.25
 
 _MIRROR_DIR = {0: 0, 1: 1, 2: 3, 3: 2, 4: 5, 5: 4, 6: 7, 7: 6, 8: 8}
 
@@ -228,8 +232,8 @@ def pattern_links(times: np.ndarray, repeats: BarRepeats, seed: int,
     """Links for every bar whose audio repeats an earlier bar and whose rhythm matches it.
 
     A bar is linked only when its event offsets equal the source bar's (within OFFSET_TOL_S) and
-    the source is not itself a copy deeper than MAX_LINK_DEPTH. Which linked bars mirror is
-    drawn from `seed`.
+    the source is not itself a copy deeper than MAX_LINK_DEPTH, and while linked bars stay under
+    MAX_LINKED_SHARE of the bars so far. Which linked bars mirror is drawn from `seed`.
     """
     t = np.sort(np.asarray(times, dtype=np.float64))
     bar_s = repeats.bar_s
@@ -240,7 +244,9 @@ def pattern_links(times: np.ndarray, repeats: BarRepeats, seed: int,
     link: dict[int, tuple[int, bool]] = {}
     rhythm_link: dict[int, tuple[int, bool]] = {}
     n_linked = 0
+    n_full = 0
     for j in range(n_bars):
+        n_full += sl[j + 1] - sl[j] >= MIN_BAR_EVENTS
         i = int(repeats.source[j])
         if i < 0 or i >= j:
             continue
@@ -252,7 +258,7 @@ def pattern_links(times: np.ndarray, repeats: BarRepeats, seed: int,
         if not np.all(np.abs(b - (a + shift)) <= OFFSET_TOL_S):
             continue
         keys = [(PatternLinks.key(ta), PatternLinks.key(tb)) for ta, tb in zip(a, b)]
-        if depth[i] >= MAX_LINK_DEPTH:
+        if depth[i] >= MAX_LINK_DEPTH or n_linked >= MAX_LINKED_SHARE * n_full + 1:
             for ka, kb in keys:
                 rhythm_link[kb] = (ka, False)
             continue
