@@ -269,9 +269,21 @@ def _mmss(t: float) -> str:
     return f"{ms // 60000:02d}:{ms // 1000 % 60:02d}.{ms % 1000:03d}"
 
 
+def stack_aware_cfg(pcfg):
+    """`pcfg` with stacks as one swing: the flow layer's slider/stack definition (same-hand
+    notes < 0.12 s apart with a compatible direction), shared with generation's validation."""
+    from dataclasses import replace
+
+    from bsmaker.flow_rules import validation_cfg
+
+    return replace(pcfg, slider_gap_s=max(pcfg.slider_gap_s, validation_cfg(pcfg).slider_gap_s))
+
+
 @app.command("check")
 def check_map(folder: str, profile: str = typer.Option(
-        "mask", "--profile", help="Playability profile: mask or data.")) -> None:
+        "mask", "--profile", help="Playability profile: mask or data."),
+        stacks: bool = typer.Option(True, "--stacks/--no-stacks", help="Treat same-hand "
+                                    "dot/window stacks and sliders as one swing (default).")) -> None:
     """Report playability rule violations for every difficulty of a map folder."""
     if profile not in PROFILES:
         typer.echo(f"unknown profile {profile!r}; expected one of {', '.join(PROFILES)}", err=True)
@@ -292,6 +304,8 @@ def check_map(folder: str, profile: str = typer.Option(
     except ValueError as e:
         typer.echo(str(e).splitlines()[0], err=True)
         raise typer.Exit(2) from None
+    if stacks:
+        pcfg = stack_aware_cfg(pcfg)
     print(f"profile: {profile}")
     for d in bm.difficulties:
         events, _ = to_events(d.notes)
