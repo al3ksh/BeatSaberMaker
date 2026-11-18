@@ -77,11 +77,10 @@ class DoubleBias:
 
 # Val, 60 difficulties, human event times, seed 0: doubles 24.9% -> 17.2% (human 16.6%), runs of
 # 4+ doubles 521 -> 214 (human 277), left-hand share of notes 0.494 -> 0.501, tv_row_dir 0.061 -> 0.064.
-# loud (F6, .superpowers/refmaps/patterns.txt G5): reference rho(bar loudness, doubles) 0.21.
-# Ours (balanced, 9 songs): -0.04 without it, 0.08 with loud=0.5 (the short-gap terms above work
-# against it: loud passages are dense), hence 0.8.
+# loud=0.5 (F6, .superpowers/refmaps/patterns.txt G5): reference rho(bar loudness, doubles) 0.21,
+# ours 0.01 without it.
 DEFAULT_DOUBLE_BIAS = DoubleBias(base=0.0, short=0.5, very_short=1.5, per_run=0.25, run_cap=4,
-                                 loud=0.8)
+                                 loud=0.5)
 
 # Loudness for DoubleBias.loud: mel power summed over bands, averaged over +-1 s (about one
 # 4-beat bar, the unit of the reference's bar-RMS loudness), in dB, z-scored over the song.
