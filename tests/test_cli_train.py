@@ -146,3 +146,58 @@ def test_resume_with_other_schedule_or_batch_is_refused(env, kind):
     assert "max_steps" in opts and "batch_size" in opts
     again = _train(kind, env / "ck", "--weighting", "none", "--max-steps", str(opts["max_steps"] + 2))
     assert again.exit_code != 0 and "max_steps" in str(again.exception)
+
+
+def test_pattern_weighting_trains_and_logs_factor_counts(env):
+    r = _train("pattern", env / "ck", "--weighting", "quality+pattern")
+    assert r.exit_code == 0, r.output
+    assert "pattern factor" in r.output and "x1.0: 2" in r.output
+    assert load_checkpoint(env / "ck" / "last.pt")["train_options"]["weighting"] == "quality+pattern"
+
+
+def test_pattern_weighting_is_for_the_pattern_model_only(env):
+    r = _train("timing", env / "ck", "--weighting", "quality+pattern")
+    assert r.exit_code == 2 and "--weighting" in r.output
+
+
+def test_warmup_and_init_ckpt_reach_run_training(env, monkeypatch):
+    seen = {}
+
+    def fake(model, train_ds, val_ds, step_fn, eval_fn, out_dir, settings, *a, **kw):
+        seen.update(settings=settings, options=kw["train_options"], init=kw.get("init_ckpt"))
+        return {"step": 0, "best": None}
+
+    init = env / "base.pt"
+    init.write_bytes(b"x")
+    monkeypatch.setattr("bsmaker.models.train_loop.run_training", fake)
+    r = _train("pattern", env / "ck", "--warmup", "250", "--init-ckpt", str(init))
+    assert r.exit_code == 0, r.output
+    assert seen["settings"].warmup == 250 and seen["init"] == init
+    assert seen["options"]["warmup"] == 250
+    seen.clear()
+    assert _train("pattern", env / "ck2").exit_code == 0
+    assert seen["settings"].warmup == 1000 and seen["init"] is None
+    assert "warmup" not in seen["options"]  # older checkpoints keep resuming
+
+
+def test_fine_tune_from_init_ckpt(env):
+    assert _train("pattern", env / "base", "--corrupt-p", "0").exit_code == 0
+    init = env / "base" / "best.pt"
+    r = _train("pattern", env / "ft", "--corrupt-p", "0", "--init-ckpt", str(init),
+               "--warmup", "1", "--lr", "0.00005", "--weighting", "quality+pattern")
+    assert r.exit_code == 0, r.output
+    ck = load_checkpoint(env / "ft" / "last.pt")
+    assert ck["step"] == 2 and ck["train_options"]["init_ckpt"] == str(init)
+    # a folder that already has checkpoints is refused before any training
+    again = _train("pattern", env / "ft", "--corrupt-p", "0", "--init-ckpt", str(init))
+    assert again.exit_code == 2 and "last.pt" in again.output
+    missing = _train("pattern", env / "ft2", "--init-ckpt", str(env / "nope.pt"))
+    assert missing.exit_code == 2 and "--init-ckpt" in missing.output
+
+
+def test_warmup_must_be_non_negative(env):
+    r = _train("pattern", env / "ck", "--warmup", "-1")
+    assert r.exit_code == 2 and "--warmup" in r.output
+    from bsmaker.cli import DEFAULT_WARMUP
+    from bsmaker.models.train_loop import TrainSettings
+    assert DEFAULT_WARMUP == TrainSettings(max_steps=1).warmup

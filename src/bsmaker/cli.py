@@ -366,6 +366,7 @@ PATTERN_SIZES = {"s": dict(d_model=384, n_layers=8, n_heads=6),
                  "l": dict(d_model=768, n_layers=12, n_heads=12)}
 TIMING_SIZES = {"s": dict(d_model=256, n_layers=6, n_heads=4),
                 "m": dict(d_model=384, n_layers=8, n_heads=6)}
+DEFAULT_WARMUP = 1000  # TrainSettings.warmup (kept here so the CLI loads without torch)
 
 
 def _check_train_args(size: str, sizes: dict, lr: float) -> None:
@@ -381,18 +382,24 @@ def _log_start(size: str, model, options: dict) -> None:
           + ", ".join(f"{k}={v}" for k, v in options.items()), flush=True)
 
 
-def _train_weights(entries: list, stats: dict, weighting: str):
-    """Sampling weights for the train entries (None for `none`); logs the mode and spread."""
+def _train_weights(entries: list, stats: dict, weighting: str, cache=None):
+    """Sampling weights for the train entries (None for `none`); logs the mode and spread.
+
+    `quality+pattern` (needs `cache`) multiplies in the pattern factor, computed here from the
+    cached token streams.
+    """
     import numpy as np
 
     from bsmaker.models.sampling import entry_weights
 
-    if weighting not in ("none", "quality"):
-        _fail("--weighting must be none or quality", 2)
+    modes = ("none", "quality") if cache is None else ("none", "quality", "quality+pattern")
+    if weighting not in modes:
+        _fail(f"--weighting must be {' or '.join(modes)}", 2)
     print(f"weighting: {weighting}", flush=True)
     if weighting == "none":
         return None
-    w = entry_weights(entries, stats)
+    factors = _pattern_factors(cache, entries) if weighting == "quality+pattern" else None
+    w = entry_weights(entries, stats, factors=factors)
     nz = w[w > 0]
     if len(nz) == 0:
         _fail("every training entry has sampling weight 0 (all excluded); "
@@ -401,6 +408,25 @@ def _train_weights(entries: list, stats: dict, weighting: str):
           f"non-zero weights min {nz.min():.3f} median {np.median(nz):.3f} max {nz.max():.3f}",
           flush=True)
     return w
+
+
+def _pattern_factors(cache, entries: list):
+    """Pattern factor per entry, logged as counts overall and per rank."""
+    from bsmaker.models.sampling import pattern_factors
+
+    f = pattern_factors(cache, entries)
+    live = [k for k, e in enumerate(entries) if not e.flags]
+
+    def counts(ks) -> str:
+        c = Counter(float(f[k]) for k in ks)
+        return " ".join(f"x{v:.1f}: {c.get(v, 0)}" for v in (1.5, 1.0, 0.5))
+
+    print(f"pattern factor (unflagged entries): {counts(live)}", flush=True)
+    for rank in ("Easy", "Normal", "Hard", "Expert", "ExpertPlus"):
+        ks = [k for k in live if entries[k].rank == rank]
+        if ks:
+            print(f"pattern factor {rank}: {counts(ks)}", flush=True)
+    return f
 
 
 @train_app.command("timing")
@@ -478,12 +504,18 @@ def train_pattern(
         eval_every: int = typer.Option(2000, "--eval-every", help="Steps between evaluations."),
         save_every: int = typer.Option(1000, "--save-every", help="Steps between checkpoints."),
         weighting: str = typer.Option("quality", "--weighting",
-                                      help="Sampling of training difficulties: none or quality."),
+                                      help="Sampling of training difficulties: none, quality or "
+                                      "quality+pattern (also favours reference-like patterns "
+                                      "on Hard and above)."),
         corrupt_p: float = typer.Option(0.1, "--corrupt-p", help="Chance (0-0.5) that a previous "
                                         "token in the training input is replaced by another "
                                         "token of the run."),
         size: str = typer.Option("s", "--size", help="Model size: s|m|l."),
         lr: float = typer.Option(3e-4, "--lr", help="Peak learning rate."),
+        warmup: int = typer.Option(DEFAULT_WARMUP, "--warmup", help="Learning-rate warmup steps."),
+        init_ckpt: Path | None = typer.Option(None, "--init-ckpt", help="Fine-tune: start from "
+                                              "this checkpoint's model weights (fresh optimizer, "
+                                              "step 0) in a fresh --out; resume without it."),
         out: Path | None = typer.Option(None, "--out", help="Checkpoint folder "
                                         "(default: <data_dir>/checkpoints/pattern).")) -> None:
     """Train the pattern model on the event cache; resumes from the checkpoint folder."""
@@ -501,7 +533,17 @@ def train_pattern(
     _check_train_args(size, PATTERN_SIZES, lr)
     if not 0.0 <= corrupt_p <= 0.5:
         _fail("--corrupt-p must be in [0, 0.5]", 2)
+    if warmup < 0:
+        _fail("--warmup must be 0 or more", 2)
     cfg = load_config()
+    out = out if out is not None else cfg.checkpoints_dir / "pattern"
+    if init_ckpt is not None:
+        if not init_ckpt.is_file():
+            _fail(f"--init-ckpt {init_ckpt} not found", 2)
+        held = [n for n in ("last.pt", "prev.pt") if (out / n).exists()]
+        if held:
+            _fail(f"{out} already holds {', '.join(held)}; --init-ckpt needs a fresh --out "
+                  "(to resume this run, drop --init-ckpt)", 2)
     stats_path = cfg.base_dir / "dataset_stats.json"
     if not (cfg.events_dir / "index.json").is_file() or not (cfg.events_dir / "events.npz").is_file():
         _fail(f"event cache not found in {cfg.events_dir}; run `bsmaker data build-events`")
@@ -520,20 +562,22 @@ def train_pattern(
     val_entries = val_all[::stride][:256]
     common = dict(features_dir=cfg.features_dir, stats=stats, context=mcfg.context,
                   events_dir=cfg.events_dir)
-    weights = _train_weights(train_entries, stats, weighting)
+    weights = _train_weights(train_entries, stats, weighting, cache)
     train_ds = PatternSequences(cache, train_entries, seed=0, corrupt_p=corrupt_p, **common)
     val_ds = PatternSequences(cache, val_entries, seed=1, fixed=True, **common)
     settings = TrainSettings(max_steps=max_steps, batch_size=batch_size, num_workers=num_workers,
-                             device=device, eval_every=eval_every, save_every=save_every, lr=lr)
+                             device=device, eval_every=eval_every, save_every=save_every, lr=lr,
+                             warmup=warmup)
     options = {"weighting": weighting, "corrupt_p": corrupt_p, "size": size, "lr": lr,
                "max_steps": max_steps, "batch_size": batch_size}
+    if warmup != DEFAULT_WARMUP:  # only when changed, so older checkpoints keep resuming
+        options["warmup"] = warmup
     model = PatternModel(mcfg)
     _log_start(size, model, options)
     result = run_training(
-        model, train_ds, val_ds, pattern_step, pattern_eval,
-        out if out is not None else cfg.checkpoints_dir / "pattern", settings, asdict(mcfg),
+        model, train_ds, val_ds, pattern_step, pattern_eval, out, settings, asdict(mcfg),
         pattern_better, lambda m: print(m, flush=True), stats=stats,
-        sample_weights=weights, train_options=options)
+        sample_weights=weights, train_options=options, init_ckpt=init_ckpt)
     print(f"done at step {result['step']}, best {result['best']}")
 
 
