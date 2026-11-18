@@ -133,7 +133,7 @@ def test_info_keeps_original_title(models, tmp_path):
 def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, **kw):
         calls.append(count_scale)
         n = 240 if len(calls) == 1 else G.MIN_EVENTS - 2  # round 1 overshoots 2x
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -167,7 +167,7 @@ def _stub_sampler(monkeypatch):
 def test_density_loop_rescales(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, **kw):
         calls.append(count_scale)
         n = int(120 * count_scale)  # 30 s span: 4 nps at scale 1
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -183,7 +183,7 @@ def test_density_loop_rescales(models, tmp_path, monkeypatch):
 def test_density_warning_when_not_reached(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, **kw):
         calls.append(count_scale)
         return 2.0 + np.arange(120) * 0.25  # ignores count_scale: always 4 nps
 
@@ -319,7 +319,9 @@ def make_layer_models(seed: int = 0) -> LayerModels:
     )
 
 
-def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path):
+def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path, monkeypatch):
+    # the golden predates F7 phrase repetition (it changes notes, not layers): keep it off here
+    monkeypatch.setattr(G, "plan_phrases", lambda planned, probs, repeats, seed: (planned, None, 0))
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
@@ -553,7 +555,7 @@ def test_generate_map_monotonic_progress_across_density_rounds_and_layer_cancel(
     orig_sample = G.sample_notes
     calls = 0
 
-    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None):
+    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None, phrase=None):
         nonlocal calls
         calls += 1
         if on_progress is not None:

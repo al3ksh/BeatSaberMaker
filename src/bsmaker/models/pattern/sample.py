@@ -173,7 +173,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                  double_bias: DoubleBias | None = DEFAULT_DOUBLE_BIAS,
                  dot_brake: DotBrake | None = DEFAULT_DOT_BRAKE,
                  is_cancelled: Callable[[], bool] | None = None,
-                 on_progress: Callable[[int, int], None] | None = None) -> tuple[list[Note], SampleReport]:
+                 on_progress: Callable[[int, int], None] | None = None,
+                 phrase=None) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
 
     The model works on the mel frame grid; the mask must hold both on frame times (what `to_events`
@@ -182,6 +183,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
     Events landing on an already used frame (first planned time wins) are counted as frame
     collisions, not as skipped. `double_bias=None` and `dot_brake=None` switch the double-note calibration and the dot-run brake
     off.
+    `phrase` (a bsmaker.phrase.PatternLinks) favours the tokens of an earlier, similar bar.
     """
     if temperature <= 0:
         raise ValueError("temperature must be positive")
@@ -233,6 +235,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                              log_nps, sty)[:, -1]
             left_lg = model.left_logits(h)[0].float().cpu()
             te = float(exact[i])
+            if phrase is not None:  # F7 phrase repetition hook
+                left_lg = phrase.bias(left_lg, te, 0)
             mask_l = allowed(state, t, 0, cfg) & allowed(state_x, te, 0, cfg)
             pen_l = dot_brake.penalty(dot_run[0]) if dot_brake is not None else 0.0
             if pen_l:
@@ -240,6 +244,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                 left_lg[_DOT_IDX] -= pen_l
             left = _pick(left_lg, mask_l, temperature, top_p, gen, masses)
             right_lg = model.right_logits(h, torch.tensor([left], device=dev))[0].float().cpu()
+            if phrase is not None:  # F7 phrase repetition hook
+                right_lg = phrase.bias(right_lg, te, 1)
             pen_r = dot_brake.penalty(dot_run[1]) if dot_brake is not None else 0.0
             if pen_r:
                 right_lg = right_lg.clone()
@@ -271,6 +277,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             state_x = advance(state_x, te, left, right)
             kept_idx.append(i)
             kept_tok.append((left, right))
+            if phrase is not None:  # F7 phrase repetition hook
+                phrase.record(te, left, right)
             for hand, token in enumerate((left, right)):
                 if token != NONE_TOKEN:
                     dot_run[hand] = dot_run[hand] + 1 if token in _DOT_SET else 0

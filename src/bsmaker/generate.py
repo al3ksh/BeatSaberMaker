@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from bsmaker.audio.bar_similarity import BarRepeats, bar_repeats
 from bsmaker.audio.beats import Grid, align_grid, detect_grid, onset_envelope, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
@@ -22,6 +23,7 @@ from bsmaker.layers_generate import LayerModels, generate_decor, generate_lights
 from bsmaker.models.ornaments.sample import OrnamentReport, sample_ornaments
 from bsmaker.models.pattern.sample import LoadedPattern, SampleReport, sample_notes
 from bsmaker.models.timing.decode import LoadedTiming, predict_events
+from bsmaker.phrase import plan_phrases
 from bsmaker.playability.checker import Report, check, exact_events
 from bsmaker.playability.config import PlayabilityConfig
 from bsmaker.playability.layers import check_layers
@@ -255,6 +257,7 @@ def _generate_level_notes(
     *,
     is_cancelled: CancelCheck | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    repeats: BarRepeats | None = None,
 ) -> tuple[list[Note], Grid, SampleReport, int, str, float]:
     count_scale = 1.0
     best = None  # (relative error, notes, planned, report, aligned grid)
@@ -263,7 +266,9 @@ def _generate_level_notes(
     for rnd in range(1, MAX_DENSITY_ROUNDS + 1):
         _check_cancel(is_cancelled)
         rounds = rnd
-        events = predict_events(timing, mel, target_nps, styles, device, count_scale)
+        probs: list = []
+        events = predict_events(timing, mel, target_nps, styles, device, count_scale,
+                                probs_out=probs)
         _check_cancel(is_cancelled)
         if len(events) < MIN_EVENTS:
             if best is None:
@@ -273,9 +278,11 @@ def _generate_level_notes(
             break
         round_grid = align_grid(base_grid, events)
         planned = snap_times(events, round_grid)
+        # F7 phrase repetition: repeated music gets the earlier bar's rhythm and pattern
+        planned, links, _ = plan_phrases(planned, probs[0] if probs else np.zeros(0), repeats, seed)
         notes, report = sample_notes(
             pattern, planned, mel, target_nps, styles, seed, mask_cfg, device,
-            is_cancelled=is_cancelled, on_progress=on_progress,
+            is_cancelled=is_cancelled, on_progress=on_progress, phrase=links,
         )
         measured = _measured_nps(notes)
         err = abs(measured / target_nps - 1.0) if measured > 0 else float("inf")
@@ -374,6 +381,8 @@ def generate_map(
     tracker.emit("analyzing", 10)
 
     base_grid: Grid = detect_grid(audio)
+    # F7: bars (4 map beats) whose audio repeats an earlier bar; none without a steady grid
+    repeats = bar_repeats(audio, base_grid.bpm) if base_grid.steady else None
     onset_env, onset_hop_s = onset_envelope(audio) if flow > 0 else (np.zeros(0, np.float32), 0.0)
     _check_cancel(is_cancelled)
     tracker.emit("analyzing", 15)
@@ -393,7 +402,7 @@ def generate_map(
 
         notes, grid, report, rounds, early_stop, measured = _generate_level_notes(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
-            is_cancelled=is_cancelled, on_progress=_on_note_progress,
+            is_cancelled=is_cancelled, on_progress=_on_note_progress, repeats=repeats,
         )
         if flow > 0:
             pre_flow = notes
