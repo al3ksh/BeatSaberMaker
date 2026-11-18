@@ -322,6 +322,17 @@ def make_layer_models(seed: int = 0) -> LayerModels:
 def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path, monkeypatch):
     # the golden predates F7 phrase repetition (it changes notes, not layers): keep it off here
     monkeypatch.setattr(G, "plan_phrases", lambda planned, probs, repeats, seed, **kw: (planned, None, 0))
+    # it also predates F6 (loudness-aware doubles, double geometry prior): keep both off here
+    from dataclasses import replace as _replace
+    from bsmaker.models.pattern import sample as PS
+    real_sample = G.sample_notes
+
+    def sample_pre_f6(*a, **kw):
+        kw.setdefault("double_bias", _replace(PS.DEFAULT_DOUBLE_BIAS, loud=0.0))
+        kw.setdefault("double_geometry", None)
+        return real_sample(*a, **kw)
+
+    monkeypatch.setattr(G, "sample_notes", sample_pre_f6)
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
