@@ -74,6 +74,26 @@ _SWEEP_UP_DIAG = {0: 4, 1: 5}  # UL (left), UR (right)
 # Full-height (row delta 2) straight ups only with a same-hand gap >= 0.25 s; shorter gaps
 # (0.15-0.25 s, and below 0.15 s) put the up cut on row 1 (patterns.txt F2 thresholds).
 _SWEEP_FULL_HEIGHT_GAP_S = 0.25
+# Lift (patterns.txt F3): a same-hand straight up right after a straight down, both on row 0,
+# moves up. Gap thresholds from the reference: >= 0.30 s full height (y=2 above the down),
+# 0.18-0.30 s one row (y=1); an inner-column down with >= 0.25 s takes the outward diagonal
+# (left UL at (0,1), right UR at (3,1)). The gap is the shorter of the gaps to the hand's
+# previous and next note, so the hand can also get back down in time.
+_LIFT_MIN_GAP_S = 0.18
+_LIFT_FULL_GAP_S = 0.30
+_LIFT_DIAG_GAP_S = 0.25
+_LIFT_INNER_X = {0: 1, 1: 2}
+_LIFT_DIAG = {0: (4, 0, 1), 1: (5, 3, 1)}  # (direction, x, y): UL left, UR right
+# Per-map stop targets = reference IQR edges (patterns.txt F3): up cuts on the bottom row
+# <= 0.20 and flat (same-row) U/D flips <= 0.30. The F3 row-0 target (<= 0.50) is not a stop
+# condition: row 0 is mostly down cuts, and chasing it on the F1 balanced maps lifted every
+# map down to the floor and pushed flat flips to 0.12-0.20 (reference median 0.23).
+# Lifting also stops at the reference medians (up cuts on row 0 0.152, flat flips 0.225),
+# so the rule cannot overshoot the reference.
+_LIFT_STOP_UP_BOTTOM = 0.20
+_LIFT_STOP_FLAT_FLIP = 0.30
+_LIFT_FLOOR_UP_BOTTOM = 0.15
+_LIFT_FLOOR_FLAT_FLIP = 0.225
 _ROTATION_CYCLE: tuple[tuple[int, int, int], ...] = (
     (0, 1, 4),  # L UL
     (1, 0, 6),  # R DL
@@ -105,6 +125,9 @@ class FlowReport:
     dots_added: int = 0
     dots_repaired: int = 0
     reverted: int = 0
+    ups_lifted: int = 0
+    arrow_stacks: int = 0
+    free_dots: int = 0
 
 
 def _order(n: Note) -> tuple[float, int, int, int]:
@@ -533,6 +556,121 @@ def repair_loose_dots(
     return working, repaired, reverted
 
 
+def _same_hand_neighbours(notes: Sequence[Note]) -> tuple[list[int | None], list[int | None]]:
+    prev: list[int | None] = [None] * len(notes)
+    nxt: list[int | None] = [None] * len(notes)
+    last: dict[int, int] = {}
+    for i, n in enumerate(notes):
+        p = last.get(n.color)
+        if p is not None:
+            prev[i] = p
+            nxt[p] = i
+        last[n.color] = i
+    return prev, nxt
+
+
+def _lift_metrics(notes: Sequence[Note]) -> tuple[float, float]:
+    """(up cuts on row 0, flat U/D flips) as the F3 stop targets count them.
+
+    Same-hand notes within 0.09 s form one swing, counted once by its first note.
+    """
+    ups = ups_bottom = flips = flat = 0
+    head: dict[int, Note] = {}
+    last_t: dict[int, float] = {}
+    for n in notes:
+        t_prev = last_t.get(n.color)
+        last_t[n.color] = n.time_s
+        if t_prev is not None and n.time_s - t_prev <= _MAX_STACK_SPACING_S + _EPS:
+            continue
+        p = head.get(n.color)
+        head[n.color] = n
+        if n.direction in (0, 4, 5):
+            ups += 1
+            ups_bottom += n.y == 0
+        if p is not None and {p.direction, n.direction} == {0, 1}:
+            flips += 1
+            flat += p.y == n.y
+    return ups_bottom / max(ups, 1), flat / max(flips, 1)
+
+
+def _lift_done(notes: Sequence[Note]) -> bool:
+    up_bottom, flat_flip = _lift_metrics(notes)
+    if up_bottom <= _LIFT_FLOOR_UP_BOTTOM + _EPS or flat_flip <= _LIFT_FLOOR_FLAT_FLIP + _EPS:
+        return True
+    return up_bottom <= _LIFT_STOP_UP_BOTTOM + _EPS and flat_flip <= _LIFT_STOP_FLAT_FLIP + _EPS
+
+
+def _lift_targets(hand: int, down_x: int, gap: float) -> list[tuple[int, int, int]]:
+    """(direction, x, y) moves for a flat up cut, preferred first (patterns.txt F3)."""
+    targets: list[tuple[int, int, int]] = []
+    if down_x == _LIFT_INNER_X[hand] and gap >= _LIFT_DIAG_GAP_S - _EPS:
+        targets.append(_LIFT_DIAG[hand])
+    if gap >= _LIFT_FULL_GAP_S - _EPS:
+        targets.append((0, down_x, 2))
+    targets.append((0, down_x, 1))
+    return targets
+
+
+def lift_flat_ups(
+    notes: list[Note],
+    *,
+    mask_cfg: PlayabilityConfig,
+    rng: random.Random,
+    base_hard: Collection[Violation] | None = None,
+) -> tuple[list[Note], int, int]:
+    """Move bottom-row up cuts that follow a bottom-row down cut up (patterns.txt F3).
+
+    Candidates are single straight ups on row 0 right after the same hand's single straight
+    down on row 0, with >= 0.18 s to the hand's previous and next note. They are tried in
+    random order until the map meets the F3 stop targets. Each move is validated like any
+    flow change. Returns (notes, lifted, reverted).
+    """
+    working = sorted(notes, key=_order)
+    if not working or _lift_done(working):
+        return working, 0, 0
+    if base_hard is None:
+        base_hard = _vcfg_hard(working, mask_cfg)
+    prev, nxt = _same_hand_neighbours(working)
+
+    def single(i: int, other: int | None) -> bool:
+        return other is None or abs(working[other].time_s - working[i].time_s) > _MAX_STACK_SPACING_S
+
+    cands: list[tuple[int, int, float]] = []
+    for i, n in enumerate(working):
+        p = prev[i]
+        if n.direction != 0 or n.y != 0 or p is None:
+            continue
+        d = working[p]
+        if d.direction != 1 or d.y != 0 or not single(p, prev[p]):
+            continue
+        gap = n.time_s - d.time_s
+        if nxt[i] is not None:
+            gap = min(gap, working[nxt[i]].time_s - n.time_s)
+        if gap >= _LIFT_MIN_GAP_S - _EPS:
+            cands.append((i, d.x, gap))
+    rng.shuffle(cands)
+
+    vision_gap = mask_cfg.vision_gap_s
+    lifted = 0
+    reverted = 0
+    for i, down_x, gap in cands:
+        if _lift_done(working):
+            break
+        n = working[i]
+        for d, x, y in _lift_targets(n.color, down_x, gap):
+            if not (_cell_free(working, n.time_s, x, y)
+                    and _vision_ok(working, n.color, n.time_s, x, y, vision_gap)):
+                continue
+            working[i] = replace(n, x=x, y=y, direction=d)
+            if window_ok(working, n.time_s, n.time_s, mask_cfg, base_hard=base_hard):
+                lifted += 1
+                break
+            working[i] = n
+        else:
+            reverted += 1
+    return working, lifted, reverted
+
+
 def find_runs(notes: Sequence[Note]) -> list[tuple[int, int]]:
     """Return half-open [i, j) ranges of >= 8 alternating single-note events (0.1-0.3 s gaps)."""
     n = len(notes)
@@ -746,8 +884,11 @@ def apply_flow(
     repaired_notes, dots_repaired, repair_reverted = repair_loose_dots(
         notes, mask_cfg=mask_cfg, base_hard=base_hard,
     )
+    lifted_notes, ups_lifted, lift_reverted = lift_flat_ups(
+        repaired_notes, mask_cfg=mask_cfg, rng=rng, base_hard=base_hard,
+    )
     after_snakes, runs_found, runs_rewritten, notes_rewritten, snake_reverted = apply_snakes(
-        repaired_notes, share=RUN_SHARE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
+        lifted_notes, share=RUN_SHARE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
     )
     after_stacks, dot_stacks, dots_added, stack_reverted = add_dot_stacks(
         after_snakes, bpm=bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
@@ -761,6 +902,7 @@ def apply_flow(
         dot_stacks=dot_stacks,
         dots_added=dots_added,
         dots_repaired=dots_repaired,
-        reverted=repair_reverted + snake_reverted + stack_reverted,
+        reverted=repair_reverted + lift_reverted + snake_reverted + stack_reverted,
+        ups_lifted=ups_lifted,
     )
     return after_stacks, report

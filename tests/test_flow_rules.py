@@ -19,6 +19,7 @@ from bsmaker.flow_rules import (
     auto_flow_level,
     final_flow_ok,
     find_runs,
+    lift_flat_ups,
     repair_loose_dots,
     rewrite_run,
     stack_spacing_s,
@@ -549,3 +550,96 @@ def test_stack_allowed_on_short_alternation() -> None:
     notes = [_note(1.0, 1, 1, 0, 0), _note(1.2, 2, 1, 1, 1), _note(1.4, 1, 1, 0, 1)]
     _, stacks, _, _ = _stacks(notes)
     assert stacks >= 2
+
+
+# --- F3 lift -------------------------------------------------------------------------------
+
+def _flat_flips(hand: int, x: int, gap: float, n: int, start: float = 1.0) -> list[Note]:
+    """Hand `hand` alternates D, U, D, U... on (x, 0), `gap` apart."""
+    return [_note(start + gap * k, x, 0, hand, 1 if k % 2 == 0 else 0) for k in range(n)]
+
+
+def _lift(notes, seed=0, cfg=None):
+    return lift_flat_ups(notes, mask_cfg=cfg or PlayabilityConfig(), rng=random.Random(seed))
+
+
+def test_lift_full_height_on_long_gap() -> None:
+    notes = _flat_flips(0, 0, 0.40, 3)
+    out, lifted, _ = _lift(notes)
+    assert lifted == 1
+    assert [(n.x, n.y) for n in out if n.direction == 0] == [(0, 2)]
+    assert final_flow_ok(notes, out, PlayabilityConfig())
+
+
+def test_lift_one_row_on_short_gap() -> None:
+    notes = _flat_flips(1, 3, 0.22, 3)
+    out, lifted, _ = _lift(notes)
+    assert lifted == 1
+    assert [(n.x, n.y) for n in out if n.direction == 0] == [(3, 1)]
+
+
+@pytest.mark.parametrize(("hand", "x", "d", "cell"), [(0, 1, 4, (0, 1)), (1, 2, 5, (3, 1))])
+def test_lift_inner_column_takes_outward_diagonal(hand, x, d, cell) -> None:
+    notes = _flat_flips(hand, x, 0.30, 3)
+    out, lifted, _ = _lift(notes)
+    assert lifted == 1
+    up = [n for n in out if n.time_s == notes[1].time_s]
+    assert [(n.direction, n.x, n.y) for n in up] == [(d, *cell)]
+
+
+def test_lift_skips_short_gaps_and_non_flat_pairs() -> None:
+    assert _lift(_flat_flips(0, 0, 0.15, 3))[1] == 0
+    # The down is on row 1: not a flat bottom-row pair.
+    notes = [_note(1.0, 0, 1, 0, 1), _note(1.4, 0, 0, 0, 0), _note(1.8, 0, 1, 0, 1)]
+    assert _lift(notes)[1] == 0
+
+
+def _flip_metrics(notes) -> tuple[float, float]:
+    ups = [n for n in notes if n.direction in (0, 4, 5)]
+    flips = flat = 0
+    for hand in (0, 1):
+        seq = [n for n in notes if n.color == hand]
+        for a, b in zip(seq, seq[1:]):
+            if {a.direction, b.direction} == {0, 1}:
+                flips += 1
+                flat += a.y == b.y
+    return sum(n.y == 0 for n in ups) / len(ups), flat / flips
+
+
+def test_lift_stops_at_reference_targets() -> None:
+    # Every up cut starts flat on row 0. Lifting stops as soon as up cuts on row 0 <= 0.20
+    # and flat flips <= 0.30, or either reaches the reference median (0.15 / 0.225).
+    notes = sorted(_flat_flips(0, 0, 0.40, 40) + _flat_flips(1, 3, 0.40, 40, start=1.2),
+                   key=lambda n: (n.time_s, n.color))
+    out, lifted, _ = _lift(notes)
+    up_bottom, flat_flip = _flip_metrics(out)
+    assert (up_bottom <= 0.20 and flat_flip <= 0.30) or up_bottom <= 0.15 or flat_flip <= 0.225
+    # ... and stops right there: one lift fewer would miss the targets.
+    assert up_bottom > 0.15 - 1 / 40 and flat_flip > 0.225 - 2 / 78
+    assert 0 < lifted < 40
+    assert final_flow_ok(notes, out, PlayabilityConfig())
+
+
+def test_lift_reverted_when_window_fails(monkeypatch) -> None:
+    import bsmaker.flow_rules as fr
+    monkeypatch.setattr(fr, "window_ok", lambda *a, **k: False)
+    notes = _flat_flips(0, 0, 0.40, 3)
+    out, lifted, reverted = _lift(notes)
+    assert lifted == 0 and reverted == 1 and out == notes
+
+
+def test_lift_respects_cell_clearance() -> None:
+    notes = _flat_flips(0, 0, 0.40, 3)
+    # Other-hand notes on (0, 2) and (0, 1) next to the up: no free target cell.
+    blockers = [_note(1.30, 0, 2, 1, 8), _note(1.50, 0, 1, 1, 8)]
+    _, lifted, _ = _lift(sorted(notes + blockers, key=lambda n: (n.time_s, n.color)))
+    assert lifted == 0
+
+
+def test_apply_flow_reports_lifts() -> None:
+    notes = _flat_flips(0, 0, 0.40, 3)
+    env = np.ones(400, dtype=np.float32)
+    out, rep = apply_flow(notes, bpm=150.0, onset_env=env, onset_hop_s=HOP_S, level=1, seed=0,
+                          mask_cfg=PlayabilityConfig())
+    assert rep.ups_lifted == 1
+    assert final_flow_ok(notes, out, PlayabilityConfig())
