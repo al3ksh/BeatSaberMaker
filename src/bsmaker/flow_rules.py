@@ -32,6 +32,29 @@ _OTHER_HAND_MARGIN_S = 0.05
 _CELL_CLEARANCE_S = 0.15
 _ONSET_PERCENTILE = 50.0
 _SECOND_DOT_CHANCE = 0.5
+
+# Stack profiles (patterns.txt F5). "tech" keeps the dot-tail stacks above. "window" (flow
+# level 1, the balanced default) makes same-time arrow stacks: the reference stack swing
+# share is 0.051 with no dot-tail sliders (target 4-6% of swings).
+WINDOW = "window"
+TECH = "tech"
+_WINDOW_STACK_SHARE = 0.05
+# A stack is one swing through two cells: a calm swing (>= 0.20 s to the hand's neighbours,
+# as for dot stacks), no other-hand note within 0.10 s except an exact double, and both
+# cells on the hand's own half (left x <= 1, right x >= 2) so stacks never cross.
+_WINDOW_OTHER_HAND_S = 0.10
+_OWN_SIDE = {0: (0, 1), 1: (2, 3)}
+# Standalone dots (window profile): after a same-hand rest of >= 1 beat, a swing that would
+# be a reset (< 90 deg from the previous swing) or a big jump may become a dot. A big jump
+# is >= 3 cells from where the previous swing ends (its cell + one step along its cut) to
+# where the new one starts (its cell - one step). A plain cell distance of >= 2 also counted
+# every full-height D/U flip: 84-258 candidates per F1 balanced map, all sprayed dots; this
+# definition leaves 0-17 per map. Alex's play-test: loose dots felt bad, so at most 3% of
+# swings (F5 allows <= 5%).
+_FREE_DOT_REST_BEATS = 1.0
+_FREE_DOT_JUMP_CELLS = 3
+_FREE_DOT_MAX_SHARE = 0.03
+_SWING_MERGE_S = 0.09  # same-hand notes this close are one swing (pattern analysis)
 # No stacks inside weave runs (tuned after the GHOST end-to-end run: stacks mid-stream cut the
 # longest weave from 29 to 17 notes). Same weave definition as compare_tech.py.
 _WEAVE_MIN_LEN = 8
@@ -183,15 +206,47 @@ def _hard_ok(
         return lo <= v.time_s <= hi
 
     kept = [n for n in notes if _key(n) not in added] if added else list(notes)
-    events, dropped = to_events(kept)
-    if dropped or any(in_range(v) for v in check(events, mask_cfg).hard):
-        return False
-    if any(in_range(v) for v in check_exact(kept, mask_cfg).hard):
-        return False
-    events, dropped = to_events(notes)
-    if dropped:
-        return False
-    return all(v in base_hard for v in check(events, validation_cfg(mask_cfg)).hard if in_range(v))
+    for view in _stack_views(kept):
+        events, dropped = to_events(view)
+        if dropped or any(in_range(v) for v in check(events, mask_cfg).hard):
+            return False
+        if any(in_range(v) for v in check_exact(view, mask_cfg).hard):
+            return False
+    vcfg = validation_cfg(mask_cfg)
+    for view in _stack_views(notes):
+        events, dropped = to_events(view)
+        if dropped:
+            return False
+        if not all(v in base_hard for v in check(events, vcfg).hard if in_range(v)):
+            return False
+    return True
+
+
+def _stack_views(notes: Sequence[Note]) -> list[list[Note]]:
+    """The notes as the checker sees them, once per way of reading same-time arrow stacks.
+
+    A same-time arrow stack (one hand, identical time, same direction) is one swing through
+    several cells. to_events keeps the first note of the stack (by x, y) and drops the rest,
+    so the checker sees one cell. Every hard rule must hold with the stack read as its first
+    cell and as its last cell. Any other same-time group stays and fails as merged notes.
+    """
+    groups: dict[Key, list[int]] = {}
+    for i, n in enumerate(notes):
+        groups.setdefault(_key(n), []).append(i)
+    first: set[int] = set()
+    last: set[int] = set()
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        members = sorted(idx, key=lambda i: _order(notes[i]))
+        dirs = {notes[i].direction for i in members}
+        if len(dirs) != 1 or 8 in dirs:
+            continue
+        first.update(members[1:])
+        last.update(members[:-1])
+    if not first:
+        return [list(notes)]
+    return [[n for i, n in enumerate(notes) if i not in drop] for drop in (first, last)]
 
 
 def final_flow_ok(
@@ -393,14 +448,25 @@ def add_dot_stacks(
     rng: random.Random,
     mask_cfg: PlayabilityConfig,
     base_hard: Collection[Violation] | None = None,
+    profile: str = TECH,
 ) -> tuple[list[Note], int, int, int]:
-    """Add swing-extension dot stacks after eligible arrows; return (notes, stacks, dots, reverted).
+    """Add stacks to eligible arrows; return (notes, stacks, dots, reverted).
 
-    `base_hard` is the validation-profile violation set of the map before the flow layer
-    (default: computed from `notes`).
+    Profile "tech": swing-extension dot stacks after the arrow (slider tails). Profile
+    "window": same-time arrow stacks on about 5% of swings (`chance` > 0 switches them on;
+    dots is then 0). `base_hard` is the validation-profile violation set of the map before
+    the flow layer (default: computed from `notes`).
     """
+    if profile not in (TECH, WINDOW):
+        raise ValueError(f"unknown stack profile: {profile!r}")
     if chance <= 0.0:
         return list(notes), 0, 0, 0
+    if profile == WINDOW:
+        out, stacks, reverted = _add_arrow_stacks(
+            notes, onset_env=onset_env, onset_hop_s=onset_hop_s, rng=rng, mask_cfg=mask_cfg,
+            base_hard=base_hard,
+        )
+        return out, stacks, 0, reverted
 
     ordered = sorted(notes, key=_order)
     spacing = stack_spacing_s(bpm)
@@ -486,6 +552,162 @@ def add_dot_stacks(
             reverted += 1
 
     return working, stacks, dots_added, reverted
+
+
+def _swing_count(notes: Sequence[Note]) -> int:
+    """Swings as pattern analysis counts them: same-hand notes within 0.09 s are one swing."""
+    count = 0
+    last_t: dict[int, float] = {}
+    for n in notes:
+        t_prev = last_t.get(n.color)
+        last_t[n.color] = n.time_s
+        if t_prev is None or n.time_s - t_prev > _SWING_MERGE_S + _EPS:
+            count += 1
+    return count
+
+
+def _own_side(hand: int, x: int) -> bool:
+    return x in _OWN_SIDE[hand]
+
+
+def _calm_swing(notes: Sequence[Note], i: int, prev: Sequence[int | None],
+                nxt: Sequence[int | None], gap: float) -> bool:
+    t = notes[i].time_s
+    p, q = prev[i], nxt[i]
+    return ((p is None or t - notes[p].time_s >= gap - _EPS)
+            and (q is None or notes[q].time_s - t >= gap - _EPS))
+
+
+def _other_hand_clear(working: Sequence[Note], hand: int, t: float) -> bool:
+    """No other-hand note within 0.10 s, except an exact double on that hand's own half."""
+    for m in _between(working, t - _WINDOW_OTHER_HAND_S, t + _WINDOW_OTHER_HAND_S):
+        if m.color == hand:
+            continue
+        if abs(m.time_s - t) > _DOUBLE_TOL_S or not _own_side(m.color, m.x):
+            return False
+    return True
+
+
+def _add_arrow_stacks(
+    notes: Sequence[Note],
+    *,
+    onset_env: np.ndarray,
+    onset_hop_s: float,
+    rng: random.Random,
+    mask_cfg: PlayabilityConfig,
+    base_hard: Collection[Violation] | None,
+) -> tuple[list[Note], int, int]:
+    """Window profile: same-time arrow stacks on ~5% of swings. Returns (notes, stacks, reverted).
+
+    The second note copies the arrow at the same time, one cell along the cut line behind it
+    (or ahead of it when behind leaves the grid or the hand's half). Candidates are calm,
+    loud (onset >= p50) swings outside weave runs, tried in random order.
+    """
+    ordered = sorted(notes, key=_order)
+    env = np.asarray(onset_env, dtype=np.float32)
+    if not ordered or len(env) == 0:
+        return ordered, 0, 0
+    budget = round(_WINDOW_STACK_SHARE * _swing_count(ordered))
+    if budget <= 0:
+        return ordered, 0, 0
+    if base_hard is None:
+        base_hard = _vcfg_hard(ordered, mask_cfg)
+    threshold = float(np.percentile(env, _ONSET_PERCENTILE))
+    vision_gap = mask_cfg.vision_gap_s
+    prev, nxt = _same_hand_neighbours(ordered)
+    in_weave = _weave_inner(ordered)
+    cands = [
+        i for i, n in enumerate(ordered)
+        if n.direction in _DIRS and i not in in_weave and _own_side(n.color, n.x)
+        and _calm_swing(ordered, i, prev, nxt, _MIN_SAME_HAND_GAP_S)
+        and _has_onset(env, onset_hop_s, threshold, n.time_s)
+    ]
+    rng.shuffle(cands)
+
+    working = ordered
+    stacks = 0
+    reverted = 0
+    for i in cands:
+        if stacks >= budget:
+            break
+        n = ordered[i]
+        if not _other_hand_clear(working, n.color, n.time_s):
+            continue
+        dx, dy = _DIRS[n.direction]
+        tried = False
+        for cx, cy in ((n.x + dx, n.y + dy), (n.x - dx, n.y - dy)):
+            if not (0 <= cy <= 2 and _own_side(n.color, cx)):
+                continue
+            if not (_cell_free(working, n.time_s, cx, cy)
+                    and _vision_ok(working, n.color, n.time_s, cx, cy, vision_gap)):
+                continue
+            tried = True
+            trial = sorted([*working, replace(n, x=cx, y=cy)], key=_order)
+            if window_ok(trial, n.time_s, n.time_s, mask_cfg, base_hard=base_hard):
+                working = trial
+                stacks += 1
+                break
+        else:
+            reverted += tried
+    return working, stacks, reverted
+
+
+def add_free_dots(
+    notes: list[Note],
+    *,
+    bpm: float,
+    rng: random.Random,
+    mask_cfg: PlayabilityConfig,
+    base_hard: Collection[Violation] | None = None,
+) -> tuple[list[Note], int, int]:
+    """Window profile: turn a few swings after a rest into dots. Returns (notes, dots, reverted).
+
+    Only a single arrow >= 1 beat after the same hand's previous arrow qualifies, and only
+    when it would be a reset (< 90 deg from the previous swing) or a big jump (>= 3 cells
+    from the previous swing's end to this swing's start): the places where a dot removes an
+    awkward swing. At most 3% of swings; each change is validated like any flow change.
+    """
+    ordered = sorted(notes, key=_order)
+    if not ordered or not math.isfinite(bpm) or bpm <= 0.0:
+        return ordered, 0, 0
+    budget = math.floor(_FREE_DOT_MAX_SHARE * _swing_count(ordered))
+    if budget <= 0:
+        return ordered, 0, 0
+    if base_hard is None:
+        base_hard = _vcfg_hard(ordered, mask_cfg)
+    rest = _FREE_DOT_REST_BEATS * 60.0 / bpm
+    prev, nxt = _same_hand_neighbours(ordered)
+    cands = []
+    for i, n in enumerate(ordered):
+        p = prev[i]
+        if n.direction == 8 or p is None or ordered[p].direction == 8:
+            continue
+        q = ordered[p]
+        if n.time_s - q.time_s < rest - _EPS:
+            continue
+        if nxt[i] is not None and ordered[nxt[i]].time_s - n.time_s <= _SWING_MERGE_S + _EPS:
+            continue  # the swing is a stack or slider: keep it whole
+        reset = angle_diff(direction_angle(n.direction), direction_angle(q.direction)) < 90.0
+        (qx, qy), (nx, ny) = _DIRS[q.direction], _DIRS[n.direction]
+        travel = max(abs((n.x - nx) - (q.x + qx)), abs((n.y - ny) - (q.y + qy)))
+        if reset or travel >= _FREE_DOT_JUMP_CELLS:
+            cands.append(i)
+    rng.shuffle(cands)
+
+    working = list(ordered)
+    dots = 0
+    reverted = 0
+    for i in cands:
+        if dots >= budget:
+            break
+        n = working[i]
+        working[i] = replace(n, direction=8)
+        if window_ok(working, n.time_s, n.time_s, mask_cfg, base_hard=base_hard):
+            dots += 1
+        else:
+            working[i] = n
+            reverted += 1
+    return working, dots, reverted
 
 
 def _on_ray(line: tuple[int, int, int, int, float], n: Note) -> bool:
@@ -580,7 +802,7 @@ def _lift_metrics(notes: Sequence[Note]) -> tuple[float, float]:
     for n in notes:
         t_prev = last_t.get(n.color)
         last_t[n.color] = n.time_s
-        if t_prev is not None and n.time_s - t_prev <= _MAX_STACK_SPACING_S + _EPS:
+        if t_prev is not None and n.time_s - t_prev <= _SWING_MERGE_S + _EPS:
             continue
         p = head.get(n.color)
         head[n.color] = n
@@ -633,7 +855,7 @@ def lift_flat_ups(
     prev, nxt = _same_hand_neighbours(working)
 
     def single(i: int, other: int | None) -> bool:
-        return other is None or abs(working[other].time_s - working[i].time_s) > _MAX_STACK_SPACING_S
+        return other is None or abs(working[other].time_s - working[i].time_s) > _SWING_MERGE_S
 
     cands: list[tuple[int, int, float]] = []
     for i, n in enumerate(working):
@@ -863,6 +1085,11 @@ def auto_flow_level(styles: Sequence[str]) -> int:
     return 2 if "tech" in styles else 1
 
 
+def stack_profile(level: int) -> str:
+    """Stack profile for a flow level: 1 (balanced default) window, 2-3 (tech) tech."""
+    return WINDOW if level == 1 else TECH
+
+
 def apply_flow(
     notes: list[Note],
     *,
@@ -873,7 +1100,11 @@ def apply_flow(
     seed: int,
     mask_cfg: PlayabilityConfig,
 ) -> tuple[list[Note], FlowReport]:
-    """Repair loose dots, then snake rewrites, then dot stacks, for flow level 0-3."""
+    """Flow level 0-3: repair loose dots, lift flat up cuts, snake runs, then stacks.
+
+    Level 1 uses the window stack profile (a few standalone dots after rests, then same-time
+    arrow stacks); levels 2-3 use the tech profile (dot-tail stacks).
+    """
     if level not in (0, 1, 2, 3):
         raise ValueError(f"flow level must be 0, 1, 2, or 3, got {level}")
     if level == 0:
@@ -890,19 +1121,28 @@ def apply_flow(
     after_snakes, runs_found, runs_rewritten, notes_rewritten, snake_reverted = apply_snakes(
         lifted_notes, share=RUN_SHARE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
     )
-    after_stacks, dot_stacks, dots_added, stack_reverted = add_dot_stacks(
+    profile = stack_profile(level)
+    free_dots = free_reverted = 0
+    if profile == WINDOW:
+        after_snakes, free_dots, free_reverted = add_free_dots(
+            after_snakes, bpm=bpm, rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
+        )
+    after_stacks, stacks, dots_added, stack_reverted = add_dot_stacks(
         after_snakes, bpm=bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
         chance=STACK_CHANCE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
+        profile=profile,
     )
     report = FlowReport(
         level=level,
         runs_found=runs_found,
         runs_rewritten=runs_rewritten,
         notes_rewritten=notes_rewritten,
-        dot_stacks=dot_stacks,
+        dot_stacks=stacks if profile == TECH else 0,
         dots_added=dots_added,
         dots_repaired=dots_repaired,
-        reverted=repair_reverted + lift_reverted + snake_reverted + stack_reverted,
+        reverted=repair_reverted + lift_reverted + snake_reverted + free_reverted + stack_reverted,
         ups_lifted=ups_lifted,
+        arrow_stacks=stacks if profile == WINDOW else 0,
+        free_dots=free_dots,
     )
     return after_stacks, report

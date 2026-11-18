@@ -18,8 +18,12 @@ from bsmaker.flow_rules import (
     apply_snakes,
     auto_flow_level,
     final_flow_ok,
+    TECH,
+    WINDOW,
+    add_free_dots,
     find_runs,
     lift_flat_ups,
+    stack_profile,
     repair_loose_dots,
     rewrite_run,
     stack_spacing_s,
@@ -643,3 +647,137 @@ def test_apply_flow_reports_lifts() -> None:
                           mask_cfg=PlayabilityConfig())
     assert rep.ups_lifted == 1
     assert final_flow_ok(notes, out, PlayabilityConfig())
+
+
+# --- F5 window stack profile --------------------------------------------------------------
+
+def _sorted(notes):
+    return sorted(notes, key=lambda n: (n.time_s, n.color, n.x, n.y))
+
+
+def _calm_map(n: int = 40, hand_gap: float = 1.0) -> list[Note]:
+    """Hands alternate every hand_gap/2 s; each hand flips D on row 2 / U on row 0."""
+    notes = []
+    for k in range(n):
+        hand = k % 2
+        x = 1 if hand == 0 else 2
+        down = (k // 2) % 2 == 0
+        notes.append(_note(1.0 + k * hand_gap / 2, x, 2 if down else 0, hand, 1 if down else 0))
+    return notes
+
+
+def _window(notes, seed=0, cfg=None):
+    env = np.ones(4000, dtype=np.float32)
+    return add_dot_stacks(notes, bpm=120.0, onset_env=env, onset_hop_s=HOP_S, chance=0.25,
+                          rng=random.Random(seed), mask_cfg=cfg or PlayabilityConfig(),
+                          profile=WINDOW)
+
+
+def test_stack_profile_by_level() -> None:
+    assert stack_profile(1) == WINDOW
+    assert stack_profile(2) == TECH and stack_profile(3) == TECH
+
+
+def test_final_flow_ok_accepts_same_time_arrow_stack() -> None:
+    cfg = PlayabilityConfig()
+    pre = [_note(1.0, 1, 2, 0, 1), _note(2.0, 1, 0, 0, 0)]
+    assert final_flow_ok(pre, _sorted([*pre, _note(1.0, 1, 1, 0, 1)]), cfg)
+    # Same time, different directions: merged notes, never a stack.
+    assert not final_flow_ok(pre, _sorted([*pre, _note(1.0, 1, 1, 0, 7)]), cfg)
+
+
+def test_window_stacks_are_same_time_arrows_on_the_cut_line() -> None:
+    notes = _calm_map()
+    out, stacks, dots, _ = _window(notes)
+    assert stacks == 2  # round(0.05 * 40 swings)
+    assert dots == 0 and not [n for n in out if n.direction == 8]
+    assert len(out) == len(notes) + stacks
+    by_key: dict = {}
+    for n in out:
+        by_key.setdefault((n.time_s, n.color), []).append(n)
+    groups = [g for g in by_key.values() if len(g) == 2]
+    assert len(groups) == stacks
+    for a, b in groups:
+        assert a.direction == b.direction
+        assert a.x == b.x and abs(a.y - b.y) == 1  # vertical cuts: one row apart
+        assert all(n.x in ((0, 1) if n.color == 0 else (2, 3)) for n in (a, b))
+    assert final_flow_ok(notes, out, PlayabilityConfig())
+
+
+def test_window_stacks_need_quiet_other_hand() -> None:
+    # The other hand plays 0.06 s after every note: no stack anywhere.
+    notes = _calm_map()
+    busy = [_note(n.time_s + 0.06, 0 if n.color == 1 else 3, 1, 1 - n.color, 8) for n in notes]
+    _, stacks, _, _ = _window(_sorted(notes + busy))
+    assert stacks == 0
+
+
+def test_window_chance_zero_identity() -> None:
+    notes = _calm_map()
+    env = np.ones(4000, dtype=np.float32)
+    out, stacks, _, _ = add_dot_stacks(notes, bpm=120.0, onset_env=env, onset_hop_s=HOP_S,
+                                       chance=0.0, rng=random.Random(0),
+                                       mask_cfg=PlayabilityConfig(), profile=WINDOW)
+    assert out == notes and stacks == 0
+
+
+def _right_filler(n: int = 40, start: float = 1.25) -> list[Note]:
+    return [_note(start + 0.5 * k, 3, 1, 1, 1 if k % 2 == 0 else 0) for k in range(n)]
+
+
+def _free(notes, bpm=120.0):
+    return add_free_dots(notes, bpm=bpm, rng=random.Random(0), mask_cfg=PlayabilityConfig())
+
+
+def test_free_dot_replaces_reset_after_rest() -> None:
+    # Left: D, then D again 2 beats later (a reset), then U 1 s later.
+    left = [_note(1.0, 0, 1, 0, 1), _note(2.0, 0, 1, 0, 1), _note(3.0, 0, 1, 0, 0)]
+    notes = _sorted(left + _right_filler())
+    out, dots, _ = _free(notes)
+    assert dots == 1
+    assert [(n.time_s, n.color) for n in out if n.direction == 8] == [(2.0, 0)]
+    assert final_flow_ok(notes, out, PlayabilityConfig())
+
+
+def test_free_dot_needs_rest_and_reset() -> None:
+    # Rest shorter than one beat (0.5 s at 120 bpm): no dot.
+    left = [_note(1.0, 0, 1, 0, 1), _note(1.4, 0, 1, 0, 1), _note(2.4, 0, 1, 0, 0)]
+    assert _free(_sorted(left + _right_filler()))[1] == 0
+    # A normal flip after the rest: no dot.
+    left = [_note(1.0, 0, 1, 0, 1), _note(2.0, 0, 1, 0, 0), _note(3.0, 0, 1, 0, 1)]
+    assert _free(_sorted(left + _right_filler()))[1] == 0
+    # A full-height flip (D on row 2, then U on row 0) is no jump: the D ends where the U starts.
+    left = [_note(1.0, 0, 2, 0, 1), _note(2.0, 0, 0, 0, 0), _note(3.0, 0, 2, 0, 1)]
+    assert _free(_sorted(left + _right_filler()))[1] == 0
+
+
+def test_free_dot_on_big_jump() -> None:
+    # L at (0, 0) exits at (-1, 0); R at (3, 2) enters from (2, 2): 3 cells of travel -> dot.
+    left = [_note(1.0, 0, 0, 0, 2), _note(2.0, 3, 2, 0, 3), _note(3.0, 0, 0, 0, 2)]
+    out, dots, _ = _free(_sorted(left + _right_filler()))
+    assert dots == 1
+    assert [(n.time_s, n.color) for n in out if n.direction == 8] == [(2.0, 0)]
+    # Same flip with R at (2, 2), entering from (1, 2): 2 cells, an ordinary swing -> no dot.
+    left = [_note(1.0, 0, 0, 0, 2), _note(2.0, 2, 2, 0, 3), _note(3.0, 0, 0, 0, 2)]
+    assert _free(_sorted(left + _right_filler()))[1] == 0
+
+
+def test_free_dots_capped_at_three_percent() -> None:
+    # 10 left-hand resets after rests among 50 swings: at most floor(0.03 * 50) = 1 dot.
+    left = [_note(1.0 + 2.0 * k, 0, 1, 0, 1) for k in range(10)]
+    _, dots, _ = _free(_sorted(left + _right_filler(start=1.5)))
+    assert dots == 1
+
+
+def test_apply_flow_level1_uses_window_profile() -> None:
+    notes = _calm_map()
+    env = np.ones(4000, dtype=np.float32)
+    cfg = PlayabilityConfig()
+    out, rep = apply_flow(notes, bpm=120.0, onset_env=env, onset_hop_s=HOP_S, level=1, seed=0,
+                          mask_cfg=cfg)
+    assert rep.arrow_stacks >= 1 and rep.dot_stacks == 0 and rep.dots_added == 0
+    assert final_flow_ok(notes, out, cfg)
+    out2, rep2 = apply_flow(notes, bpm=120.0, onset_env=env, onset_hop_s=HOP_S, level=2, seed=0,
+                            mask_cfg=cfg)
+    assert rep2.arrow_stacks == 0 and rep2.free_dots == 0 and rep2.dot_stacks >= 1
+    assert final_flow_ok(notes, out2, cfg)
