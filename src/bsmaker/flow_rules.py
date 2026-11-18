@@ -44,16 +44,29 @@ _WINDOW_STACK_SHARE = 0.05
 # cells on the hand's own half (left x <= 1, right x >= 2) so stacks never cross.
 _WINDOW_OTHER_HAND_S = 0.10
 _OWN_SIDE = {0: (0, 1), 1: (2, 3)}
-# Standalone dots (window profile): after a same-hand rest of >= 1 beat, a swing that would
-# be a reset (< 90 deg from the previous swing) or a big jump may become a dot. A big jump
-# is >= 3 cells from where the previous swing ends (its cell + one step along its cut) to
-# where the new one starts (its cell - one step). A plain cell distance of >= 2 also counted
-# every full-height D/U flip: 84-258 candidates per F1 balanced map, all sprayed dots; this
-# definition leaves 0-17 per map. Alex's play-test: loose dots felt bad, so at most 3% of
-# swings (F5 allows <= 5%).
+# Standalone dots (window profile, patterns.txt G6/F5). Reference: dot-only swings are 4.4% of
+# swings (dot share 0.054), 91% of them after a same-hand rest of >= 1 beat, and 98% are played
+# as the flip of the previous swing (next arrow within 90 deg of the arrow before the dot:
+# 0 deg 54%, 45 deg 37%, 90 deg 7%; .superpowers/fixes/dots-scratch/ref_dots.py, 329 dots),
+# which is what the checker assumes for a dot. Alex: no loose dots inside dense patterns.
+# So a dot may sit (or a model dot may stay) on a single swing that is
+# - >= 1 beat and >= slow_gap_s after the same hand's previous arrow (a gap the checker treats
+#   as fast is no rest; this also guards double-time BPM grids),
+# - >= 0.20 s before the hand's next note (not a stack or slider head),
+# - not part of a double (reference: 3.6% of dot swings are in a double),
+# - calm: the nearest other-time note (either hand) on at least one side is > 0.30 s away;
+#   both sides <= 0.30 s is a stream of > 3.3 notes/s (same bound as _MAX_RUN_GAP_S).
+# Target 4.5% of swings, counting the dots the map already has, so the map ends near the
+# reference 4.4% and never above it, and at most 25% of the calm rest spots (reference
+# difficulties that use standalone dots put them on 10-23% of these spots, median 5.5%): a
+# dense song with few calm spots gets fewer dots, not a dot on every other calm swing. Swings that would be a reset (< 90 deg from the previous
+# swing) or a big jump (>= 3 cells from the previous swing's end to this swing's start) go
+# first: there a dot also removes an awkward swing.
 _FREE_DOT_REST_BEATS = 1.0
 _FREE_DOT_JUMP_CELLS = 3
-_FREE_DOT_MAX_SHARE = 0.03
+_FREE_DOT_TARGET_SHARE = 0.045
+_FREE_DOT_SPOT_SHARE = 0.25
+_FREE_DOT_DENSE_GAP_S = 0.30
 _SWING_MERGE_S = 0.09  # same-hand notes this close are one swing (pattern analysis)
 # No stacks inside weave runs (tuned after the GHOST end-to-end run: stacks mid-stream cut the
 # longest weave from 29 to 17 notes). Same weave definition as compare_tech.py.
@@ -652,6 +665,46 @@ def _add_arrow_stacks(
     return working, stacks, reverted
 
 
+def _rest_dot_spots(
+    notes: Sequence[Note],
+    prev: Sequence[int | None],
+    nxt: Sequence[int | None],
+    *,
+    bpm: float,
+    mask_cfg: PlayabilityConfig,
+) -> list[bool]:
+    """Per time-sorted note: a calm single swing after a same-hand rest (see _FREE_DOT_*).
+
+    The note's own direction and its previous note's direction are not checked here.
+    """
+    spots = [False] * len(notes)
+    if not notes or not math.isfinite(bpm) or bpm <= 0.0:
+        return spots
+    rest = max(_FREE_DOT_REST_BEATS * 60.0 / bpm, mask_cfg.slow_gap_s)
+    times = [n.time_s for n in notes]
+    for i, n in enumerate(notes):
+        p, q = prev[i], nxt[i]
+        t = n.time_s
+        if p is None or t - notes[p].time_s < rest - _EPS:
+            continue
+        if q is not None and notes[q].time_s - t < _MIN_SAME_HAND_GAP_S - _EPS:
+            continue
+        a = bisect.bisect_left(times, t - _DOUBLE_TOL_S - _EPS)
+        b = bisect.bisect_right(times, t + _DOUBLE_TOL_S + _EPS)
+        if any(notes[k].color != n.color for k in range(a, b)):
+            continue  # part of a double
+        gap_before = t - times[a - 1] if a > 0 else math.inf
+        gap_after = times[b] - t if b < len(times) else math.inf
+        spots[i] = max(gap_before, gap_after) > _FREE_DOT_DENSE_GAP_S + _EPS
+    return spots
+
+
+def _dot_target(notes: Sequence[Note], spots: int) -> int:
+    """Dots a window-profile map should end with: 4.5% of swings, <= 25% of `spots`."""
+    return min(round(_FREE_DOT_TARGET_SHARE * _swing_count(notes)),
+               math.floor(_FREE_DOT_SPOT_SHARE * spots))
+
+
 def add_free_dots(
     notes: list[Note],
     *,
@@ -660,46 +713,48 @@ def add_free_dots(
     mask_cfg: PlayabilityConfig,
     base_hard: Collection[Violation] | None = None,
 ) -> tuple[list[Note], int, int]:
-    """Window profile: turn a few swings after a rest into dots. Returns (notes, dots, reverted).
+    """Window profile: turn swings after a rest into dots. Returns (notes, dots, reverted).
 
-    Only a single arrow >= 1 beat after the same hand's previous arrow qualifies, and only
-    when it would be a reset (< 90 deg from the previous swing) or a big jump (>= 3 cells
-    from the previous swing's end to this swing's start): the places where a dot removes an
-    awkward swing. At most 3% of swings; each change is validated like any flow change.
+    Candidates are single arrows on a calm rest spot (`_rest_dot_spots`) whose same-hand
+    neighbours are arrows (no dot runs). Dots are added until the map has 4.5% of its swings
+    as dots, counting the dots it already has; resets and big jumps go first, each group in
+    random order. Each change is validated like any flow change.
     """
     ordered = sorted(notes, key=_order)
     if not ordered or not math.isfinite(bpm) or bpm <= 0.0:
         return ordered, 0, 0
-    budget = math.floor(_FREE_DOT_MAX_SHARE * _swing_count(ordered))
+    prev, nxt = _same_hand_neighbours(ordered)
+    spots = _rest_dot_spots(ordered, prev, nxt, bpm=bpm, mask_cfg=mask_cfg)
+    budget = _dot_target(ordered, sum(spots)) - sum(1 for n in ordered if n.direction == 8)
     if budget <= 0:
         return ordered, 0, 0
     if base_hard is None:
         base_hard = _vcfg_hard(ordered, mask_cfg)
-    rest = _FREE_DOT_REST_BEATS * 60.0 / bpm
-    prev, nxt = _same_hand_neighbours(ordered)
-    cands = []
+    awkward: list[int] = []
+    plain: list[int] = []
     for i, n in enumerate(ordered):
         p = prev[i]
-        if n.direction == 8 or p is None or ordered[p].direction == 8:
+        if not spots[i] or n.direction == 8 or p is None or ordered[p].direction == 8:
+            continue
+        if nxt[i] is not None and ordered[nxt[i]].direction == 8:
             continue
         q = ordered[p]
-        if n.time_s - q.time_s < rest - _EPS:
-            continue
-        if nxt[i] is not None and ordered[nxt[i]].time_s - n.time_s <= _SWING_MERGE_S + _EPS:
-            continue  # the swing is a stack or slider: keep it whole
         reset = angle_diff(direction_angle(n.direction), direction_angle(q.direction)) < 90.0
         (qx, qy), (nx, ny) = _DIRS[q.direction], _DIRS[n.direction]
         travel = max(abs((n.x - nx) - (q.x + qx)), abs((n.y - ny) - (q.y + qy)))
-        if reset or travel >= _FREE_DOT_JUMP_CELLS:
-            cands.append(i)
-    rng.shuffle(cands)
+        (awkward if reset or travel >= _FREE_DOT_JUMP_CELLS else plain).append(i)
+    rng.shuffle(awkward)
+    rng.shuffle(plain)
 
     working = list(ordered)
     dots = 0
     reverted = 0
-    for i in cands:
+    for i in awkward + plain:
         if dots >= budget:
             break
+        p, q = prev[i], nxt[i]
+        if working[p].direction == 8 or (q is not None and working[q].direction == 8):
+            continue  # a neighbour became a dot
         n = working[i]
         working[i] = replace(n, direction=8)
         if window_ok(working, n.time_s, n.time_s, mask_cfg, base_hard=base_hard):
@@ -731,11 +786,14 @@ def repair_loose_dots(
     *,
     mask_cfg: PlayabilityConfig,
     base_hard: Collection[Violation] | None = None,
+    bpm: float | None = None,
 ) -> tuple[list[Note], int, int]:
     """Turn dots that are not swing extensions into parity-expected arrows.
 
     A dot is an extension when it lies on the cut ray of the same hand's previous arrow (or
-    extension dot) within 0.35 s, as in compare_tech.py. Every other dot whose hand has a
+    extension dot) within 0.35 s, as in compare_tech.py. With `bpm` (window profile), a dot
+    on a calm rest spot after an arrow (`_rest_dot_spots`) also stays, up to 4.5% of swings
+    (longest rests first): the reference's standalone dot. Every other dot whose hand has a
     previous swing becomes an arrow cutting opposite to that swing (a direction within 45 deg,
     straight up/down first); each candidate is validated like any flow change and the dot
     stays if none passes. Returns (notes, repaired, reverted).
@@ -743,6 +801,16 @@ def repair_loose_dots(
     working = sorted(notes, key=_order)
     if base_hard is None:
         base_hard = _vcfg_hard(working, mask_cfg)
+    keep: set[int] = set()
+    if bpm is not None:
+        prev, nxt = _same_hand_neighbours(working)
+        spots = _rest_dot_spots(working, prev, nxt, bpm=bpm, mask_cfg=mask_cfg)
+        rest_dots = [
+            i for i, n in enumerate(working)
+            if n.direction == 8 and spots[i] and working[prev[i]].direction != 8
+        ]
+        rest_dots.sort(key=lambda i: (working[prev[i]].time_s - working[i].time_s, i))
+        keep = set(rest_dots[:_dot_target(working, sum(spots))])
     angle: dict[int, float | None] = {0: None, 1: None}
     line: dict[int, tuple[int, int, int, int, float] | None] = {0: None, 1: None}
     repaired = 0
@@ -762,7 +830,7 @@ def repair_loose_dots(
             line[h] = (cur[0], cur[1], cur[2], cur[3], n.time_s)
             continue
         line[h] = None
-        if prev_angle is None:
+        if prev_angle is None or i in keep:
             continue
         expected = (prev_angle + 180.0) % 360.0
         for d in _repair_candidates(expected):
@@ -1112,8 +1180,10 @@ def apply_flow(
 
     rng = random.Random(seed)
     base_hard = _vcfg_hard(sorted(notes, key=_order), mask_cfg)
+    profile = stack_profile(level)
     repaired_notes, dots_repaired, repair_reverted = repair_loose_dots(
         notes, mask_cfg=mask_cfg, base_hard=base_hard,
+        bpm=bpm if profile == WINDOW else None,
     )
     lifted_notes, ups_lifted, lift_reverted = lift_flat_ups(
         repaired_notes, mask_cfg=mask_cfg, rng=rng, base_hard=base_hard,
@@ -1121,7 +1191,6 @@ def apply_flow(
     after_snakes, runs_found, runs_rewritten, notes_rewritten, snake_reverted = apply_snakes(
         lifted_notes, share=RUN_SHARE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
     )
-    profile = stack_profile(level)
     free_dots = free_reverted = 0
     if profile == WINDOW:
         after_snakes, free_dots, free_reverted = add_free_dots(
