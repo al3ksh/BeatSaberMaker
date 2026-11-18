@@ -46,9 +46,10 @@ REFILL_GAP_BEATS = 0.25
 # Two bars have the same rhythm when their offsets agree within this many seconds.
 OFFSET_TOL_S = 0.002
 
-# Sampling: logit bonus per event for the earlier bar's token. F7 suggested +1.5 to start; at
-# 1.5 whole bars were reused in 2% of bars (reference 4.7%), at 3.0 in about 4%.
-PATTERN_BONUS = 3.0
+# Sampling: logit bonus per event for the earlier bar's token. F7 suggested +1.5 to start. Quick
+# evals: 1.5 reused whole bars in 2.2% of bars (reference 4.7%); 3.0 (with 2-bar phrases and
+# repeated stacks) in 5.8%, with audio-repeat bars matching 5x random (reference 3x), too much.
+PATTERN_BONUS = 2.0
 # Share of linked bars that copy the left-right mirror instead (reference audio-repeat bars:
 # mirror match 0.071, identical 0.066, so mirrors are common; identical stays the majority).
 MIRROR_SHARE = 1 / 3
