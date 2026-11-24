@@ -20,6 +20,12 @@
 
 ---
 
+## Why this exists
+
+Fewer and fewer people play Beat Saber, and VR as a whole seems to be slowly fading. This year's The Game Awards made that hard to miss.
+
+This tool is not meant to replace anyone. Its brain is about the size of a fruit fly's, and it knows exactly one trick: turning songs into maps. The creativity stays with people: great maps come from great mappers, and the big hits are built with Vivify. But while you wait for those, sometimes you just want to play a little-known song that will never get its Beat Saber debut. That is what BeatSaberMaker is for.
+
 ## What it is
 
 BeatSaberMaker is a desktop app that generates Beat Saber custom maps from music. You pick a song from YouTube or from your disk and choose how hard the map should be. The map is saved straight into your game's `CustomLevels` folder, ready to play.
