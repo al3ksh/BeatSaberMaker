@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -8,12 +7,13 @@ import type { EnginePackInstaller } from "./enginePack";
 import type { LibraryStore } from "./library";
 import type { AppLogger } from "./logger";
 import { readMapFolderForViewer } from "./mapReader";
+import type { QueueManager } from "./queue";
 import type { SettingsStore } from "./store";
 import type {
   EngineInfo,
-  GenerateOutput,
   LibraryEntry,
-  StartGenerationRequest,
+  QueueEnqueueRequest,
+  QueueItem,
   StartupState,
   YouTubeItem,
 } from "./types";
@@ -92,6 +92,7 @@ export interface IpcDeps {
   expectedEngineVersion: string;
   settingsStore: SettingsStore;
   libraryStore: LibraryStore;
+  queueManager: QueueManager;
   logger: AppLogger;
   getWindow: () => BrowserWindow | null;
   checkForUpdates?: () => Promise<void>;
@@ -101,18 +102,16 @@ export interface IpcDeps {
 export function registerIpcHandlers(deps: IpcDeps): void {
   const {
     appVersion,
-    userDataDir,
     mediaDir,
     engine,
     enginePack,
     expectedEngineVersion,
     settingsStore,
     libraryStore,
+    queueManager,
     logger,
     getWindow,
   } = deps;
-
-  const tmpDownloadsRoot = path.join(userDataDir, "tmp-downloads");
 
   ipcMain.handle("bsm:getStartupState", async (): Promise<StartupState> => {
     const settings = await settingsStore.load();
@@ -139,11 +138,22 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle("bsm:installEnginePack", async (): Promise<void> => {
+    const active = queueManager
+      .getItems()
+      .find((item) => item.status === "downloading" || item.status === "running");
+    if (active) {
+      await queueManager.cancel(active.id);
+    }
     await engine.stop();
     await enginePack.install((progress) => {
       getWindow()?.webContents.send("bsm:enginePackProgress", progress);
     });
-    await settingsStore.save({ engineVersionInstalled: expectedEngineVersion });
+    const nextSettings = await settingsStore.save({
+      engineVersionInstalled: expectedEngineVersion,
+    });
+    if (nextSettings.customLevels) {
+      queueManager.kick();
+    }
   });
 
   ipcMain.handle("bsm:getInfo", async (): Promise<EngineInfo> => {
@@ -157,7 +167,13 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
   ipcMain.handle("bsm:getSettings", async () => settingsStore.load());
 
-  ipcMain.handle("bsm:saveSettings", async (_ev, partial) => settingsStore.save(partial));
+  ipcMain.handle("bsm:saveSettings", async (_ev, partial) => {
+    const next = await settingsStore.save(partial);
+    if (next.customLevels && !(await enginePack.needsInstall())) {
+      queueManager.kick();
+    }
+    return next;
+  });
 
   ipcMain.handle("bsm:validateCustomLevels", async (_ev, folder: string) =>
     validateCustomLevelsFolder(folder),
@@ -287,109 +303,52 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     }
   });
 
+  ipcMain.handle("bsm:getQueue", async (): Promise<QueueItem[]> => queueManager.getItems());
+
   ipcMain.handle(
-    "bsm:startGeneration",
-    async (
-      _ev,
-      req: StartGenerationRequest,
-    ): Promise<{ result: GenerateOutput; entry: LibraryEntry }> => {
-      const settings = await settingsStore.load();
-      if (!settings.customLevels) {
-        throw new Error("BSM_CODE:not_found");
-      }
-
-      const id = req.regenerateId || crypto.randomUUID();
-      const tmpDownloadDir = path.join(tmpDownloadsRoot, `${id}-${Date.now()}`);
+    "bsm:enqueueGeneration",
+    async (_ev, req: QueueEnqueueRequest): Promise<QueueItem> => {
       try {
-        let audioSrc = req.sourcePathOrUrl;
-        let coverSrc = req.coverPath;
-
-        if (req.sourceType === "youtube") {
-          const dl = await engine.request<{
-            audio_path: string;
-            cover_path: string | null;
-          }>("download", { url: req.sourcePathOrUrl, dest_dir: tmpDownloadDir });
-          audioSrc = dl.audio_path;
-          if (!coverSrc && dl.cover_path) {
-            coverSrc = dl.cover_path;
-          }
-        }
-
-        const cached = await libraryStore.cacheMedia(id, audioSrc, coverSrc);
-        const cfg = req.config;
-        const levels =
-          cfg.mode === "pack"
-            ? cfg.levels ?? ["Hard", "Expert", "ExpertPlus"]
-            : cfg.nps !== null
-              ? null
-              : cfg.levels;
-        const nps = cfg.mode === "pack" ? null : cfg.nps;
-
-        const result = await engine.request<GenerateOutput>("generate", {
-          audio_path: cached.audioCachePath,
-          out_dir: settings.customLevels,
-          levels,
-          nps,
-          styles: cfg.styles,
-          ornaments: cfg.ornaments,
-          lights: cfg.lights,
-          environment: cfg.environment,
-          seed: cfg.seed,
-          lights_rules: cfg.lightsRules,
-          title: req.title,
-          artist: req.artist,
-          cover_src: cached.coverCachePath,
-          unique_folder: true,
-          device: settings.device,
-        });
-
-        const entry: LibraryEntry = {
-          id,
-          title: result.title,
-          artist: result.artist,
-          folder: result.folder,
-          createdAt: new Date().toISOString(),
-          bpm: result.bpm,
-          levels: result.levels.map((lv) => ({
-            rank: lv.rank,
-            nps: lv.nps,
-            nNotes: lv.n_notes,
-            nArcs: lv.n_arcs,
-            nChains: lv.n_chains,
-            nWalls: lv.n_walls,
-            nBombs: lv.n_bombs,
-          })),
-          nWalls: result.n_walls,
-          nBombs: result.n_bombs,
-          nLights: result.n_lights,
-          environment: result.environment,
-          audioCachePath: cached.audioCachePath,
-          coverCachePath: cached.coverCachePath,
-          config: cfg,
-        };
-
-        if (req.regenerateId) {
-          await libraryStore.replaceAfterRegenerate(
-            req.regenerateId,
-            entry,
-            settings.customLevels,
-            (folderPath) => shell.trashItem(folderPath),
-          );
-        } else {
-          await libraryStore.saveEntry(entry);
-        }
-
-        return { result, entry };
+        return await queueManager.enqueue(req);
       } catch (err) {
         wrapIpcError(err, logger);
-      } finally {
-        await fsp.rm(tmpDownloadDir, { recursive: true, force: true }).catch(() => {});
       }
     },
   );
 
-  ipcMain.handle("bsm:cancelActive", async (): Promise<void> => {
-    await engine.cancelActive();
+  ipcMain.handle("bsm:cancelQueueItem", async (_ev, id: string): Promise<QueueItem[]> => {
+    try {
+      return await queueManager.cancel(id);
+    } catch (err) {
+      wrapIpcError(err, logger);
+    }
+  });
+
+  ipcMain.handle("bsm:retryQueueItem", async (_ev, id: string): Promise<QueueItem[]> => {
+    try {
+      return await queueManager.retry(id);
+    } catch (err) {
+      wrapIpcError(err, logger);
+    }
+  });
+
+  ipcMain.handle(
+    "bsm:moveQueueItem",
+    async (_ev, id: string, direction: "up" | "down"): Promise<QueueItem[]> => {
+      try {
+        return await queueManager.move(id, direction);
+      } catch (err) {
+        wrapIpcError(err, logger);
+      }
+    },
+  );
+
+  ipcMain.handle("bsm:clearFinishedQueue", async (): Promise<QueueItem[]> => {
+    try {
+      return await queueManager.clearFinished();
+    } catch (err) {
+      wrapIpcError(err, logger);
+    }
   });
 
   ipcMain.handle("bsm:listLibrary", async (): Promise<LibraryEntry[]> => libraryStore.list());

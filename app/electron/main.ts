@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { app, BrowserWindow, Menu, nativeTheme } from "electron";
+import { app, BrowserWindow, Menu, nativeTheme, shell } from "electron";
 import { createDefaultResolveLaunch, EngineManager } from "./engineManager";
 import { defaultManifestUrl, EnginePackInstaller, readEngineVersionInfo } from "./enginePack";
 import { registerIpcHandlers } from "./ipc";
 import { LibraryStore } from "./library";
 import { createLogger } from "./logger";
+import { QueueManager } from "./queue";
 import { SettingsStore } from "./store";
 import { setupUpdater } from "./updater";
 
@@ -26,6 +27,17 @@ if (!gotLock) {
 
 let mainWindow: BrowserWindow | null = null;
 let engineManager: EngineManager | null = null;
+let queueManager: QueueManager | null = null;
+
+function sendToWindow(channel: string, payload: unknown): void {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, payload);
+    }
+  } catch {
+    // Window may be closed or tearing down.
+  }
+}
 
 function createWindow(): BrowserWindow {
   const iconPath = path.resolve(__dirname, "..", "build", "icon.ico");
@@ -81,7 +93,7 @@ if (gotLock) {
     }
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     const userDataDir = app.getPath("userData");
     const logsDir = path.join(userDataDir, "logs");
     const mediaDir = path.join(userDataDir, "media");
@@ -95,7 +107,7 @@ if (gotLock) {
     engineManager = new EngineManager({
       resolveLaunch: createDefaultResolveLaunch(userDataDir, logsDir),
       onProgress: (ev) => {
-        mainWindow?.webContents.send("bsm:progress", ev);
+        queueManager?.handleProgress(ev);
       },
       onStderr: (line) => {
         logger.engineStderr(line);
@@ -110,6 +122,26 @@ if (gotLock) {
       expectedVersion: expectedEngineVersion,
       manifestUrl: defaultManifestUrl(app.getVersion(), engineInfo.releaseTag),
     });
+
+    queueManager = new QueueManager({
+      filePath: path.join(userDataDir, "queue.json"),
+      tmpDownloadsRoot: path.join(userDataDir, "tmp-downloads"),
+      engine: engineManager,
+      settingsStore,
+      libraryStore,
+      trashItem: (folderPath) => shell.trashItem(folderPath),
+      logger,
+      onChange: (items) => {
+        sendToWindow("bsm:queueChanged", items);
+      },
+      onProgress: (ev) => {
+        sendToWindow("bsm:queueProgress", ev);
+      },
+      onLibraryChanged: (entries) => {
+        sendToWindow("bsm:libraryChanged", entries);
+      },
+    });
+
     const updater = setupUpdater(() => mainWindow, logger);
 
     registerIpcHandlers({
@@ -122,28 +154,51 @@ if (gotLock) {
       expectedEngineVersion,
       settingsStore,
       libraryStore,
+      queueManager,
       logger,
       getWindow: () => mainWindow,
       checkForUpdates: updater.checkForUpdates,
       installUpdate: updater.installUpdate,
     });
 
+    try {
+      await queueManager.init({
+        canAutoStart: async () => {
+          if (await enginePack.needsInstall()) {
+            return false;
+          }
+          const settings = await settingsStore.load();
+          return Boolean(settings.customLevels);
+        },
+      });
+    } catch (err) {
+      logger.error(`Queue initialization failed: ${err instanceof Error ? err.stack || err.message : String(err)}`);
+    }
+
     mainWindow = createWindow();
   });
 
   let quitting = false;
   app.on("before-quit", (ev) => {
-    if (quitting || !engineManager) {
+    if (quitting || (!queueManager && !engineManager)) {
       return;
     }
     ev.preventDefault();
     quitting = true;
-    engineManager
-      .stop()
-      .catch(() => {})
-      .finally(() => {
-        app.quit();
-      });
+    (async () => {
+      try {
+        await queueManager?.shutdown();
+      } catch {
+        // Best-effort queue flush on quit.
+      }
+      try {
+        await engineManager?.stop();
+      } catch {
+        // Best-effort engine stop on quit.
+      }
+    })().finally(() => {
+      app.quit();
+    });
   });
 
   app.on("window-all-closed", () => {
