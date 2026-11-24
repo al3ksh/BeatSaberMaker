@@ -31,7 +31,7 @@ MAX_REPEAT_LOUD_DIFF_DB = 3.5
 PHRASE_LENGTHS = (8, 4, 2)
 # Anti-monotony caps (ref hand-free repeat 0.597, with-hand 0.316, 2-bar 0.308; F7 SENTINO ALE hit
 # 0.549 pattern reuse from uncapped loop copying):
-MAX_RHYTHM_REPEAT_SHARE = 0.40   # at most 40% of audible bars get a repeat source
+MAX_RHYTHM_REPEAT_SHARE = 0.48   # at most 48% of audible bars get a repeat source (tuned from 0.40 after Eval #1)
 MAX_CONSECUTIVE_REPEAT_BARS = 8  # at most one 8-bar phrase repeated before a fresh break
 COOLDOWN_BARS = 2                # minimum fresh bars after hitting MAX_CONSECUTIVE_REPEAT_BARS
 MAX_COPIES_PER_SOURCE = 3        # cap copies of any single canonical source bar (on 3rd copy, vary tail)

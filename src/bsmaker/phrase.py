@@ -29,11 +29,12 @@ MIN_GAP_S = 3.0 / FRAMES_PER_SECOND
 OFFSET_TOL_S = 0.002
 
 # Logit nudge on NONE_TOKEN only so repeating bars echo L/R/double presence without distorting any
-# (x, y, dir) distribution (ref with-hand rhythm repeat 0.316 vs ours 0.033; different pattern 0.872).
-HAND_PRESENCE_BONUS = 2.0
-# Cap share of active bars with hand-presence links so with-hand repeat approaches ~0.28 without
+# (x, y, dir) distribution (ref with-hand rhythm repeat 0.316 vs ours 0.033; different pattern 0.872;
+# Eval #1 at 2.0 gave 0.093 hand repeat, tuned to 4.5 -> ~0.21-0.24).
+HAND_PRESENCE_BONUS = 4.5
+# Cap share of active bars with hand-presence links so with-hand repeat approaches ~0.25-0.28 without
 # exceeding reference median 0.316.
-MAX_HAND_LINK_SHARE = 0.32
+MAX_HAND_LINK_SHARE = 0.36
 # Never encourage a double when already in a run of >= 2 consecutive doubles (protects double rate).
 HAND_LINK_MAX_DOUBLE_RUN = 2
 
