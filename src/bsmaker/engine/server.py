@@ -9,7 +9,6 @@ import threading
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
 from typing import TextIO
 
@@ -20,6 +19,7 @@ import scipy.linalg.blas  # noqa: F401
 import scipy.signal  # noqa: F401
 import torch
 
+import bsmaker
 from bsmaker.audio.decode import AudioDecodeError, FfmpegMissingError
 from bsmaker.config import Config
 from bsmaker.data.styles import STYLES
@@ -65,10 +65,9 @@ _MESSAGES_PL: dict[str, str] = {
 
 
 def _get_version() -> str:
-    try:
-        return pkg_version("bsmaker")
-    except PackageNotFoundError:
-        return "0.1.0"
+    # Not importlib.metadata: the PyInstaller build has no dist metadata (it reported "0.1.0"),
+    # and a stale editable install reports its old version.
+    return bsmaker.__version__
 
 
 def _clean_text(raw: str | None, fallback: str) -> str:
