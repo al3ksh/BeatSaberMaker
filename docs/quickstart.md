@@ -83,7 +83,6 @@ Useful afterwards:
 
 - Tests: `.venv/Scripts/python -m pytest -q`.
 - Layout: `src/bsmaker/audio` (decoding, mel, beat grid), `formats` (reading and writing maps), `playability` (rules and the mask), `models/timing` and `models/pattern` (the two models), `generate.py`, `preview.py`, `evaluate.py`, `cli.py`.
-- Design and plans: `docs/superpowers/specs/` and `docs/superpowers/plans/`. Play-test notes: `docs/feedback/`.
 - Work on a branch and open a pull request against `main`.
 
 ## 7. Training (optional)

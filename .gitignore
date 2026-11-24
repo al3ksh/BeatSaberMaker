@@ -11,3 +11,8 @@ app/dist-electron/
 app/release/
 app/test-results/
 app/playwright-report/
+
+# local working notes
+docs/superpowers/
+docs/feedback/
+.superpowers/

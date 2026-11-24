@@ -1,6 +1,6 @@
 """Per-difficulty pattern-shape metrics on model token streams.
 
-Definitions match the reference-map analysis (`.superpowers/refmaps/scripts/pat_train.py`):
+Definitions match the reference-map analysis:
 - diag_share: diagonal cuts / all notes
 - bottom_up_share: straight up cuts on the bottom row / all straight up cuts
 - top_row_share: top-row notes / all notes

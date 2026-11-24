@@ -51,8 +51,8 @@ _OWN_SIDE = {0: (0, 1), 1: (2, 3)}
 # Standalone dots (window profile, patterns.txt G6/F5). Reference: dot-only swings are 4.4% of
 # swings (dot share 0.054), 91% of them after a same-hand rest of >= 1 beat, and 98% are played
 # as the flip of the previous swing (next arrow within 90 deg of the arrow before the dot:
-# 0 deg 54%, 45 deg 37%, 90 deg 7%; .superpowers/fixes/dots-scratch/ref_dots.py, 329 dots),
-# which is what the checker assumes for a dot. Alex: no loose dots inside dense patterns.
+# 0 deg 54%, 45 deg 37%, 90 deg 7%; 329 dots),
+# which is what the checker assumes for a dot. Play-test rule: no loose dots inside dense patterns.
 # So a dot may sit (or a model dot may stay) on a single swing that is
 # - >= 1 beat and >= slow_gap_s after the same hand's previous arrow (a gap the checker treats
 #   as fast is no rest; this also guards double-time BPM grids),
