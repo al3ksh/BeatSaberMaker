@@ -1,3 +1,4 @@
+import random
 import math
 
 import numpy as np
@@ -521,7 +522,7 @@ def test_replay_patterns_exact_and_mirror_respect_budget_and_window_ok():
                       for n in notes[:4]]
 
     for seed in range(20):
-        out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=seed)
+        out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, rng=random.Random(seed))
         assert 0 < replayed <= PATTERN_REPLAY_MAX_SHARE * n_bars + 1
         assert final_flow_ok(notes, out, cfg)
         assert check_exact(out, cfg).hard == ()
@@ -575,13 +576,13 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
                 _note(t0 + 1.75, 2, 0, 1, 1, bpm),
             ])
     rep_flip = _make_repeats(n_bars, bar_s, {j: 0 for j in range(4, n_bars)})
-    out_flip, replayed_flip = replay_patterns(notes_flip, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_flip, replayed_flip = replay_patterns(notes_flip, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_flip == 0
     assert out_flip == notes_flip
     # Counterfactual: lifting y=0 -> y=2 on bar 0's L U note removes the flat flip and allows replay.
     notes_lifted = list(notes_flip)
     notes_lifted[0] = _note(0.25, 0, 2, 0, 0, bpm)
-    out_lifted, replayed_lifted = replay_patterns(notes_lifted, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_lifted, replayed_lifted = replay_patterns(notes_lifted, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_lifted >= 1
     assert final_flow_ok(notes_lifted, out_lifted, cfg)
 
@@ -619,7 +620,7 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
                 _note(t0 + 1.75, 2, 0, 1, 1, bpm),
             ])
     rep_dot = _make_repeats(n_bars, bar_s, {10: 1})
-    out_dot, replayed_dot = replay_patterns(notes_dot, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_dot, replayed_dot = replay_patterns(notes_dot, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_dot == 0
     assert out_dot == notes_dot
     # Counterfactual: moving bar 9's final L/R notes earlier to leave >= 1 beat rest allows replay.
@@ -628,7 +629,7 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
         _note(19.50, 2, 0, 1, 1, bpm) if abs(n.time_s - 19.90) < 1e-9 else n
         for n in notes_dot
     ]
-    out_dot_calm, replayed_dot_calm = replay_patterns(notes_dot_calm, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_dot_calm, replayed_dot_calm = replay_patterns(notes_dot_calm, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_dot_calm == 1
     assert final_flow_ok(notes_dot_calm, out_dot_calm, cfg)
 
@@ -667,7 +668,7 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
                 _note(t0 + 1.75, 2, 0, 1, 1, bpm),
             ])
     rep_stack = _make_repeats(n_bars, bar_s, {10: 0})
-    out_stack, replayed_stack = replay_patterns(notes_stack, repeats=rep_stack, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_stack, replayed_stack = replay_patterns(notes_stack, repeats=rep_stack, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_stack == 1
     assert final_flow_ok(notes_stack, out_stack, cfg)
     assert check_exact(out_stack, cfg).hard == ()
@@ -695,7 +696,7 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
                 _note(t0 + 1.60, 2, 0, 1, 1, bpm),
             ])
     rep_reset = _make_repeats(n_bars, bar_s, {10: 0})
-    out_reset, replayed_reset = replay_patterns(notes_reset, repeats=rep_reset, bpm=bpm, mask_cfg=cfg, seed=0)
+    out_reset, replayed_reset = replay_patterns(notes_reset, repeats=rep_reset, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed_reset == 0
     assert out_reset == notes_reset
 
@@ -752,7 +753,7 @@ def test_replay_patterns_cross_bar_tech_dot_tails_stay_final_flow_ok():
     repeats.sim[12, 1] = 0.98
     repeats.sim[9, 3] = 0.95
     repeats.sim[14, 2] = 0.90
-    out, replayed = replay_patterns(post_stacks, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=0, added=added)
+    out, replayed = replay_patterns(post_stacks, repeats=repeats, bpm=bpm, mask_cfg=cfg, rng=random.Random(0), added=added)
     assert final_flow_ok(pre_flow, out, cfg)
     out_added = _added_dot_tails(pre_flow, out)
     assert check_exact([n for n in out if (n.time_s, n.color) not in out_added], cfg).hard == ()
@@ -799,7 +800,7 @@ def test_replay_patterns_float_bar_boundary_consistent_with_bisect():
             ])
 
     repeats = _make_repeats(n_bars, bar_s, {j_bad: 0})
-    out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=0)
+    out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed == 1
     assert final_flow_ok(notes, out, cfg)
     assert len(out) == len(notes)
@@ -877,7 +878,7 @@ def test_replay_patterns_rejects_new_exit_flip_even_when_entry_already_flips():
             ])
 
     rep = _make_repeats(n_bars, bar_s, {10: 0})
-    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, seed=0)
+    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed == 0
     assert out == notes
 
@@ -909,10 +910,54 @@ def test_replay_patterns_chained_source_not_overwritten():
     rep = _make_repeats(n_bars, bar_s, {18: 10, 10: 0})
     rep.sim[18, 10] = 0.95
     rep.sim[10, 0] = 0.85
-    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, seed=0)
+    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, rng=random.Random(0))
     assert replayed == 1
     by_bar = _bar_notes_map(out, bar_s)
     assert [(n.x, n.y, n.color, n.direction) for n in by_bar[10]] == [
         (0, 1, 0, 4), (2, 2, 1, 0), (1, 0, 0, 7), (2, 0, 1, 1),
     ]
 
+
+
+def test_replay_copied_dot_tail_on_pre_flow_key_never_breaks_final_flow_ok():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 16
+    cfg = PlayabilityConfig()
+    src_bar, tgt_bar = 3, 12
+
+    pre_flow: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == tgt_bar:
+            # Same onsets as the source bar but the hands swapped at the tail slot: the pre-flow
+            # L note sits on exactly the (time, color) key the copied dot tail will land on.
+            pre_flow.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.3125, 1, 0, 0, 1, bpm),
+            ])
+        else:
+            pre_flow.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.3125, 2, 0, 1, 1, bpm),
+            ])
+
+    # Flow-added dot tail of the source bar's L head (same onset slot as the R note there).
+    tail = _note(src_bar * bar_s + 1.3125, 1, 1, 0, 8, bpm)
+    post = sorted(pre_flow + [tail], key=lambda n: (n.time_s, n.color, n.x, n.y))
+    added = _added_dot_tails(pre_flow, post)
+    assert added == frozenset({(src_bar * bar_s + 1.3125, 0)})
+    assert final_flow_ok(pre_flow, post, cfg)
+
+    repeats = _make_repeats(n_bars, bar_s, {tgt_bar: src_bar})
+    repeats.sim[tgt_bar, src_bar] = 0.98
+    for seed in range(6):
+        out, _ = replay_patterns(
+            post, repeats=repeats, bpm=bpm, mask_cfg=cfg, rng=random.Random(seed), added=added,
+            pre_keys={(n.time_s, n.color) for n in pre_flow},
+        )
+        assert final_flow_ok(pre_flow, out, cfg)

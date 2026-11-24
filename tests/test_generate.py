@@ -662,3 +662,18 @@ def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
     notes_p = read_map(res_patched.folder).difficulties[0].notes
     assert sum(n.direction == 8 for n in notes0) == sum(n.direction == 8 for n in notes_p)
 
+
+
+def test_default_path_with_repeats_and_flow_is_deterministic(models, tmp_path):
+    # plan_rhythm / repeats / replay are NOT patched: the full default path with a fixed seed.
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    runs = [
+        _gen(models, audio, tmp_path / f"o{i}", seed=7, flow=3, styles=("tech",))
+        for i in (1, 2)
+    ]
+    a, b = runs
+    assert a.folder.name == b.folder.name
+    assert {p.name for p in a.folder.iterdir()} == {p.name for p in b.folder.iterdir()}
+    for p in a.folder.glob("*.dat"):
+        assert p.read_bytes() == (b.folder / p.name).read_bytes()
+    assert [lv.flow_report for lv in a.levels] == [lv.flow_report for lv in b.levels]

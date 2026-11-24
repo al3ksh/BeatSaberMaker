@@ -527,31 +527,29 @@ def _cross_bar_tech_bars(
     return child_bars, owner_bars
 
 
-def _valid_added_dot_tails(
+def _final_added_dot_tails(
     notes: Sequence[Note],
-    cand_added: Collection[tuple[float, int]],
+    pre_keys: Collection[tuple[float, int]],
 ) -> frozenset[tuple[float, int]]:
-    """Keep only `cand_added` dots < 0.12 s after a same-hand kept note (matches `_added_dot_tails`)."""
+    """Same rule as `flow_rules._added_dot_tails`: dot, key not in pre-flow keys, <0.12 s after same hand."""
     from bsmaker import flow_rules
 
-    if not cand_added:
-        return frozenset()
-    cand_set = frozenset(cand_added)
-    valid: set[tuple[float, int]] = set()
+    pre = frozenset(pre_keys)
+    added: set[tuple[float, int]] = set()
     last_t: dict[int, float] = {}
     for n in notes:
         k = flow_rules._key(n)
         prev_t = last_t.get(n.color)
         if (
             n.direction == 8
-            and k in cand_set
+            and k not in pre
             and prev_t is not None
             and n.time_s - prev_t < flow_rules._SLIDER_VALIDATION_GAP_S - flow_rules._EPS
         ):
-            valid.add(k)
+            added.add(k)
         else:
             last_t[n.color] = n.time_s
-    return frozenset(valid)
+    return frozenset(added)
 
 
 def replay_patterns(
@@ -560,10 +558,10 @@ def replay_patterns(
     repeats: BarRepeats | None,
     bpm: float,
     mask_cfg: PlayabilityConfig,
-    rng: random.Random | None = None,
-    seed: int = 0,
+    rng: random.Random,
     added: Collection[tuple[float, int]] = frozenset(),
     base_hard: Collection[Violation] | None = None,
+    pre_keys: Collection[tuple[float, int]] | None = None,
 ) -> tuple[list[Note], int]:
     """Post-flow atomic, `window_ok`-validated exact/mirrored bar pattern replay."""
     from bsmaker import flow_rules
@@ -640,8 +638,8 @@ def replay_patterns(
     cands.sort(key=lambda item: (-item[0], item[1], item[2]))
     if base_hard is None:
         base_hard = flow_rules._vcfg_hard(working, mask_cfg)
-    if rng is None:
-        rng = random.Random(seed)
+    if pre_keys is None:
+        pre_keys = {flow_rules._key(n) for n in working} - orig_added
 
     working_added = orig_added
     depth: dict[int, int] = {}
@@ -667,22 +665,18 @@ def replay_patterns(
         src_notes = orig_bars[i]
         dt = (j - i) * bar_s
         dbeat = 4.0 * (j - i)
-        bar_j_keys = {flow_rules._key(n) for n in tgt_slice}
         prefer_mirror = rng.random() < MIRROR_SHARE
 
         for mirror in (prefer_mirror, not prefer_mirror):
             cand: list[Note] = []
-            cand_added: set[tuple[float, int]] = set()
             for n in src_notes:
                 t_new = min(max(n.time_s + dt, j_lo), j_hi_eps)
                 shifted = replace(n, time_s=t_new, beat=n.beat + dbeat)
                 out_n = mirror_note(shifted) if mirror else shifted
                 cand.append(out_n)
-                if flow_rules._key(n) in orig_added:
-                    cand_added.add(flow_rules._key(out_n))
             cand.sort(key=flow_rules._order)
             trial = working[:a] + cand + working[b:]
-            trial_added = _valid_added_dot_tails(trial, (working_added - bar_j_keys) | cand_added)
+            trial_added = _final_added_dot_tails(trial, pre_keys)
 
             if not _boundary_transitions_ok(
                 working[:a], tgt_slice, cand, working[b:],

@@ -1238,6 +1238,7 @@ def apply_flow(
             rng=rng,
             added=added,
             base_hard=base_hard,
+            pre_keys={_key(n) for n in notes},
         )
     report = FlowReport(
         level=level,
