@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Archive,
@@ -44,6 +44,7 @@ const DOWNLOAD_STAGES: StageName[] = [
   "writing",
 ];
 const LOCAL_STAGES: StageName[] = ["analyzing", "notes", "layers", "writing"];
+const DEFAULT_PACK_LEVELS = ["Hard", "Expert", "ExpertPlus"];
 
 export interface QueuePanelProps {
   items: QueueItem[];
@@ -126,22 +127,27 @@ function QueueThumbnail({
 }
 
 function ConfigSummaryBadges({ config }: { config: MapGenerationConfig }) {
-  const levels = config.levels ?? [];
+  const levels =
+    config.mode === "pack"
+      ? (config.levels ?? DEFAULT_PACK_LEVELS)
+      : config.nps !== null
+        ? []
+        : (config.levels ?? []);
+  const nps = config.mode === "pack" ? null : config.nps;
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Badge variant="neutral">
         {config.mode === "pack" ? EN.queue.mode.pack : EN.queue.mode.custom}
       </Badge>
-      {levels.length > 0 ? (
+      {nps !== null ? (
+        <Badge variant="blue">{nps.toFixed(1)} NPS</Badge>
+      ) : (
         levels.map((rank) => (
           <Badge key={rank} variant={rankToBadgeVariant(rank)}>
             {RANK_LABELS_EN[rank] ?? rank}
           </Badge>
         ))
-      ) : (
-        config.nps !== null && (
-          <Badge variant="blue">{config.nps.toFixed(1)} NPS</Badge>
-        )
       )}
     </div>
   );
@@ -301,31 +307,43 @@ export function QueuePanel({
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
   const [exportNotes, setExportNotes] = useState<Record<string, string>>({});
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
+  const mountedRef = useRef(true);
+  const attemptedCoverKeysRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const readCover = window.bsm?.readCoverDataUrl;
     if (!readCover) return;
 
-    let active = true;
-    const missing = items.filter((item) => {
-      if (item.thumbnailUrl || coverUrls[item.id]) return false;
-      return Boolean(item.entry?.coverCachePath || item.request.coverPath);
-    });
-    if (missing.length === 0) return;
+    const toFetch: Array<{ id: string; path: string }> = [];
+    for (const item of items) {
+      if (item.thumbnailUrl) continue;
+      const coverPath = item.entry?.coverCachePath ?? item.request.coverPath;
+      if (!coverPath) continue;
+      const key = `${item.id}:${coverPath}`;
+      if (attemptedCoverKeysRef.current.has(key)) continue;
+      attemptedCoverKeysRef.current.add(key);
+      toFetch.push({ id: item.id, path: coverPath });
+    }
+    if (toFetch.length === 0) return;
 
     void Promise.all(
-      missing.map(async (item) => {
-        const path = item.entry?.coverCachePath ?? item.request.coverPath;
-        if (!path) return null;
+      toFetch.map(async ({ id, path }) => {
         try {
           const url = await readCover(path);
-          return url ? { id: item.id, url } : null;
+          return url ? { id, url } : null;
         } catch {
           return null;
         }
       }),
     ).then((loaded) => {
-      if (!active) return;
+      if (!mountedRef.current) return;
       const updates: Record<string, string> = {};
       for (const entry of loaded) {
         if (entry) updates[entry.id] = entry.url;
@@ -334,11 +352,7 @@ export function QueuePanel({
         setCoverUrls((prev) => ({ ...prev, ...updates }));
       }
     });
-
-    return () => {
-      active = false;
-    };
-  }, [items, coverUrls]);
+  }, [items]);
 
   const activeItem = useMemo(
     () =>
@@ -603,10 +617,11 @@ export function QueuePanel({
 
           <Card className="divide-y divide-zinc-800/80 overflow-hidden">
             {finishedItems.map((item) => {
-              const title = item.result?.title ?? item.request.title;
+              const title = item.result?.title || item.request.title;
               const artist =
-                item.result?.artist ??
-                (item.request.artist || EN.common.unknownArtist);
+                item.result?.artist ||
+                item.request.artist ||
+                EN.common.unknownArtist;
               const thumb = item.thumbnailUrl ?? coverUrls[item.id] ?? null;
               const expanded = Boolean(expandedIds[item.id]);
               const errorCode = item.errorCode ?? "internal";

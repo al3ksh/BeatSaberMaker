@@ -1,8 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { ERRORS_EN } from "../i18n/en";
-import type { GenerateOutput, MapGenerationConfig, QueueItem } from "../types";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EN, ERRORS_EN } from "../i18n/en";
+import type { GenerateOutput, LibraryEntry, MapGenerationConfig, QueueItem } from "../types";
 import { QueuePanel } from "./QueuePanel";
+
+const originalBsm = (window as unknown as { bsm?: unknown }).bsm;
+
+afterEach(() => {
+  if (originalBsm === undefined) {
+    delete (window as unknown as { bsm?: unknown }).bsm;
+  } else {
+    (window as unknown as { bsm?: unknown }).bsm = originalBsm;
+  }
+});
 
 const PACK_CONFIG: MapGenerationConfig = {
   mode: "pack",
@@ -193,8 +203,9 @@ describe("QueuePanel", () => {
       nextSection.compareDocumentPosition(finishedSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
-    // Active YouTube item shows download stage, percentage, and progress bar
+    // Active YouTube item shows download stage, stage label, percentage, and progress bar
     expect(within(nowSection).getByText("GHOST")).toBeInTheDocument();
+    expect(within(nowSection).getByText(EN.queue.stages.downloading)).toBeInTheDocument();
     expect(within(nowSection).getByText(/42%/)).toBeInTheDocument();
     expect(within(nowSection).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "42");
     expect(within(nowSection).getByTestId("stage-step-downloading")).toBeInTheDocument();
@@ -418,5 +429,169 @@ describe("QueuePanel", () => {
     expect(openLogsButtons).toHaveLength(1);
     fireEvent.click(openLogsButtons[0]);
     expect(openLogs).toHaveBeenCalled();
+  });
+
+  it("does not re-call readCoverDataUrl across progress updates when it returns null, and loads coverCachePath once done", async () => {
+    const readCoverDataUrl = vi.fn(async (filePath: string) => {
+      if (filePath.includes("media")) {
+        return "data:image/png;base64,cached-cover";
+      }
+      return null;
+    });
+    (window as unknown as { bsm: unknown }).bsm = { readCoverDataUrl };
+
+    const baseItem = makeItem({
+      id: "cover-1",
+      status: "running",
+      request: {
+        sourceType: "file",
+        sourcePathOrUrl: "C:\\audio\\song.mp3",
+        title: "Cover Song",
+        artist: "Artist",
+        coverPath: "C:\\outside\\cover.jpg",
+        config: PACK_CONFIG,
+      },
+      progress: { stage: "notes", pct: 10 },
+    });
+
+    const props = {
+      onCancel: vi.fn(),
+      onRetry: vi.fn(),
+      onMove: vi.fn(),
+      onClearFinished: vi.fn(),
+    };
+
+    const { rerender } = render(<QueuePanel items={[baseItem]} {...props} />);
+
+    await waitFor(() => {
+      expect(readCoverDataUrl).toHaveBeenCalledTimes(1);
+    });
+    expect(readCoverDataUrl).toHaveBeenCalledWith("C:\\outside\\cover.jpg");
+
+    rerender(
+      <QueuePanel
+        items={[{ ...baseItem, progress: { stage: "notes", pct: 25 } }]}
+        {...props}
+      />,
+    );
+    rerender(
+      <QueuePanel
+        items={[{ ...baseItem, progress: { stage: "layers", pct: 65 } }]}
+        {...props}
+      />,
+    );
+
+    // Flush microtasks to verify no extra IPC calls were triggered on progress ticks.
+    await Promise.resolve();
+    expect(readCoverDataUrl).toHaveBeenCalledTimes(1);
+
+    const entry = {
+      id: "entry-1",
+      title: "Cover Song",
+      artist: "Artist",
+      folder: "C:\\CL\\Cover Song",
+      createdAt: "2026-11-24T12:05:00.000Z",
+      bpm: 120,
+      levels: [],
+      nWalls: 0,
+      nBombs: 0,
+      nLights: 20,
+      environment: "DefaultEnvironment",
+      audioCachePath: "C:\\userData\\media\\entry-1\\audio.mp3",
+      coverCachePath: "C:\\userData\\media\\entry-1\\cover.jpg",
+      config: PACK_CONFIG,
+    } as LibraryEntry;
+
+    rerender(
+      <QueuePanel
+        items={[
+          {
+            ...baseItem,
+            status: "done",
+            finishedAt: "2026-11-24T12:05:00.000Z",
+            progress: { stage: "writing", pct: 100 },
+            result: makeResult({ title: "Cover Song", artist: "Artist" }),
+            entry,
+          },
+        ]}
+        {...props}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(readCoverDataUrl).toHaveBeenCalledTimes(2);
+    });
+    expect(readCoverDataUrl).toHaveBeenLastCalledWith(
+      "C:\\userData\\media\\entry-1\\cover.jpg",
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("img", { name: "Cover Song" })).toHaveAttribute(
+        "src",
+        "data:image/png;base64,cached-cover",
+      );
+    });
+  });
+
+  it("renders default pack difficulties, prioritizes custom NPS over levels, and falls back empty finished artist/title", () => {
+    const items: QueueItem[] = [
+      makeItem({
+        id: "pack-null-levels",
+        status: "waiting",
+        request: {
+          sourceType: "file",
+          sourcePathOrUrl: "C:\\audio\\a.mp3",
+          title: "Pack Default Levels",
+          artist: "Artist A",
+          coverPath: null,
+          config: { ...PACK_CONFIG, mode: "pack", levels: null },
+        },
+      }),
+      makeItem({
+        id: "custom-nps-and-levels",
+        status: "waiting",
+        request: {
+          sourceType: "file",
+          sourcePathOrUrl: "C:\\audio\\b.mp3",
+          title: "Custom NPS Priority",
+          artist: "Artist B",
+          coverPath: null,
+          config: { ...CUSTOM_CONFIG, mode: "custom", levels: ["Expert"], nps: 4.5 },
+        },
+      }),
+      makeItem({
+        id: "done-empty-meta",
+        status: "done",
+        request: {
+          sourceType: "file",
+          sourcePathOrUrl: "C:\\audio\\c.mp3",
+          title: "Request Title",
+          artist: "",
+          coverPath: null,
+          config: PACK_CONFIG,
+        },
+        finishedAt: "2026-11-24T12:01:00.000Z",
+        result: makeResult({ title: "", artist: "" }),
+      }),
+    ];
+
+    render(
+      <QueuePanel
+        items={items}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onMove={vi.fn()}
+        onClearFinished={vi.fn()}
+      />,
+    );
+
+    const nextSection = screen.getByTestId("queue-section-next");
+    expect(within(nextSection).getByText("Hard")).toBeInTheDocument();
+    expect(within(nextSection).getAllByText("Expert")).toHaveLength(1);
+    expect(within(nextSection).getByText("Expert+")).toBeInTheDocument();
+    expect(within(nextSection).getByText("4.5 NPS")).toBeInTheDocument();
+
+    const finishedSection = screen.getByTestId("queue-section-finished");
+    expect(within(finishedSection).getByText("Request Title")).toBeInTheDocument();
+    expect(within(finishedSection).getByText(EN.common.unknownArtist)).toBeInTheDocument();
   });
 });
