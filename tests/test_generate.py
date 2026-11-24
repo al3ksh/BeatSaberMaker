@@ -395,9 +395,8 @@ def test_all_layers_present_and_rule_clean_with_tiny_models(models, tmp_path):
         assert len(d.layers.obstacles) > 0 and len(d.layers.bombs) > 0
         assert len(d.layers.lights) > 0
     assert m.difficulties[0].layers.lights == m.difficulties[1].layers.lights
-    densest = next(d for d in m.difficulties if d.rank == res.rank)  # densest by measured nps
-    assert res.n_walls == len(densest.layers.obstacles)
-    assert res.n_bombs == len(densest.layers.bombs)
+    assert res.n_walls == len(m.difficulties[-1].layers.obstacles)  # densest level
+    assert res.n_bombs == len(m.difficulties[-1].layers.bombs)
     assert [lv.n_walls for lv in res.levels] == [len(d.layers.obstacles) for d in m.difficulties]
     assert res.n_lights == len(m.difficulties[0].layers.lights)
     assert res.lights_report is not None and res.lights_report["used_rules"] is False

@@ -32,22 +32,14 @@ LOCAL_FLOOR = 0.2         # local reference never below this share of the global
 STRAY_MAX_EVENTS = 8
 STRAY_GAP_S = 6.0
 STRAY_WINDOW_S = 30.0
-# Density envelope (reference maps: bar density CV 0.63 vs ours 0.45, boundary |log2 ratio| 1.17 vs
-# 2.30, empty bars 7.3%). Bar energy is split into a macro part (loudness smoothed over about one
-# phrase: section level) and a micro part (bar-to-bar residual of loudness and mel onset flux).
-# Macro gets a small gain (softens section-boundary cliffs), micro a larger one (musical variation
-# inside a section). Peak heights are weighted by exp(log_w), a few of the quietest bars are emptied
-# (at most MAX_CONSECUTIVE_EMPTY in a row unless near-silent), every other bar keeps one event.
-MACRO_SMOOTH_BARS = 5        # odd; triangular kernel over about one phrase
-DENSITY_ALPHA_MACRO = 0.35   # section-level gain (was 0.9 on raw z: 5x boundary jumps)
-DENSITY_ALPHA_MICRO = 0.80   # bar-to-bar loudness and onset-flux residual gain
-MICRO_FLUX_WEIGHT = 0.50     # blend of loudness residual (1 - w) and flux residual (w)
-LOG_W_CLIP = (-1.10, 1.00)   # cap on the total log-weight
-FLUX_Z_CLIP = (-2.0, 2.0)
+# Density envelope (reference maps: bar density CV 0.63 vs ours 0.32, empty bars 7.3% vs 0.0%).
+# Peak heights are weighted by exp(ALPHA * z) of the bar loudness (z-score over live bars), a few of the
+# quietest bars are emptied, every other bar keeps at least one event. Offline on 4 songs: bar CV
+# 0.40 -> ~0.59, empty bars 5%, event count unchanged. Pattern doubles add noise on top, so the
+# final number is checked with eval.py.
+DENSITY_ALPHA = 0.9       # loudness -> weight strength (0 = flat)
 EMPTY_BAR_SHARE = 0.07    # share of bars emptied (lowest loudness first); reference 7.3%, no overshoot
 EMPTY_Z_MAX = -0.1        # only bars at least this quiet (z) are emptied
-MAX_CONSECUTIVE_EMPTY = 2  # audible bars; near-silent bars (below p95 - SILENT_EMPTY_DB) bypass it
-SILENT_EMPTY_DB = 15.0
 DEFAULT_BAR_S = 2.0
 LIVE_DB = 22.0            # bars this far below the p95 loudness are dead (excluded from mean/std)
 Z_CLIP = (-1.8, 1.2)
@@ -73,30 +65,9 @@ def bar_edges(duration_s: float, bar_s: float | None) -> np.ndarray:
     return np.append(edges, duration_s) if len(edges) else np.array([MIN_FIRST_EVENT_S, duration_s])
 
 
-def _macro_smooth(x: np.ndarray) -> np.ndarray:
-    """Triangular smoothing over MACRO_SMOOTH_BARS bars (edge-padded)."""
-    half = MACRO_SMOOTH_BARS // 2
-    k = np.concatenate([np.arange(1, half + 2), np.arange(half, 0, -1)]).astype(np.float64)
-    return np.convolve(np.pad(x, half, mode="edge"), k / k.sum(), mode="valid")
-
-
-def _empty_run(empty: np.ndarray, b: int) -> int:
-    """Length of the empty run that marking bar `b` would create."""
-    run = 1
-    i = b - 1
-    while i >= 0 and empty[i]:
-        run += 1
-        i -= 1
-    i = b + 1
-    while i < len(empty) and empty[i]:
-        run += 1
-        i += 1
-    return run
-
-
 def density_weights(mel: np.ndarray, edges: np.ndarray,
                     span: tuple[int, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """(per-frame weight `[frames]`, empty-bar mask `[bars]`) from per-bar loudness and onset flux.
+    """(per-frame weight `[frames]`, empty-bar mask `[bars]`) from per-bar loudness.
 
     Bars are emptied only strictly inside `span` (first and last bar that will hold events);
     default: first and last live bar.
@@ -107,23 +78,11 @@ def density_weights(mel: np.ndarray, edges: np.ndarray,
     nb = len(edges) - 1
     db = np.array([10.0 * np.log10(power[f[i]:max(f[i + 1], f[i] + 1)].mean() + 1e-10) for i in range(nb)])
     db = np.maximum(db, db.max() - 40.0)
-    p95 = float(np.percentile(db, 95))
-    live = db >= p95 - LIVE_DB
-    mel32 = mel.astype(np.float32)
-    flux_frame = np.maximum(np.diff(mel32, axis=0, prepend=mel32[:1]), 0.0).mean(axis=1)
-    bar_flux = np.array([flux_frame[f[i]:max(f[i + 1], f[i] + 1)].mean() for i in range(nb)])
-    if live.sum() < 4 or (db[live].std() < 0.25 and bar_flux[live].std() < 1e-3):  # flat audio
+    live = db >= np.percentile(db, 95) - LIVE_DB
+    if live.sum() < 4 or db[live].std() < 0.25:  # flat audio: no modulation
         return np.ones(n, dtype=np.float32), np.zeros(nb, dtype=bool)
     z = (db - db[live].mean()) / max(float(db[live].std()), 1.5)
-    flux_std = float(bar_flux[live].std())
-    z_flux = (bar_flux - bar_flux[live].mean()) / flux_std if flux_std > 1e-3 else np.zeros(nb)
-    z_loud = np.clip(z, *Z_CLIP)
-    z_flux = np.clip(z_flux, *FLUX_Z_CLIP)
-    z_macro, z_flux_macro = _macro_smooth(z_loud), _macro_smooth(z_flux)
-    z_micro = ((1.0 - MICRO_FLUX_WEIGHT) * (z_loud - z_macro)
-               + MICRO_FLUX_WEIGHT * (z_flux - z_flux_macro))
-    log_w = np.clip(DENSITY_ALPHA_MACRO * z_macro + DENSITY_ALPHA_MICRO * z_micro, *LOG_W_CLIP)
-    w = np.exp(log_w)
+    w = np.exp(DENSITY_ALPHA * np.clip(z, *Z_CLIP))
     empty = np.zeros(nb, dtype=bool)
     # Only bars between the first and last bar with events: the quietest bars are the intro and
     # outro, which the map (and the empty-bar metric) never counts, so emptying them gave a
@@ -134,11 +93,7 @@ def density_weights(mel: np.ndarray, edges: np.ndarray,
     inner = np.arange(lo, hi)
     n_empty = int(round(EMPTY_BAR_SHARE * (hi - lo + 1)))
     for b in inner[np.argsort(z[inner])[:n_empty]]:
-        if z[b] > EMPTY_Z_MAX:
-            continue
-        if db[b] >= p95 - SILENT_EMPTY_DB and _empty_run(empty, int(b)) > MAX_CONSECUTIVE_EMPTY:
-            continue
-        empty[b] = True
+        empty[b] = z[b] <= EMPTY_Z_MAX
     w[empty] = 0.0
     frame_w = np.ones(n, dtype=np.float32)
     for i in range(nb):
