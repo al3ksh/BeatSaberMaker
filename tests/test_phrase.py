@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+import torch
 
 from bsmaker.audio.bar_similarity import (
     MAX_CONSECUTIVE_REPEAT_BARS,
@@ -6,12 +8,31 @@ from bsmaker.audio.bar_similarity import (
     MAX_REPEAT_LOUD_DIFF_DB,
     MAX_RHYTHM_REPEAT_SHARE,
     MIN_BAR_SIM,
+    BarRepeats,
     bar_features,
     bar_repeats,
     features_from_frames,
     find_repeats,
 )
 from bsmaker.audio.decode import SAMPLE_RATE
+from bsmaker.audio.mel import FRAMES_PER_SECOND
+from bsmaker.formats.events import to_events
+from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
+from bsmaker.models.pattern.model import PatternConfig, PatternModel
+from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
+from bsmaker.models.timing.decode import TimingConfig, TimingCurve, LoadedTiming, pick_events, predict_events
+from bsmaker.models.timing.model import TimingModel
+from bsmaker.phrase import (
+    HAND_LINK_MAX_DOUBLE_RUN,
+    HAND_PRESENCE_BONUS,
+    MIN_GAP_S,
+    RESNAP_FRACTION,
+    HandRhythmLinks,
+    plan_rhythm,
+    repeat_rhythm,
+)
+from bsmaker.playability.checker import check
+from bsmaker.playability.config import PlayabilityConfig
 
 
 def _synth_bar(bar_s: float, freqs: tuple[float, ...], seed: int, amp: float = 0.25) -> np.ndarray:
@@ -206,3 +227,220 @@ def test_features_from_frames_handles_non_finite_params():
         feats, loud = features_from_frames(chroma, mfcc, rms, hop_s, bar_s, offset_s=offset_s)
         assert feats.shape == (0, 24)
         assert loud.shape == (0,)
+
+
+def _make_repeats(n_bars: int, bar_s: float, links: dict[int, int]) -> BarRepeats:
+    source = np.full(n_bars, -1, dtype=np.int64)
+    sim = np.full((n_bars, n_bars), -1.0, dtype=np.float32)
+    phrase_len = np.zeros(n_bars, dtype=np.int64)
+    phrase_start = np.full(n_bars, -1, dtype=np.int64)
+    for j, i in links.items():
+        source[j] = i
+        sim[j, i] = 0.95
+        phrase_len[j] = 2
+        phrase_start[j] = j
+    return BarRepeats(
+        bar_s=bar_s,
+        source=source,
+        sim=sim,
+        phrase_len=phrase_len,
+        phrase_start=phrase_start,
+    )
+
+
+def _set_support(curve: np.ndarray, times_s: list[float], val: float) -> None:
+    for t in times_s:
+        curve[int(round(t * FRAMES_PER_SECOND))] = val
+
+
+def test_repeat_rhythm_all_or_nothing_no_refill():
+    bar_s = 2.0
+    n_bars = 9
+    thr = 0.5
+    curve = np.zeros(int(round((n_bars * bar_s + 1.0) * FRAMES_PER_SECOND)), dtype=np.float32)
+
+    # Bar 0: 4-event source; Bar 1: early-entry source; Bar 7: 6-event source.
+    bar0 = [0.25, 0.75, 1.25, 1.75]
+    bar1 = [2.01, 2.50, 3.00, 3.50]
+    bar2 = [4.10, 4.90, 5.50]                 # supported copy of bar 0 -> accepts all 4 offsets
+    bar3 = [6.10, 6.60, 7.10, 7.60]           # 2 unsupported offsets -> stays unchanged
+    bar4 = [8.50, 9.50]                       # rest bar (< 3 events) -> stays untouched
+    bar5 = [10.20, 10.70, 11.20, 11.99]       # ends right before bar 6 boundary
+    bar6 = [12.30, 12.80, 13.30, 13.80]       # copy of bar 1 violates MIN_GAP_S -> rejected
+    bar7 = [14.15, 14.45, 14.75, 15.05, 15.35, 15.65]  # 6-event source
+    bar8 = [16.20, 16.50, 16.80, 17.10, 17.40, 17.70]  # 5 strong + 1 weak (>= 0.25*thr) -> accepted
+
+    planned = np.array(bar0 + bar1 + bar2 + bar3 + bar4 + bar5 + bar6 + bar7 + bar8, dtype=np.float64)
+    repeats = _make_repeats(n_bars, bar_s, {2: 0, 3: 0, 4: 0, 6: 1, 8: 7})
+
+    # Bar 2: all 4 shifted offsets well supported (> RESNAP_FRACTION * thr)
+    _set_support(curve, [t + 4.0 for t in bar0], 0.8)
+    # Bar 3: only 2 supported, 2 unsupported (0.0)
+    _set_support(curve, [bar0[0] + 6.0, bar0[1] + 6.0], 0.8)
+    # Bar 4: fully supported, but rest bar (< 3 events) must stay untouched
+    _set_support(curve, [t + 8.0 for t in bar0], 0.8)
+    # Bar 6: fully supported, but 12.01 - 11.99 = 0.02 < MIN_GAP_S
+    assert (bar1[0] + 10.0) - bar5[-1] < MIN_GAP_S
+    _set_support(curve, [t + 10.0 for t in bar1], 0.8)
+    # Bar 8: 5 strong (>= 0.45*thr) + 1 weak in [0.25*thr, 0.45*thr)
+    _set_support(curve, [t + 2.0 for t in bar7[:5]], 0.8)
+    _set_support(curve, [bar7[5] + 2.0], 0.30 * thr)
+    assert 0.25 * thr < 0.30 * thr < RESNAP_FRACTION * thr
+
+    out = repeat_rhythm(planned, TimingCurve(curve, thr), repeats)
+
+    def sl(k: int) -> np.ndarray:
+        return out[(out >= k * bar_s) & (out < (k + 1) * bar_s)]
+
+    np.testing.assert_allclose(sl(2), np.array(bar0) + 4.0, atol=1e-12)
+    np.testing.assert_allclose(sl(3), np.array(bar3), atol=1e-12)
+    np.testing.assert_allclose(sl(4), np.array(bar4), atol=1e-12)
+    np.testing.assert_allclose(sl(6), np.array(bar6), atol=1e-12)
+    np.testing.assert_allclose(sl(8), np.array(bar7) + 2.0, atol=1e-12)
+
+    # With 2 weak offsets in a 6-event bar, even if both >= 0.25*thr, reject cleanly.
+    curve2 = curve.copy()
+    _set_support(curve2, [bar7[4] + 2.0], 0.30 * thr)
+    out2 = repeat_rhythm(planned, TimingCurve(curve2, thr), repeats)
+    np.testing.assert_allclose(out2[(out2 >= 8 * bar_s) & (out2 < 9 * bar_s)], np.array(bar8), atol=1e-12)
+
+
+def test_hand_rhythm_links_bias_none_token_only():
+    t_s1, t_t1 = 2.25, 10.25
+    t_s2, t_t2 = 2.75, 10.75
+    t_unlinked = 6.25
+
+    links = HandRhythmLinks([(t_t1, t_s1), (t_t2, t_s2)])
+    links.record(t_s1, has_left=True, has_right=False)
+    links.record(t_s2, has_left=False, has_right=True)
+
+    mask_all = np.ones(VOCAB_SIZE, dtype=bool)
+    lg = torch.linspace(-2.0, 2.0, VOCAB_SIZE, dtype=torch.float32)
+
+    # Target 1: source had left only -> left NONE down, right NONE up (when left played).
+    out_l1 = links.bias_left(lg, t_t1, mask_all)
+    assert torch.equal(out_l1[1:], lg[1:])
+    assert out_l1[NONE_TOKEN].item() == pytest.approx(lg[NONE_TOKEN].item() - HAND_PRESENCE_BONUS)
+
+    out_r1 = links.bias_right(lg, t_t1, mask_all, left=5, run=0)
+    assert torch.equal(out_r1[1:], lg[1:])
+    assert out_r1[NONE_TOKEN].item() == pytest.approx(lg[NONE_TOKEN].item() + HAND_PRESENCE_BONUS)
+
+    # Never encourage right NONE when left is already NONE.
+    out_r1_none_left = links.bias_right(lg, t_t1, mask_all, left=NONE_TOKEN, run=0)
+    assert torch.equal(out_r1_none_left, lg)
+
+    # Target 2: source had right only -> left NONE up, right NONE down.
+    out_l2 = links.bias_left(lg, t_t2, mask_all)
+    assert torch.equal(out_l2[1:], lg[1:])
+    assert out_l2[NONE_TOKEN].item() == pytest.approx(lg[NONE_TOKEN].item() + HAND_PRESENCE_BONUS)
+
+    out_r2 = links.bias_right(lg, t_t2, mask_all, left=5, run=0)
+    assert torch.equal(out_r2[1:], lg[1:])
+    assert out_r2[NONE_TOKEN].item() == pytest.approx(lg[NONE_TOKEN].item() - HAND_PRESENCE_BONUS)
+
+    # Double-run cap stops encouraging doubles when run >= HAND_LINK_MAX_DOUBLE_RUN.
+    out_r2_cap = links.bias_right(lg, t_t2, mask_all, left=5, run=HAND_LINK_MAX_DOUBLE_RUN)
+    assert torch.equal(out_r2_cap, lg)
+
+    # When left is NONE, encouraging right is a single note (not a double), so cap does not block it.
+    out_r2_single = links.bias_right(lg, t_t2, mask_all, left=NONE_TOKEN, run=HAND_LINK_MAX_DOUBLE_RUN)
+    assert torch.equal(out_r2_single[1:], lg[1:])
+    assert out_r2_single[NONE_TOKEN].item() == pytest.approx(lg[NONE_TOKEN].item() - HAND_PRESENCE_BONUS)
+
+    # Unlinked event is untouched.
+    assert torch.equal(links.bias_left(lg, t_unlinked, mask_all), lg)
+    assert torch.equal(links.bias_right(lg, t_unlinked, mask_all, left=5, run=0), lg)
+
+
+def _hand_repeat_share(notes, bar_s: float) -> float:
+    bars: dict[int, list] = {}
+    for n in notes:
+        b = int(n.time_s // bar_s)
+        bars.setdefault(b, []).append(n)
+    seen = set()
+    rep = 0
+    total = 0
+    for b in sorted(bars):
+        bn = bars[b]
+        if len(bn) < 3:
+            continue
+        total += 1
+        sig = tuple(sorted({(round(((n.time_s % bar_s) / bar_s) * 48) / 48, n.color) for n in bn}))
+        if sig in seen:
+            rep += 1
+        seen.add(sig)
+    return rep / max(total, 1)
+
+
+def test_hand_rhythm_links_in_sampler_increases_hand_repeat_and_stays_playable():
+    torch.manual_seed(0)
+    pcfg = PatternConfig(d_model=32, n_layers=2, n_heads=2, context=16, dropout=0.0)
+    model = PatternModel(pcfg).eval()
+    # Real checkpoints have logit(NONE) ~= log(108) ~= 4.5 so single-hand notes and doubles compete.
+    with torch.no_grad():
+        model.left_head.bias[NONE_TOKEN] = 4.5
+        model.right_head[-1].bias[NONE_TOKEN] = 4.5
+    stats = {"mel_mean": 0.0, "mel_std": 1.0}
+    loaded = LoadedPattern(model, pcfg, stats)
+    cfg = PlayabilityConfig()
+
+    bar_s = 2.0
+    phrase = [
+        np.array([0.20, 0.70, 1.20, 1.70], dtype=np.float64),
+        np.array([0.25, 0.55, 1.05, 1.55], dtype=np.float64),
+        np.array([0.15, 0.65, 1.15, 1.65], dtype=np.float64),
+        np.array([0.30, 0.80, 1.30, 1.80], dtype=np.float64),
+    ]
+    n_bars = 17  # bars 1..16 active (4 repetitions of the 4-bar phrase)
+    planned = np.concatenate([k * bar_s + phrase[(k - 1) % 4] for k in range(1, n_bars)])
+    mel = np.zeros((int((n_bars * bar_s + 1.0) * FRAMES_PER_SECOND), 80), dtype=np.float16)
+
+    curve = np.ones(len(mel), dtype=np.float32)
+    links_map = {5 + k: 1 + k for k in range(4)}
+    links_map.update({9 + k: 1 + k for k in range(4)})
+    repeats = _make_repeats(n_bars, bar_s, links_map)
+    planned2, hand_rhythm = plan_rhythm(planned, TimingCurve(curve, 0.5), repeats)
+    assert hand_rhythm is not None and len(hand_rhythm) > 0
+    np.testing.assert_allclose(planned2, planned, atol=1e-12)
+
+    base_shares = []
+    linked_shares = []
+    for seed in (1, 2, 3):
+        notes_base, _ = sample_notes(loaded, planned, mel, 2.0, ("balanced",), seed, cfg, "cpu")
+        notes_link, _ = sample_notes(
+            loaded, planned2, mel, 2.0, ("balanced",), seed, cfg, "cpu",
+            hand_rhythm=hand_rhythm,
+        )
+        events, dropped = to_events(notes_link)
+        assert dropped == 0
+        assert check(events, cfg).hard == ()
+        base_shares.append(_hand_repeat_share(notes_base, bar_s))
+        linked_shares.append(_hand_repeat_share(notes_link, bar_s))
+
+    assert float(np.mean(linked_shares)) > float(np.mean(base_shares))
+
+
+def test_predict_events_emits_timing_curve():
+    torch.manual_seed(0)
+    tcfg = TimingConfig(d_model=32, n_layers=2, n_heads=4, window=64, dropout=0.0)
+    stats = {
+        "mel_mean": 0.0,
+        "mel_std": 1.0,
+        "coverage_median": 0.8,
+        "nps_bins": [0.0, 100.0],
+        "double_share_by_bin": [0.25, 0.25],
+    }
+    loaded = LoadedTiming(TimingModel(tcfg).eval(), tcfg, stats)
+    mel = np.random.default_rng(0).normal(size=(int(20 * FRAMES_PER_SECOND), 80)).astype(np.float16)
+
+    curve_out: list[TimingCurve] = []
+    t_with = predict_events(loaded, mel, 3.0, ("balanced",), "cpu", bar_s=2.0, curve_out=curve_out)
+    t_without = predict_events(loaded, mel, 3.0, ("balanced",), "cpu", bar_s=2.0)
+
+    np.testing.assert_array_equal(t_with, t_without)
+    assert len(curve_out) == 1
+    assert isinstance(curve_out[0], TimingCurve)
+    assert curve_out[0].curve.shape == (len(mel),)
+    assert np.isfinite(curve_out[0].threshold) and curve_out[0].threshold > 0.0
+

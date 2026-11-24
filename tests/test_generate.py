@@ -133,7 +133,7 @@ def test_info_keeps_original_title(models, tmp_path):
 def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         n = 240 if len(calls) == 1 else G.MIN_EVENTS - 2  # round 1 overshoots 2x
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -167,7 +167,7 @@ def _stub_sampler(monkeypatch):
 def test_density_loop_rescales(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         n = int(120 * count_scale)  # 30 s span: 4 nps at scale 1
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -183,7 +183,7 @@ def test_density_loop_rescales(models, tmp_path, monkeypatch):
 def test_density_warning_when_not_reached(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         return 2.0 + np.arange(120) * 0.25  # ignores count_scale: always 4 nps
 
@@ -331,6 +331,7 @@ def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path,
         return real_sample(*a, **kw)
 
     monkeypatch.setattr(G, "sample_notes", sample_pre_f6)
+    monkeypatch.setattr(G, "plan_rhythm", lambda planned, *a, **kw: (planned, None))
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
@@ -564,7 +565,7 @@ def test_generate_map_monotonic_progress_across_density_rounds_and_layer_cancel(
     orig_sample = G.sample_notes
     calls = 0
 
-    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None):
+    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None, **kw):
         nonlocal calls
         calls += 1
         if on_progress is not None:
@@ -628,7 +629,7 @@ def test_generate_map_flow_defaults_to_zero(models, tmp_path):
 def test_generate_map_flow_final_check_raises(models, tmp_path, monkeypatch):
     from bsmaker.flow_rules import FlowReport
 
-    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, **kw):
         return list(notes), FlowReport(level=level)
 
     seen = []
@@ -648,7 +649,7 @@ def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
     audio = write_audio(tmp_path / "a.wav", seconds=45.0)
     res0 = _gen(models, audio, tmp_path / "out0", flow=0)
 
-    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, **kw):
         from bsmaker.flow_rules import FlowReport
         return list(notes), FlowReport(level=0)
 
