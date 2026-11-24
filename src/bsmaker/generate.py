@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from bsmaker.audio.bar_similarity import BarRepeats, bar_repeats
-from bsmaker.audio.beats import Grid, align_grid, detect_grid, onset_envelope, snap_times, to_beats
+from bsmaker.audio.beats import Grid, align_grid, audible_span, detect_grid, gate_audible, onset_envelope, snap_times, to_beats
 from bsmaker.audio.decode import SAMPLE_RATE, decode_mono
 from bsmaker.audio.mel import log_mel
 from bsmaker.data.stats import lookup
@@ -256,6 +256,8 @@ def _generate_level_notes(
     device: str,
     *,
     repeats: BarRepeats | None = None,
+    audible: tuple[float, float] | None = None,
+    duration_s: float = 0.0,
     is_cancelled: CancelCheck | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[Note], Grid, SampleReport, int, str, float]:
@@ -282,6 +284,10 @@ def _generate_level_notes(
         round_grid = align_grid(base_grid, events)
         planned = snap_times(events, round_grid)
         planned, hand_rhythm = plan_rhythm(planned, curve_out[-1] if curve_out else None, repeats)
+        if audible is not None:  # no notes in the silent lead-in/tail, nor on the last frame (also after bar replays)
+            planned = gate_audible(planned, audible, duration_s)
+            if len(planned) < MIN_EVENTS:
+                raise GenerateError("too few events inside the audible part of the audio")
         notes, report = sample_notes(
             pattern, planned, mel, target_nps, styles, seed, mask_cfg, device,
             hand_rhythm=hand_rhythm, is_cancelled=is_cancelled, on_progress=on_progress,
@@ -383,6 +389,7 @@ def generate_map(
     tracker.emit("analyzing", 10)
 
     base_grid: Grid = detect_grid(audio)
+    audible = audible_span(audio)
     repeats = (bar_repeats(audio, base_grid.bpm, offset_s=base_grid.offset_s)
                if base_grid.steady and base_grid.bpm > 0 else None)
     onset_env, onset_hop_s = onset_envelope(audio) if flow > 0 else (np.zeros(0, np.float32), 0.0)
@@ -404,7 +411,8 @@ def generate_map(
 
         notes, grid, report, rounds, early_stop, measured = _generate_level_notes(
             mel, base_grid, target_nps, styles, seed, timing, pattern, mask_cfg, device,
-            repeats=repeats, is_cancelled=is_cancelled, on_progress=_on_note_progress,
+            repeats=repeats, audible=audible, duration_s=duration_s,
+            is_cancelled=is_cancelled, on_progress=_on_note_progress,
         )
         if flow > 0:
             pre_flow = notes

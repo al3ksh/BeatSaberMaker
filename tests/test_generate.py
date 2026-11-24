@@ -332,6 +332,7 @@ def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path,
 
     monkeypatch.setattr(G, "sample_notes", sample_pre_f6)
     monkeypatch.setattr(G, "plan_rhythm", lambda planned, *a, **kw: (planned, None))
+    monkeypatch.setattr(G, "gate_audible", lambda t, *a, **kw: t)  # golden predates the audible gate
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
@@ -677,3 +678,21 @@ def test_default_path_with_repeats_and_flow_is_deterministic(models, tmp_path):
     for p in a.folder.glob("*.dat"):
         assert p.read_bytes() == (b.folder / p.name).read_bytes()
     assert [lv.flow_report for lv in a.levels] == [lv.flow_report for lv in b.levels]
+
+
+def test_generate_places_no_notes_in_silent_lead_in_or_tail(models, tmp_path):
+    import json
+    sr = 22050
+    rng = np.random.default_rng(0)
+    y = np.zeros(50 * sr, np.float32)
+    for t in np.arange(8.0, 42.0, 0.5):
+        i = int(t * sr)
+        y[i:i + 1000] = rng.normal(size=1000) * 0.5
+    sf.write(tmp_path / "gap.wav", y, sr)
+    res = _gen(models, tmp_path / "gap.wav", tmp_path / "out")
+    dat = json.loads((res.folder / "HardStandard.dat").read_text())
+    info = json.loads((res.folder / "Info.dat").read_text())
+    bpm = info.get("_beatsPerMinute") or info["audio"]["bpm"]
+    notes = dat.get("_notes") or dat["colorNotes"]
+    times = [(n.get("_time") if "_time" in n else n["b"]) * 60.0 / bpm for n in notes]
+    assert times and min(times) >= 7.8 and max(times) <= 42.3
