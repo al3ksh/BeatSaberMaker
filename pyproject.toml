@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bsmaker"
-version = "0.1.4"
+dynamic = ["version"]
 description = "Beat Saber map generator"
 requires-python = ">=3.13"
 dependencies = [
@@ -19,6 +19,9 @@ dependencies = [
 
 [project.scripts]
 bsmaker = "bsmaker.cli:app"
+
+[tool.setuptools.dynamic]
+version = {attr = "bsmaker.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
