@@ -18,7 +18,7 @@ from bsmaker.audio.bar_similarity import (
 )
 from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.audio.mel import FRAMES_PER_SECOND
-from bsmaker.flow_rules import final_flow_ok
+from bsmaker.flow_rules import _added_dot_tails, apply_flow, final_flow_ok
 from bsmaker.formats.events import to_events
 from bsmaker.formats.model import Note
 from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE, decode_token, encode_token
@@ -556,14 +556,15 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
     cfg = PlayabilityConfig()
 
     # 1) Source bar 0 contains a row-0 U/D flat flip -> must never be replayed.
+    # Bar 0 matches bars 1..19's entry/exit parity (L U -> L D, R U -> R D).
     notes_flip: list[Note] = []
     for k in range(n_bars):
         t0 = k * bar_s
         if k == 0:
             notes_flip.extend([
-                _note(t0 + 0.25, 1, 0, 0, 1, bpm),  # L D at y=0
+                _note(t0 + 0.25, 0, 0, 0, 0, bpm),  # L U at y=0
                 _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U
-                _note(t0 + 1.25, 1, 0, 0, 0, bpm),  # L U at y=0 -> flat row-0 flip!
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),  # L D at y=0 -> flat row-0 flip!
                 _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D
             ])
         else:
@@ -577,9 +578,15 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
     out_flip, replayed_flip = replay_patterns(notes_flip, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, seed=0)
     assert replayed_flip == 0
     assert out_flip == notes_flip
+    # Counterfactual: lifting y=0 -> y=2 on bar 0's L U note removes the flat flip and allows replay.
+    notes_lifted = list(notes_flip)
+    notes_lifted[0] = _note(0.25, 0, 2, 0, 0, bpm)
+    out_lifted, replayed_lifted = replay_patterns(notes_lifted, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_lifted >= 1
+    assert final_flow_ok(notes_lifted, out_lifted, cfg)
 
     # 2) Source bar 1 starts with a standalone dot (after > 1 beat rest from bar 0) -> rejected when
-    #    target bar 10's predecessor bar 9 ends < 1 beat (0.50 s) before it.
+    #    target bar 10's predecessor bar 9 ends < 1 beat (0.50 s) before it, accepted when >= 1 beat.
     notes_dot: list[Note] = []
     for k in range(n_bars):
         t0 = k * bar_s
@@ -592,10 +599,10 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
             ])
         elif k == 1:
             notes_dot.extend([
-                _note(t0 + 0.25, 0, 1, 0, 8, bpm),  # standalone dot on calm rest spot
-                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
-                _note(t0 + 1.25, 1, 2, 0, 0, bpm),
-                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+                _note(t0 + 0.25, 0, 1, 0, 8, bpm),  # standalone dot on calm rest spot (flips D -> U)
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U (after R D)
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),  # L D (after L dot [U])
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D (after R U)
             ])
         elif k == 9:
             notes_dot.extend([
@@ -615,6 +622,15 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
     out_dot, replayed_dot = replay_patterns(notes_dot, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, seed=0)
     assert replayed_dot == 0
     assert out_dot == notes_dot
+    # Counterfactual: moving bar 9's final L/R notes earlier to leave >= 1 beat rest allows replay.
+    notes_dot_calm = [
+        _note(19.25, 1, 0, 0, 1, bpm) if abs(n.time_s - 19.85) < 1e-9 else
+        _note(19.50, 2, 0, 1, 1, bpm) if abs(n.time_s - 19.90) < 1e-9 else n
+        for n in notes_dot
+    ]
+    out_dot_calm, replayed_dot_calm = replay_patterns(notes_dot_calm, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_dot_calm == 1
+    assert final_flow_ok(notes_dot_calm, out_dot_calm, cfg)
 
     # 3) Mirrored same-time arrow stack: exact parity fails at bar 10 entry, so replay_patterns mirrors
     #    bar 0's left-hand stack onto bar 10's right hand (x >= 2) cleanly.
@@ -682,4 +698,221 @@ def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
     out_reset, replayed_reset = replay_patterns(notes_reset, repeats=rep_reset, bpm=bpm, mask_cfg=cfg, seed=0)
     assert replayed_reset == 0
     assert out_reset == notes_reset
+
+
+def test_replay_patterns_cross_bar_tech_dot_tails_stay_final_flow_ok():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 20
+    cfg = PlayabilityConfig()
+
+    # Case A: bar 0 ends at 1.97 s with L D, and add_dot_stacks places an added dot tail at 2.0325 s
+    # (inside bar 1!). Copying bar 1 to bar 12 must NOT copy an orphaned dot tail.
+    # Case B: bar 9 ends at 19.97 s with L D and its added dot tail is at 20.0325 s (inside bar 10!).
+    # Replacing/mirroring bar 9 from bar 3 (which also has a note at +1.97 s) must NOT orphan bar 10's dot tail.
+    pre_flow: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k in (0, 9):
+            pre_flow.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.97, 1, 1, 0, 1, bpm),  # L D near bar end; dot tail spills into k+1
+            ])
+        elif k == 3:
+            pre_flow.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.97, 0, 1, 0, 7, bpm),  # L DR at +1.97; matches bar 9 offsets
+            ])
+        else:
+            pre_flow.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+
+    # Add TECH dot tails: two cross-bar tails (bar 0 -> bar 1 and bar 9 -> bar 10) plus
+    # an in-bar tail in bar 2 at 4.3125 (head 4.25 L U).
+    tail_bar1 = _note(2.0325, 1, 0, 0, 8, bpm)
+    tail_bar2 = _note(4.3125, 1, 2, 0, 8, bpm)
+    tail_bar10 = _note(20.0325, 1, 0, 0, 8, bpm)
+    post_stacks = sorted(
+        pre_flow + [tail_bar1, tail_bar2, tail_bar10],
+        key=lambda n: (n.time_s, n.color, n.x, n.y),
+    )
+    added = _added_dot_tails(pre_flow, post_stacks)
+    assert added == frozenset({(2.0325, 0), (4.3125, 0), (20.0325, 0)})
+    assert final_flow_ok(pre_flow, post_stacks, cfg)
+
+    repeats = _make_repeats(n_bars, bar_s, {12: 1, 9: 3, 14: 2})
+    repeats.sim[12, 1] = 0.98
+    repeats.sim[9, 3] = 0.95
+    repeats.sim[14, 2] = 0.90
+    out, replayed = replay_patterns(post_stacks, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=0, added=added)
+    assert final_flow_ok(pre_flow, out, cfg)
+    out_added = _added_dot_tails(pre_flow, out)
+    assert check_exact([n for n in out if (n.time_s, n.color) not in out_added], cfg).hard == ()
+    by_bar = _bar_notes_map(out, bar_s)
+    assert not any(n.direction == 8 for n in by_bar[12])
+    assert any(abs(n.time_s - 19.97) < 1e-9 for n in by_bar[9])
+    assert replayed == 1
+    assert any(n.direction == 8 for n in by_bar[14])
+
+    # End-to-end apply_flow(level=2) with a cross-bar candidate: final_flow_ok must hold.
+    env = np.ones(int((n_bars * bar_s + 2.0) / (512 / SAMPLE_RATE)), dtype=np.float32)
+    out_flow, _ = apply_flow(
+        pre_flow, bpm=bpm, onset_env=env, onset_hop_s=512 / SAMPLE_RATE,
+        level=2, seed=0, mask_cfg=cfg, repeats=repeats,
+    )
+    assert final_flow_ok(pre_flow, out_flow, cfg)
+
+
+def test_replay_patterns_float_bar_boundary_consistent_with_bisect():
+    # Regression for float64 (j * bar_s) / bar_s < j (e.g. bpm=81, j=11).
+    bpm = 81.0
+    bar_s = 240.0 / bpm
+    j_bad = 11
+    assert math.floor((j_bad * bar_s) / bar_s) < j_bad
+
+    n_bars = 24
+    cfg = PlayabilityConfig()
+    notes: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes.extend([
+                _note(t0 + 0.0, 0, 1, 0, 4, bpm),
+                _note(t0 + 0.5, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.0, 1, 0, 0, 7, bpm),
+                _note(t0 + 1.5, 2, 0, 1, 1, bpm),
+            ])
+        else:
+            notes.extend([
+                _note(t0 + 0.0, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.5, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.0, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.5, 2, 0, 1, 1, bpm),
+            ])
+
+    repeats = _make_repeats(n_bars, bar_s, {j_bad: 0})
+    out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed == 1
+    assert final_flow_ok(notes, out, cfg)
+    assert len(out) == len(notes)
+    bar11 = [n for n in out if j_bad * bar_s <= n.time_s < (j_bad + 1) * bar_s]
+    assert len(bar11) == 4
+
+
+def test_replay_patterns_rejects_new_exit_flip_even_when_entry_already_flips():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 20
+    cfg = PlayabilityConfig()
+
+    # Bar 9 ends with L D(0), R D(0) -> bar 10 enters L U(0), R U(0) (existing entry flip on both hands),
+    # then ends with L D(2), R D(2) -> bar 11 starts L U(0), R U(0) (NO exit flip).
+    # Source bar 0 does U(0)->D(2)->U(2)->D(0) on both hands (clean internally, keeps entry flip,
+    # and would introduce a NEW exit flip against bar 11 on both exact and mirrored polarities).
+    notes: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes.extend([
+                _note(t0 + 0.15, 1, 0, 0, 0, bpm),  # L U(0)
+                _note(t0 + 0.35, 2, 0, 1, 0, bpm),  # R U(0)
+                _note(t0 + 0.65, 1, 2, 0, 1, bpm),  # L D(2)
+                _note(t0 + 0.85, 2, 2, 1, 1, bpm),  # R D(2)
+                _note(t0 + 1.15, 1, 2, 0, 0, bpm),  # L U(2)
+                _note(t0 + 1.35, 2, 2, 1, 0, bpm),  # R U(2)
+                _note(t0 + 1.65, 1, 0, 0, 1, bpm),  # L D(0) -> exit at y=0
+                _note(t0 + 1.85, 2, 0, 1, 1, bpm),  # R D(0) -> exit at y=0
+            ])
+        elif k == 9:
+            notes.extend([
+                _note(t0 + 0.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 0.65, 1, 0, 0, 1, bpm),
+                _note(t0 + 0.85, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 1.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.65, 1, 0, 0, 1, bpm),  # L D(0) -> entry flip with bar 10
+                _note(t0 + 1.85, 2, 0, 1, 1, bpm),  # R D(0) -> entry flip with bar 10
+            ])
+        elif k == 10:
+            notes.extend([
+                _note(t0 + 0.15, 1, 0, 0, 0, bpm),  # L U(0) (entry flip)
+                _note(t0 + 0.35, 2, 0, 1, 0, bpm),  # R U(0) (entry flip)
+                _note(t0 + 0.65, 1, 2, 0, 1, bpm),
+                _note(t0 + 0.85, 2, 2, 1, 1, bpm),
+                _note(t0 + 1.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 1.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.65, 1, 2, 0, 1, bpm),  # L D(2) (no exit flip)
+                _note(t0 + 1.85, 2, 2, 1, 1, bpm),  # R D(2) (no exit flip)
+            ])
+        elif k == 11:
+            notes.extend([
+                _note(t0 + 0.15, 1, 0, 0, 0, bpm),  # L U(0)
+                _note(t0 + 0.35, 2, 0, 1, 0, bpm),  # R U(0)
+                _note(t0 + 0.65, 1, 2, 0, 1, bpm),
+                _note(t0 + 0.85, 2, 2, 1, 1, bpm),
+                _note(t0 + 1.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 1.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.65, 1, 2, 0, 1, bpm),
+                _note(t0 + 1.85, 2, 2, 1, 1, bpm),
+            ])
+        else:
+            notes.extend([
+                _note(t0 + 0.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 0.65, 1, 0, 0, 1, bpm),
+                _note(t0 + 0.85, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.15, 1, 2, 0, 0, bpm),
+                _note(t0 + 1.35, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.65, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.85, 2, 0, 1, 1, bpm),
+            ])
+
+    rep = _make_repeats(n_bars, bar_s, {10: 0})
+    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed == 0
+    assert out == notes
+
+
+def test_replay_patterns_chained_source_not_overwritten():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 40
+    cfg = PlayabilityConfig()
+
+    notes: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 10:
+            notes.extend([
+                _note(t0 + 0.25, 0, 1, 0, 4, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 7, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+        else:
+            notes.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+
+    rep = _make_repeats(n_bars, bar_s, {18: 10, 10: 0})
+    rep.sim[18, 10] = 0.95
+    rep.sim[10, 0] = 0.85
+    out, replayed = replay_patterns(notes, repeats=rep, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed == 1
+    by_bar = _bar_notes_map(out, bar_s)
+    assert [(n.x, n.y, n.color, n.direction) for n in by_bar[10]] == [
+        (0, 1, 0, 4), (2, 2, 1, 0), (1, 0, 0, 7), (2, 0, 1, 1),
+    ]
 

@@ -409,23 +409,21 @@ def _boundary_issues(
     before_h: Sequence[Note],
     mid_h: Sequence[Note],
     after_h: Sequence[Note],
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, bool, bool]:
     ang_before = _advance_angle(None, before_h)
     if not mid_h:
         if before_h and after_h:
-            return _is_flat_row0_flip(before_h[-1], after_h[0]), _first_arrow_resets(ang_before, after_h)
-        return False, False
+            flip = _is_flat_row0_flip(before_h[-1], after_h[0])
+            reset = _first_arrow_resets(ang_before, after_h)
+            return flip, reset, flip, reset
+        return False, False, False, False
 
-    has_flip = False
-    has_reset = False
-    if before_h:
-        has_flip |= _is_flat_row0_flip(before_h[-1], mid_h[0])
-        has_reset |= _first_arrow_resets(ang_before, mid_h)
+    entry_flip = _is_flat_row0_flip(before_h[-1], mid_h[0]) if before_h else False
+    entry_reset = _first_arrow_resets(ang_before, mid_h) if before_h else False
     ang_mid = _advance_angle(ang_before, mid_h)
-    if after_h:
-        has_flip |= _is_flat_row0_flip(mid_h[-1], after_h[0])
-        has_reset |= _first_arrow_resets(ang_mid, after_h)
-    return has_flip, has_reset
+    exit_flip = _is_flat_row0_flip(mid_h[-1], after_h[0]) if after_h else False
+    exit_reset = _first_arrow_resets(ang_mid, after_h) if after_h else False
+    return entry_flip, entry_reset, exit_flip, exit_reset
 
 
 def _boundary_transitions_ok(
@@ -467,9 +465,9 @@ def _boundary_transitions_ok(
             if q_any is not None and q_any.direction == 8:
                 return False
 
-        orig_flip, orig_reset = _boundary_issues(before_swings[h], orig_swings[h], after_swings[h])
-        cand_flip, cand_reset = _boundary_issues(before_swings[h], c_seq, after_swings[h])
-        if (cand_flip and not orig_flip) or (cand_reset and not orig_reset):
+        orig_issues = _boundary_issues(before_swings[h], orig_swings[h], after_swings[h])
+        cand_issues = _boundary_issues(before_swings[h], c_seq, after_swings[h])
+        if any(c and not o for c, o in zip(cand_issues, orig_issues)):
             return False
     return True
 
@@ -485,6 +483,75 @@ def _consecutive_run_exceeds(depth: dict[int, int], bar_idx: int) -> bool:
         run += 1
         k += 1
     return run > MAX_CONSECUTIVE_REPLAY_BARS
+
+
+def _bar_index(time_s: float, bar_s: float) -> int:
+    """Return `k` matching `k * bar_s <= time_s < (k + 1) * bar_s` under float64."""
+    k = int(math.floor(time_s / bar_s))
+    while k > 0 and time_s < k * bar_s:
+        k -= 1
+    while time_s >= (k + 1) * bar_s:
+        k += 1
+    return k
+
+
+def _cross_bar_tech_bars(
+    working: Sequence[Note],
+    bar_s: float,
+    orig_added: Collection[tuple[float, int]],
+) -> tuple[set[int], set[int]]:
+    """Return `(child_bars, owner_bars)` for cross-bar TECH dot-tail sliders."""
+    from bsmaker import flow_rules
+
+    child_bars: set[int] = set()
+    owner_bars: set[int] = set()
+    if not orig_added:
+        return child_bars, owner_bars
+    last_kept: dict[int, tuple[int, float]] = {}
+    for n in working:
+        k = _bar_index(n.time_s, bar_s)
+        h = n.color
+        if flow_rules._key(n) in orig_added:
+            prev = last_kept.get(h)
+            if (
+                prev is None
+                or n.time_s - prev[1] >= flow_rules._SLIDER_VALIDATION_GAP_S - flow_rules._EPS
+                or prev[0] != k
+            ):
+                if k >= 0:
+                    child_bars.add(k)
+                if prev is not None and prev[0] >= 0 and prev[0] != k:
+                    owner_bars.add(prev[0])
+        else:
+            last_kept[h] = (k, n.time_s)
+    return child_bars, owner_bars
+
+
+def _valid_added_dot_tails(
+    notes: Sequence[Note],
+    cand_added: Collection[tuple[float, int]],
+) -> frozenset[tuple[float, int]]:
+    """Keep only `cand_added` dots < 0.12 s after a same-hand kept note (matches `_added_dot_tails`)."""
+    from bsmaker import flow_rules
+
+    if not cand_added:
+        return frozenset()
+    cand_set = frozenset(cand_added)
+    valid: set[tuple[float, int]] = set()
+    last_t: dict[int, float] = {}
+    for n in notes:
+        k = flow_rules._key(n)
+        prev_t = last_t.get(n.color)
+        if (
+            n.direction == 8
+            and k in cand_set
+            and prev_t is not None
+            and n.time_s - prev_t < flow_rules._SLIDER_VALIDATION_GAP_S - flow_rules._EPS
+        ):
+            valid.add(k)
+        else:
+            last_t[n.color] = n.time_s
+    return frozenset(valid)
 
 
 def replay_patterns(
@@ -514,10 +581,9 @@ def replay_patterns(
         return working, 0
 
     bar_s = float(repeats.bar_s)
-    bar_hi_eps = math.nextafter(bar_s, -math.inf)
     bar_bounds: dict[int, tuple[int, int]] = {}
     for idx, n in enumerate(working):
-        k = int(math.floor(n.time_s / bar_s))
+        k = _bar_index(n.time_s, bar_s)
         if k >= 0:
             lo_i, _ = bar_bounds.get(k, (idx, idx + 1))
             bar_bounds[k] = (lo_i, idx + 1)
@@ -530,8 +596,9 @@ def replay_patterns(
     if budget <= 0:
         return working, 0
 
-    working_added = frozenset(added)
-    is_loose = _loose_dot_mask(working, bpm=bpm, mask_cfg=mask_cfg, added=working_added)
+    orig_added = frozenset(added)
+    cross_bar_children, cross_bar_owners = _cross_bar_tech_bars(working, bar_s, orig_added)
+    is_loose = _loose_dot_mask(working, bpm=bpm, mask_cfg=mask_cfg, added=orig_added)
     clean_cache: dict[int, bool] = {}
     orig_bars: dict[int, list[Note]] = {
         k: working[lo_i:hi_i] for k, (lo_i, hi_i) in bar_bounds.items()
@@ -540,8 +607,10 @@ def replay_patterns(
     cands: list[tuple[float, int, int]] = []
     n_src = len(repeats.source)
     for j in range(n_src):
+        if j in cross_bar_owners:
+            continue
         i = int(repeats.source[j])
-        if i < 0 or i >= j:
+        if i < 0 or i >= j or i in cross_bar_children:
             continue
         src_notes = orig_bars.get(i)
         tgt_notes = orig_bars.get(j)
@@ -549,14 +618,14 @@ def replay_patterns(
             continue
         if len(src_notes) < MIN_BAR_EVENTS or len(tgt_notes) < MIN_BAR_EVENTS:
             continue
-        off_i = _bar_onset_offsets(src_notes, i * bar_s, working_added)
-        off_j = _bar_onset_offsets(tgt_notes, j * bar_s, working_added)
+        off_i = _bar_onset_offsets(src_notes, i * bar_s, orig_added)
+        off_j = _bar_onset_offsets(tgt_notes, j * bar_s, orig_added)
         if len(off_i) != len(off_j) or any(abs(a - b) > OFFSET_TOL_S for a, b in zip(off_i, off_j)):
             continue
         if i not in clean_cache:
             lo_i, hi_i = bar_bounds[i]
             clean_cache[i] = _source_bar_clean(
-                working, lo_i, hi_i, is_loose=is_loose, added=working_added,
+                working, lo_i, hi_i, is_loose=is_loose, added=orig_added,
             )
         if not clean_cache[i]:
             continue
@@ -574,18 +643,21 @@ def replay_patterns(
     if rng is None:
         rng = random.Random(seed)
 
+    working_added = orig_added
     depth: dict[int, int] = {}
+    used_as_source: set[int] = set()
     replayed = 0
     for _, j, i in cands:
         if replayed >= budget:
             break
-        if depth.get(i, 0) >= MAX_REPLAY_DEPTH or depth.get(j, 0) > 0:
+        if depth.get(i, 0) >= MAX_REPLAY_DEPTH or depth.get(j, 0) > 0 or j in used_as_source:
             continue
         if _consecutive_run_exceeds(depth, j):
             continue
 
         j_lo = j * bar_s
         j_hi = (j + 1) * bar_s
+        j_hi_eps = math.nextafter(j_hi, -math.inf)
         a = bisect.bisect_left(working, j_lo, key=flow_rules._time)
         b = bisect.bisect_left(working, j_hi, key=flow_rules._time)
         tgt_slice = working[a:b]
@@ -602,14 +674,15 @@ def replay_patterns(
             cand: list[Note] = []
             cand_added: set[tuple[float, int]] = set()
             for n in src_notes:
-                t_new = min(max(n.time_s + dt, j_lo), j_lo + bar_hi_eps)
+                t_new = min(max(n.time_s + dt, j_lo), j_hi_eps)
                 shifted = replace(n, time_s=t_new, beat=n.beat + dbeat)
                 out_n = mirror_note(shifted) if mirror else shifted
                 cand.append(out_n)
-                if (n.time_s, n.color) in working_added:
+                if flow_rules._key(n) in orig_added:
                     cand_added.add(flow_rules._key(out_n))
             cand.sort(key=flow_rules._order)
-            trial_added = (working_added - bar_j_keys) | cand_added
+            trial = working[:a] + cand + working[b:]
+            trial_added = _valid_added_dot_tails(trial, (working_added - bar_j_keys) | cand_added)
 
             if not _boundary_transitions_ok(
                 working[:a], tgt_slice, cand, working[b:],
@@ -617,13 +690,13 @@ def replay_patterns(
             ):
                 continue
 
-            trial = working[:a] + cand + working[b:]
             t0 = min(cand[0].time_s, tgt_slice[0].time_s)
             t1 = max(cand[-1].time_s, tgt_slice[-1].time_s)
             if flow_rules.window_ok(trial, t0, t1, mask_cfg, added=trial_added, base_hard=base_hard):
                 working = trial
                 working_added = trial_added
                 depth[j] = 1
+                used_as_source.add(i)
                 replayed += 1
                 break
 
