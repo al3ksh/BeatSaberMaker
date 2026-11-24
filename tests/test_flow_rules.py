@@ -687,6 +687,21 @@ def test_final_flow_ok_accepts_same_time_arrow_stack() -> None:
     assert not final_flow_ok(pre, _sorted([*pre, _note(1.0, 1, 1, 0, 7)]), cfg)
 
 
+def test_final_flow_ok_checks_mirrored_arrows_strictly() -> None:
+    cfg = PlayabilityConfig()
+    pre = [_note(1.0, 1, 0, 0, 1), _note(1.2, 2, 0, 1, 1), _note(1.3, 1, 2, 0, 0)]
+    assert final_flow_ok(pre, pre, cfg)
+    # Changing the arrow at 1.3 from left to right (down) creates a hard parity/hand_speed
+    # violation on hand 1 within 0.10 s; must NOT be skipped as a flow-added dot-tail slider.
+    mirrored_bad = [_note(1.0, 1, 0, 0, 1), _note(1.2, 2, 0, 1, 1), _note(1.3, 2, 0, 1, 1)]
+    assert not final_flow_ok(pre, mirrored_bad, cfg)
+
+    # Also verify >= _SLIDER_VALIDATION_GAP_S parity violation on a color-changed arrow.
+    pre2 = [_note(1.0, 1, 0, 0, 1), _note(1.2, 2, 0, 1, 1), _note(1.4, 1, 2, 0, 0)]
+    mirrored_bad2 = [_note(1.0, 1, 0, 0, 1), _note(1.2, 2, 0, 1, 1), _note(1.4, 2, 0, 1, 1)]
+    assert not final_flow_ok(pre2, mirrored_bad2, cfg)
+
+
 def test_window_stacks_are_same_time_arrows_on_the_cut_line() -> None:
     notes = _calm_map()
     out, stacks, dots, _ = _window(notes)
@@ -797,6 +812,58 @@ def test_apply_flow_level1_uses_window_profile() -> None:
     out2, rep2 = apply_flow(notes, bpm=120.0, onset_env=env, onset_hop_s=HOP_S, level=2, seed=0,
                             mask_cfg=cfg)
     assert rep2.arrow_stacks == 0 and rep2.free_dots == 0 and rep2.dot_stacks >= 1
+    assert final_flow_ok(notes, out2, cfg)
+
+
+def test_apply_flow_replays_patterns_and_reports_bars_replayed() -> None:
+    from bsmaker.audio.bar_similarity import BarRepeats
+
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 20
+    notes: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes.extend([
+                _note(t0 + 0.25, 0, 1, 0, 4, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 7, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+        else:
+            notes.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+    source = np.full(n_bars, -1, dtype=np.int64)
+    source[4:] = 0
+    sim = np.full((n_bars, n_bars), 0.92, dtype=np.float32)
+    repeats = BarRepeats(
+        bar_s=bar_s,
+        source=source,
+        sim=sim,
+        phrase_len=np.full(n_bars, 4, dtype=np.int64),
+        phrase_start=np.full(n_bars, 4, dtype=np.int64),
+    )
+    env = np.ones(int((n_bars * bar_s + 2.0) / HOP_S), dtype=np.float32)
+    cfg = PlayabilityConfig()
+
+    out0, rep0 = apply_flow(notes, bpm=bpm, onset_env=env, onset_hop_s=HOP_S, level=0, seed=0,
+                            mask_cfg=cfg, repeats=repeats)
+    assert rep0 == FlowReport(level=0)
+    assert out0 == notes
+
+    out1, rep1 = apply_flow(notes, bpm=bpm, onset_env=env, onset_hop_s=HOP_S, level=1, seed=0,
+                            mask_cfg=cfg, repeats=repeats)
+    assert rep1.bars_replayed == 1
+    assert final_flow_ok(notes, out1, cfg)
+
+    out2, rep2 = apply_flow(notes, bpm=bpm, onset_env=env, onset_hop_s=HOP_S, level=2, seed=0,
+                            mask_cfg=cfg, repeats=repeats)
+    assert rep2.bars_replayed == 1
     assert final_flow_ok(notes, out2, cfg)
 
 

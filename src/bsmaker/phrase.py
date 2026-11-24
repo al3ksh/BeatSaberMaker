@@ -1,8 +1,11 @@
-"""Musical memory: onset-grid phrase reuse and direction-free hand-presence links."""
+"""Musical memory: onset-grid phrase reuse, hand-presence links, and post-flow pattern replay."""
 from __future__ import annotations
 
+import bisect
 import math
-from collections.abc import Iterable
+import random
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import replace
 
 import numpy as np
 import torch
@@ -10,8 +13,12 @@ import torch
 from bsmaker.audio.bar_similarity import BarRepeats
 from bsmaker.audio.beats import SNAP_MAX_SHIFT_S
 from bsmaker.audio.mel import FRAMES_PER_SECOND
-from bsmaker.formats.tokens import NONE_TOKEN
+from bsmaker.formats.model import Note
+from bsmaker.formats.tokens import NONE_TOKEN, decode_token, encode_token
 from bsmaker.models.timing.decode import TimingCurve
+from bsmaker.playability.checker import Violation
+from bsmaker.playability.config import PlayabilityConfig
+from bsmaker.playability.geometry import angle_diff, direction_angle
 
 RESNAP_TOL_FRAMES = round(SNAP_MAX_SHIFT_S * FRAMES_PER_SECOND)
 # Support threshold on the weighted timing curve (same ~0.5x pick threshold as F7 / patterns.txt F7).
@@ -37,6 +44,22 @@ HAND_PRESENCE_BONUS = 4.5
 MAX_HAND_LINK_SHARE = 0.36
 # Never encourage a double when already in a run of >= 2 consecutive doubles (protects double rate).
 HAND_LINK_MAX_DOUBLE_RUN = 2
+
+# Target share of active bars (>= 3 notes) replayed verbatim or mirrored.
+# Reference bar_pattern_reuse_share median 0.047 [IQR 0.015-0.169]; budget slightly above median
+# to account for ~15-20% boundary-parity rejections, hard-capped so loop songs never overshoot.
+PATTERN_REPLAY_TARGET_SHARE = 0.055
+PATTERN_REPLAY_MAX_SHARE = 0.070
+# Share of replayed bars that prefer left-right mirror (x -> 3-x, color -> 1-color, mirrored dir).
+# Reference audio-repeat mirror match 0.071 vs exact match 0.066 (~52% mirror).
+MIRROR_SHARE = 0.45
+# Never replay more than 2 consecutive bars (creates memorable 1-2 bar hooks, never copy-paste loops).
+MAX_CONSECUTIVE_REPLAY_BARS = 2
+# A replayed bar never becomes a replay source (ref pattern reuse 0.047).
+MAX_REPLAY_DEPTH = 1
+
+# Left-right direction mirror: U/D/dot unchanged; L<->R, UL<->UR, DL<->DR swapped.
+_MIRROR_DIR: tuple[int, ...] = (0, 1, 3, 2, 5, 4, 7, 6, 8)
 
 
 def _time_key(time_s: float) -> int:
@@ -231,3 +254,377 @@ def plan_rhythm(
         linked_bars += 1
 
     return updated, (HandRhythmLinks(pairs) if pairs else None)
+
+
+def mirror_token(token: int) -> int:
+    """Horizontally mirror a single note token (`x -> 3-x`, `dir -> _MIRROR_DIR[dir]`)."""
+    if token == NONE_TOKEN:
+        return NONE_TOKEN
+    x, y, direction = decode_token(token)
+    return encode_token(3 - x, y, _MIRROR_DIR[direction])
+
+
+def mirror_note(note: Note) -> Note:
+    """Horizontally mirror a `Note` (`color -> 1-color`, `x -> 3-x`, `dir -> _MIRROR_DIR[dir]`)."""
+    return replace(
+        note,
+        color=1 - note.color,
+        x=3 - note.x,
+        direction=_MIRROR_DIR[note.direction],
+    )
+
+
+def _non_slider_swings(
+    notes: Sequence[Note],
+    added: Collection[tuple[float, int]],
+) -> dict[int, list[Note]]:
+    swings: dict[int, list[Note]] = {0: [], 1: []}
+    for n in notes:
+        if (n.time_s, n.color) in added:
+            continue
+        seq = swings[n.color]
+        if not seq or n.time_s - seq[-1].time_s > 1e-9:
+            seq.append(n)
+    return swings
+
+
+def _bar_onset_offsets(
+    bar_notes: Sequence[Note],
+    bar_start_s: float,
+    added: Collection[tuple[float, int]],
+) -> list[float]:
+    offsets = sorted(
+        n.time_s - bar_start_s
+        for n in bar_notes
+        if (n.time_s, n.color) not in added
+    )
+    out: list[float] = []
+    for off in offsets:
+        if not out or off - out[-1] > OFFSET_TOL_S:
+            out.append(off)
+    return out
+
+
+def _loose_dot_mask(
+    working: Sequence[Note],
+    *,
+    bpm: float,
+    mask_cfg: PlayabilityConfig,
+    added: Collection[tuple[float, int]],
+) -> list[bool]:
+    from bsmaker import flow_rules
+
+    prev, nxt = flow_rules._same_hand_neighbours(working)
+    spots = flow_rules._rest_dot_spots(working, prev, nxt, bpm=bpm, mask_cfg=mask_cfg)
+    loose = [False] * len(working)
+    line: dict[int, tuple[int, int, int, int, float] | None] = {0: None, 1: None}
+    for idx, n in enumerate(working):
+        h = n.color
+        if n.direction != 8:
+            line[h] = (n.x, n.y, *flow_rules._DIRS[n.direction], n.time_s)
+            continue
+        cur = line[h]
+        if (n.time_s, h) in added or (cur is not None and flow_rules._on_ray(cur, n)):
+            if cur is not None:
+                line[h] = (cur[0], cur[1], cur[2], cur[3], n.time_s)
+            continue
+        line[h] = None
+        p, q = prev[idx], nxt[idx]
+        valid_rest = (
+            spots[idx]
+            and p is not None
+            and working[p].direction != 8
+            and (q is None or working[q].direction != 8)
+        )
+        valid_first = (
+            p is None
+            and (
+                q is None
+                or (
+                    working[q].time_s - n.time_s >= flow_rules._MIN_SAME_HAND_GAP_S - 1e-9
+                    and working[q].direction != 8
+                )
+            )
+        )
+        if not (valid_rest or valid_first):
+            loose[idx] = True
+    return loose
+
+
+def _source_bar_clean(
+    working: Sequence[Note],
+    lo_idx: int,
+    hi_idx: int,
+    *,
+    is_loose: Sequence[bool],
+    added: Collection[tuple[float, int]],
+) -> bool:
+    if any(is_loose[idx] for idx in range(lo_idx, hi_idx)):
+        return False
+    swings = _non_slider_swings(working[lo_idx:hi_idx], added)
+    for seq in swings.values():
+        ang: float | None = None
+        for idx, n in enumerate(seq):
+            if idx > 0:
+                p = seq[idx - 1]
+                if {p.direction, n.direction} == {0, 1} and p.y == 0 and n.y == 0:
+                    return False
+            if n.direction == 8:
+                if ang is not None:
+                    ang = (ang + 180.0) % 360.0
+                continue
+            new_ang = direction_angle(n.direction)
+            if ang is not None and new_ang is not None and angle_diff(new_ang, ang) < 90.0:
+                return False
+            ang = new_ang
+    return True
+
+
+def _advance_angle(ang: float | None, seq: Sequence[Note]) -> float | None:
+    for n in seq:
+        if n.direction == 8:
+            if ang is not None:
+                ang = (ang + 180.0) % 360.0
+        else:
+            ang = direction_angle(n.direction)
+    return ang
+
+
+def _first_arrow_resets(ang: float | None, seq: Sequence[Note]) -> bool:
+    for n in seq:
+        if n.direction == 8:
+            if ang is not None:
+                ang = (ang + 180.0) % 360.0
+            continue
+        new_ang = direction_angle(n.direction)
+        return ang is not None and new_ang is not None and angle_diff(new_ang, ang) < 90.0
+    return False
+
+
+def _is_flat_row0_flip(a: Note, b: Note) -> bool:
+    return {a.direction, b.direction} == {0, 1} and a.y == 0 and b.y == 0
+
+
+def _boundary_issues(
+    before_h: Sequence[Note],
+    mid_h: Sequence[Note],
+    after_h: Sequence[Note],
+) -> tuple[bool, bool]:
+    ang_before = _advance_angle(None, before_h)
+    if not mid_h:
+        if before_h and after_h:
+            return _is_flat_row0_flip(before_h[-1], after_h[0]), _first_arrow_resets(ang_before, after_h)
+        return False, False
+
+    has_flip = False
+    has_reset = False
+    if before_h:
+        has_flip |= _is_flat_row0_flip(before_h[-1], mid_h[0])
+        has_reset |= _first_arrow_resets(ang_before, mid_h)
+    ang_mid = _advance_angle(ang_before, mid_h)
+    if after_h:
+        has_flip |= _is_flat_row0_flip(mid_h[-1], after_h[0])
+        has_reset |= _first_arrow_resets(ang_mid, after_h)
+    return has_flip, has_reset
+
+
+def _boundary_transitions_ok(
+    before: Sequence[Note],
+    orig_mid: Sequence[Note],
+    cand_mid: Sequence[Note],
+    after: Sequence[Note],
+    *,
+    bpm: float,
+    mask_cfg: PlayabilityConfig,
+    orig_added: Collection[tuple[float, int]],
+    trial_added: Collection[tuple[float, int]],
+) -> bool:
+    from bsmaker import flow_rules
+
+    rest_need = max(flow_rules._FREE_DOT_REST_BEATS * 60.0 / bpm, mask_cfg.slow_gap_s)
+    before_swings = _non_slider_swings(before, orig_added)
+    orig_swings = _non_slider_swings(orig_mid, orig_added)
+    cand_swings = _non_slider_swings(cand_mid, trial_added)
+    after_swings = _non_slider_swings(after, orig_added)
+
+    before_any: dict[int, Note | None] = {0: None, 1: None}
+    for n in before:
+        before_any[n.color] = n
+    after_any: dict[int, Note | None] = {0: None, 1: None}
+    for n in after:
+        if after_any[n.color] is None:
+            after_any[n.color] = n
+
+    for h in (0, 1):
+        c_seq = cand_swings[h]
+        if c_seq and c_seq[0].direction == 8:
+            p_any = before_any[h]
+            if p_any is not None:
+                if c_seq[0].time_s - p_any.time_s < rest_need - 1e-9 or p_any.direction == 8:
+                    return False
+        if c_seq and c_seq[-1].direction == 8:
+            q_any = after_any[h]
+            if q_any is not None and q_any.direction == 8:
+                return False
+
+        orig_flip, orig_reset = _boundary_issues(before_swings[h], orig_swings[h], after_swings[h])
+        cand_flip, cand_reset = _boundary_issues(before_swings[h], c_seq, after_swings[h])
+        if (cand_flip and not orig_flip) or (cand_reset and not orig_reset):
+            return False
+    return True
+
+
+def _consecutive_run_exceeds(depth: dict[int, int], bar_idx: int) -> bool:
+    run = 1
+    k = bar_idx - 1
+    while depth.get(k, 0) > 0:
+        run += 1
+        k -= 1
+    k = bar_idx + 1
+    while depth.get(k, 0) > 0:
+        run += 1
+        k += 1
+    return run > MAX_CONSECUTIVE_REPLAY_BARS
+
+
+def replay_patterns(
+    notes: Sequence[Note],
+    *,
+    repeats: BarRepeats | None,
+    bpm: float,
+    mask_cfg: PlayabilityConfig,
+    rng: random.Random | None = None,
+    seed: int = 0,
+    added: Collection[tuple[float, int]] = frozenset(),
+    base_hard: Collection[Violation] | None = None,
+) -> tuple[list[Note], int]:
+    """Post-flow atomic, `window_ok`-validated exact/mirrored bar pattern replay."""
+    from bsmaker import flow_rules
+
+    working = sorted(notes, key=flow_rules._order)
+    if (
+        not working
+        or repeats is None
+        or not np.isfinite(repeats.bar_s)
+        or repeats.bar_s <= 0.0
+        or len(repeats.source) == 0
+        or not math.isfinite(bpm)
+        or bpm <= 0.0
+    ):
+        return working, 0
+
+    bar_s = float(repeats.bar_s)
+    bar_hi_eps = math.nextafter(bar_s, -math.inf)
+    bar_bounds: dict[int, tuple[int, int]] = {}
+    for idx, n in enumerate(working):
+        k = int(math.floor(n.time_s / bar_s))
+        if k >= 0:
+            lo_i, _ = bar_bounds.get(k, (idx, idx + 1))
+            bar_bounds[k] = (lo_i, idx + 1)
+
+    n_active = sum(1 for lo_i, hi_i in bar_bounds.values() if hi_i - lo_i >= MIN_BAR_EVENTS)
+    budget = min(
+        round(PATTERN_REPLAY_TARGET_SHARE * n_active),
+        math.floor(PATTERN_REPLAY_MAX_SHARE * n_active),
+    )
+    if budget <= 0:
+        return working, 0
+
+    working_added = frozenset(added)
+    is_loose = _loose_dot_mask(working, bpm=bpm, mask_cfg=mask_cfg, added=working_added)
+    clean_cache: dict[int, bool] = {}
+    orig_bars: dict[int, list[Note]] = {
+        k: working[lo_i:hi_i] for k, (lo_i, hi_i) in bar_bounds.items()
+    }
+
+    cands: list[tuple[float, int, int]] = []
+    n_src = len(repeats.source)
+    for j in range(n_src):
+        i = int(repeats.source[j])
+        if i < 0 or i >= j:
+            continue
+        src_notes = orig_bars.get(i)
+        tgt_notes = orig_bars.get(j)
+        if src_notes is None or tgt_notes is None:
+            continue
+        if len(src_notes) < MIN_BAR_EVENTS or len(tgt_notes) < MIN_BAR_EVENTS:
+            continue
+        off_i = _bar_onset_offsets(src_notes, i * bar_s, working_added)
+        off_j = _bar_onset_offsets(tgt_notes, j * bar_s, working_added)
+        if len(off_i) != len(off_j) or any(abs(a - b) > OFFSET_TOL_S for a, b in zip(off_i, off_j)):
+            continue
+        if i not in clean_cache:
+            lo_i, hi_i = bar_bounds[i]
+            clean_cache[i] = _source_bar_clean(
+                working, lo_i, hi_i, is_loose=is_loose, added=working_added,
+            )
+        if not clean_cache[i]:
+            continue
+        sim_val = float(repeats.sim[j, i]) if j < len(repeats.sim) and i < repeats.sim.shape[1] else 0.0
+        ps = int(repeats.phrase_start[j]) if j < len(repeats.phrase_start) else -1
+        bonus = 0.02 if ps >= 0 and j in (ps, ps + 1) else 0.0
+        cands.append((sim_val + bonus, j, i))
+
+    if not cands:
+        return working, 0
+
+    cands.sort(key=lambda item: (-item[0], item[1], item[2]))
+    if base_hard is None:
+        base_hard = flow_rules._vcfg_hard(working, mask_cfg)
+    if rng is None:
+        rng = random.Random(seed)
+
+    depth: dict[int, int] = {}
+    replayed = 0
+    for _, j, i in cands:
+        if replayed >= budget:
+            break
+        if depth.get(i, 0) >= MAX_REPLAY_DEPTH or depth.get(j, 0) > 0:
+            continue
+        if _consecutive_run_exceeds(depth, j):
+            continue
+
+        j_lo = j * bar_s
+        j_hi = (j + 1) * bar_s
+        a = bisect.bisect_left(working, j_lo, key=flow_rules._time)
+        b = bisect.bisect_left(working, j_hi, key=flow_rules._time)
+        tgt_slice = working[a:b]
+        if not tgt_slice:
+            continue
+
+        src_notes = orig_bars[i]
+        dt = (j - i) * bar_s
+        dbeat = 4.0 * (j - i)
+        bar_j_keys = {flow_rules._key(n) for n in tgt_slice}
+        prefer_mirror = rng.random() < MIRROR_SHARE
+
+        for mirror in (prefer_mirror, not prefer_mirror):
+            cand: list[Note] = []
+            cand_added: set[tuple[float, int]] = set()
+            for n in src_notes:
+                t_new = min(max(n.time_s + dt, j_lo), j_lo + bar_hi_eps)
+                shifted = replace(n, time_s=t_new, beat=n.beat + dbeat)
+                out_n = mirror_note(shifted) if mirror else shifted
+                cand.append(out_n)
+                if (n.time_s, n.color) in working_added:
+                    cand_added.add(flow_rules._key(out_n))
+            cand.sort(key=flow_rules._order)
+            trial_added = (working_added - bar_j_keys) | cand_added
+
+            if not _boundary_transitions_ok(
+                working[:a], tgt_slice, cand, working[b:],
+                bpm=bpm, mask_cfg=mask_cfg, orig_added=working_added, trial_added=trial_added,
+            ):
+                continue
+
+            trial = working[:a] + cand + working[b:]
+            t0 = min(cand[0].time_s, tgt_slice[0].time_s)
+            t1 = max(cand[-1].time_s, tgt_slice[-1].time_s)
+            if flow_rules.window_ok(trial, t0, t1, mask_cfg, added=trial_added, base_hard=base_hard):
+                working = trial
+                working_added = trial_added
+                depth[j] = 1
+                replayed += 1
+                break
+
+    return working, replayed

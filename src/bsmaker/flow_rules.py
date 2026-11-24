@@ -6,6 +6,7 @@ import math
 import random
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -14,6 +15,9 @@ from bsmaker.formats.model import Note
 from bsmaker.playability.checker import Violation, check, check_exact
 from bsmaker.playability.config import PlayabilityConfig
 from bsmaker.playability.geometry import angle_diff, direction_angle
+
+if TYPE_CHECKING:
+    from bsmaker.audio.bar_similarity import BarRepeats
 
 RUN_SHARE = (0.0, 0.25, 0.5, 0.8)
 STACK_CHANCE = (0.0, 0.25, 0.5, 0.8)
@@ -164,6 +168,7 @@ class FlowReport:
     ups_lifted: int = 0
     arrow_stacks: int = 0
     free_dots: int = 0
+    bars_replayed: int = 0
 
 
 def _order(n: Note) -> tuple[float, int, int, int]:
@@ -262,14 +267,32 @@ def _stack_views(notes: Sequence[Note]) -> list[list[Note]]:
     return [[n for i, n in enumerate(notes) if i not in drop] for drop in (first, last)]
 
 
+def _added_dot_tails(pre_notes: Sequence[Note], final_notes: Sequence[Note]) -> frozenset[Key]:
+    """Keys of flow-added TECH dot-tail sliders (new dots < 0.12 s after a same-hand kept note)."""
+    pre_keys = {_key(n) for n in pre_notes}
+    added: set[Key] = set()
+    last_t: dict[int, float] = {}
+    for n in final_notes:
+        prev_t = last_t.get(n.color)
+        if (
+            n.direction == 8
+            and _key(n) not in pre_keys
+            and prev_t is not None
+            and n.time_s - prev_t < _SLIDER_VALIDATION_GAP_S - _EPS
+        ):
+            added.add(_key(n))
+        else:
+            last_t[n.color] = n.time_s
+    return frozenset(added)
+
+
 def final_flow_ok(
     pre_notes: Sequence[Note], final_notes: Sequence[Note], mask_cfg: PlayabilityConfig,
 ) -> bool:
-    """Whole-map check after the flow layer (the notes flow adds are dots at new times)."""
+    """Whole-map check after the flow layer (only TECH dot-tail sliders are omitted from `kept`)."""
     pre = sorted(pre_notes, key=_order)
     final = sorted(final_notes, key=_order)
-    pre_keys = {_key(n) for n in pre}
-    added = frozenset(_key(n) for n in final if _key(n) not in pre_keys)
+    added = _added_dot_tails(pre, final)
     return _hard_ok(final, mask_cfg, added, _vcfg_hard(pre, mask_cfg), -math.inf, math.inf)
 
 
@@ -1167,8 +1190,9 @@ def apply_flow(
     level: int,
     seed: int,
     mask_cfg: PlayabilityConfig,
+    repeats: BarRepeats | None = None,
 ) -> tuple[list[Note], FlowReport]:
-    """Flow level 0-3: repair loose dots, lift flat up cuts, snake runs, then stacks.
+    """Flow level 0-3: repair loose dots, lift flat up cuts, snake runs, stacks, then replay.
 
     Level 1 uses the window stack profile (a few standalone dots after rests, then same-time
     arrow stacks); levels 2-3 use the tech profile (dot-tail stacks).
@@ -1201,6 +1225,20 @@ def apply_flow(
         chance=STACK_CHANCE[level], rng=rng, mask_cfg=mask_cfg, base_hard=base_hard,
         profile=profile,
     )
+    bars_replayed = 0
+    if repeats is not None:
+        from bsmaker.phrase import replay_patterns
+
+        added = _added_dot_tails(after_snakes, after_stacks) if profile == TECH else frozenset()
+        after_stacks, bars_replayed = replay_patterns(
+            after_stacks,
+            repeats=repeats,
+            bpm=bpm,
+            mask_cfg=mask_cfg,
+            rng=rng,
+            added=added,
+            base_hard=base_hard,
+        )
     report = FlowReport(
         level=level,
         runs_found=runs_found,
@@ -1213,5 +1251,6 @@ def apply_flow(
         ups_lifted=ups_lifted,
         arrow_stacks=stacks if profile == WINDOW else 0,
         free_dots=free_dots,
+        bars_replayed=bars_replayed,
     )
     return after_stacks, report

@@ -410,7 +410,7 @@ def generate_map(
             pre_flow = notes
             notes, flow_report = apply_flow(
                 notes, bpm=grid.bpm, onset_env=onset_env, onset_hop_s=onset_hop_s,
-                level=flow, seed=seed, mask_cfg=mask_cfg,
+                level=flow, seed=seed, mask_cfg=mask_cfg, repeats=repeats,
             )
             # Without the added stack dots the map must pass the mask profile like any base map;
             # with them (as slider tails) it must add no hard violation.

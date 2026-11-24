@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -16,8 +18,10 @@ from bsmaker.audio.bar_similarity import (
 )
 from bsmaker.audio.decode import SAMPLE_RATE
 from bsmaker.audio.mel import FRAMES_PER_SECOND
+from bsmaker.flow_rules import final_flow_ok
 from bsmaker.formats.events import to_events
-from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE
+from bsmaker.formats.model import Note
+from bsmaker.formats.tokens import NONE_TOKEN, VOCAB_SIZE, decode_token, encode_token
 from bsmaker.models.pattern.model import PatternConfig, PatternModel
 from bsmaker.models.pattern.sample import LoadedPattern, sample_notes
 from bsmaker.models.timing.decode import TimingConfig, TimingCurve, LoadedTiming, pick_events, predict_events
@@ -25,13 +29,18 @@ from bsmaker.models.timing.model import TimingModel
 from bsmaker.phrase import (
     HAND_LINK_MAX_DOUBLE_RUN,
     HAND_PRESENCE_BONUS,
+    MAX_CONSECUTIVE_REPLAY_BARS,
     MIN_GAP_S,
+    PATTERN_REPLAY_MAX_SHARE,
     RESNAP_FRACTION,
     HandRhythmLinks,
+    mirror_note,
+    mirror_token,
     plan_rhythm,
     repeat_rhythm,
+    replay_patterns,
 )
-from bsmaker.playability.checker import check
+from bsmaker.playability.checker import check, check_exact
 from bsmaker.playability.config import PlayabilityConfig
 
 
@@ -443,4 +452,234 @@ def test_predict_events_emits_timing_curve():
     assert isinstance(curve_out[0], TimingCurve)
     assert curve_out[0].curve.shape == (len(mel),)
     assert np.isfinite(curve_out[0].threshold) and curve_out[0].threshold > 0.0
+
+
+def _note(t: float, x: int, y: int, color: int, direction: int, bpm: float = 120.0) -> Note:
+    return Note(time_s=t, beat=t * bpm / 60.0, x=x, y=y, color=color, direction=direction)
+
+
+def _bar_notes_map(notes: list[Note], bar_s: float) -> dict[int, list[Note]]:
+    out: dict[int, list[Note]] = {}
+    for n in notes:
+        out.setdefault(int(math.floor(n.time_s / bar_s)), []).append(n)
+    return out
+
+
+def test_mirror_token_and_note():
+    assert mirror_token(NONE_TOKEN) == NONE_TOKEN
+    # (x=0, y=1, dir=4[UL]) <-> (x=3, y=1, dir=5[UR])
+    t_ul = encode_token(0, 1, 4)
+    t_ur = mirror_token(t_ul)
+    assert decode_token(t_ur) == (3, 1, 5)
+    assert mirror_token(t_ur) == t_ul
+    # (x=1, y=0, dir=2[L]) <-> (x=2, y=0, dir=3[R])
+    assert decode_token(mirror_token(encode_token(1, 0, 2))) == (2, 0, 3)
+    # Up, down, dot directions preserved; x flipped
+    assert decode_token(mirror_token(encode_token(1, 2, 0))) == (2, 2, 0)
+    assert decode_token(mirror_token(encode_token(0, 0, 8))) == (3, 0, 8)
+
+    n = _note(1.25, 1, 0, 0, 7)  # left DR
+    m = mirror_note(n)
+    assert m == Note(time_s=1.25, beat=n.beat, x=2, y=0, color=1, direction=6)
+
+
+def test_replay_patterns_exact_and_mirror_respect_budget_and_window_ok():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 40
+    cfg = PlayabilityConfig()
+
+    # Bar 0 (source): asymmetric L/R with diagonal L and vertical R, valid entry/exit parity for both exact & mirror.
+    # Bars 1..39: vertical L/R so exact and mirrored replays of bar 0 are both distinct and distinguishable.
+    notes: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes.extend([
+                _note(t0 + 0.25, 0, 1, 0, 4, bpm),  # L UL
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U
+                _note(t0 + 1.25, 1, 0, 0, 7, bpm),  # L DR
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D
+            ])
+        else:
+            notes.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),  # L U
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),  # L D
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D
+            ])
+
+    links = {j: 0 for j in range(8, n_bars)}
+    repeats = _make_repeats(n_bars, bar_s, links)
+    for j in range(8, n_bars):
+        repeats.sim[j, 0] = 0.90 + 0.001 * (j % 5)
+
+    saw_exact = False
+    saw_mirror = False
+    src_sig_exact = [(n.x, n.y, n.color, n.direction) for n in notes[:4]]
+    src_sig_mirror = [(mirror_note(n).x, mirror_note(n).y, mirror_note(n).color, mirror_note(n).direction)
+                      for n in notes[:4]]
+
+    for seed in range(20):
+        out, replayed = replay_patterns(notes, repeats=repeats, bpm=bpm, mask_cfg=cfg, seed=seed)
+        assert 0 < replayed <= PATTERN_REPLAY_MAX_SHARE * n_bars + 1
+        assert final_flow_ok(notes, out, cfg)
+        assert check_exact(out, cfg).hard == ()
+
+        by_bar = _bar_notes_map(out, bar_s)
+        replayed_bars = []
+        for j in range(8, n_bars):
+            sig = [(n.x, n.y, n.color, n.direction) for n in by_bar[j]]
+            if sig == src_sig_exact:
+                saw_exact = True
+                replayed_bars.append(j)
+            elif sig == src_sig_mirror:
+                saw_mirror = True
+                replayed_bars.append(j)
+
+        assert len(replayed_bars) == replayed
+        # Consecutive replayed bars <= MAX_CONSECUTIVE_REPLAY_BARS
+        run = max_run = 0
+        replayed_set = set(replayed_bars)
+        for k in range(n_bars):
+            run = run + 1 if k in replayed_set else 0
+            max_run = max(max_run, run)
+        assert max_run <= MAX_CONSECUTIVE_REPLAY_BARS
+
+    assert saw_exact and saw_mirror
+
+
+def test_replay_patterns_skips_flat_flip_sources_and_protects_dots():
+    bpm = 120.0
+    bar_s = 2.0
+    n_bars = 20
+    cfg = PlayabilityConfig()
+
+    # 1) Source bar 0 contains a row-0 U/D flat flip -> must never be replayed.
+    notes_flip: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes_flip.extend([
+                _note(t0 + 0.25, 1, 0, 0, 1, bpm),  # L D at y=0
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U
+                _note(t0 + 1.25, 1, 0, 0, 0, bpm),  # L U at y=0 -> flat row-0 flip!
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D
+            ])
+        else:
+            notes_flip.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+    rep_flip = _make_repeats(n_bars, bar_s, {j: 0 for j in range(4, n_bars)})
+    out_flip, replayed_flip = replay_patterns(notes_flip, repeats=rep_flip, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_flip == 0
+    assert out_flip == notes_flip
+
+    # 2) Source bar 1 starts with a standalone dot (after > 1 beat rest from bar 0) -> rejected when
+    #    target bar 10's predecessor bar 9 ends < 1 beat (0.50 s) before it.
+    notes_dot: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes_dot.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.50, 2, 0, 1, 1, bpm),  # gap to bar 1 dot (2.25) is >= 0.75 s >= 1 beat
+            ])
+        elif k == 1:
+            notes_dot.extend([
+                _note(t0 + 0.25, 0, 1, 0, 8, bpm),  # standalone dot on calm rest spot
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+        elif k == 9:
+            notes_dot.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.85, 1, 0, 0, 1, bpm),  # ends 0.40 s (< 0.50 s = 1 beat) before bar 10's 20.25
+                _note(t0 + 1.90, 2, 0, 1, 1, bpm),  # also < 1 beat on right hand so mirror also fails guard
+            ])
+        else:
+            notes_dot.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+    rep_dot = _make_repeats(n_bars, bar_s, {10: 1})
+    out_dot, replayed_dot = replay_patterns(notes_dot, repeats=rep_dot, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_dot == 0
+    assert out_dot == notes_dot
+
+    # 3) Mirrored same-time arrow stack: exact parity fails at bar 10 entry, so replay_patterns mirrors
+    #    bar 0's left-hand stack onto bar 10's right hand (x >= 2) cleanly.
+    notes_stack: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes_stack.extend([
+                _note(t0 + 0.25, 0, 0, 0, 1, bpm),  # L stack D (cell 1)
+                _note(t0 + 0.25, 0, 1, 0, 1, bpm),  # L stack D (cell 2)
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),  # R U
+                _note(t0 + 1.25, 1, 2, 0, 0, bpm),  # L U
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),  # R D
+            ])
+        elif k == 9:
+            notes_stack.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),  # L ends D -> blocks exact (L starts D), allows mirror (L starts U)
+                _note(t0 + 1.75, 2, 2, 1, 0, bpm),  # R ends U -> blocks exact (R starts U), allows mirror (R starts D)
+            ])
+        elif k == 10:
+            notes_stack.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 0, 1, 1, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 2, 1, 0, bpm),
+            ])
+        else:
+            notes_stack.extend([
+                _note(t0 + 0.25, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.75, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.25, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.75, 2, 0, 1, 1, bpm),
+            ])
+    rep_stack = _make_repeats(n_bars, bar_s, {10: 0})
+    out_stack, replayed_stack = replay_patterns(notes_stack, repeats=rep_stack, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_stack == 1
+    assert final_flow_ok(notes_stack, out_stack, cfg)
+    assert check_exact(out_stack, cfg).hard == ()
+    bar10_at_025 = [n for n in out_stack if abs(n.time_s - 20.25) < 1e-9]
+    assert len(bar10_at_025) == 2
+    assert all(n.color == 1 and n.x == 3 and n.direction == 1 for n in bar10_at_025)
+    assert {n.y for n in bar10_at_025} == {0, 1}
+
+    # 4) Source bar containing a same-hand soft reset (angle_diff < 90 deg after >= 0.8s rest) is skipped.
+    notes_reset: list[Note] = []
+    for k in range(n_bars):
+        t0 = k * bar_s
+        if k == 0:
+            notes_reset.extend([
+                _note(t0 + 0.10, 1, 2, 0, 0, bpm),  # L U
+                _note(t0 + 0.50, 2, 2, 1, 0, bpm),  # R U
+                _note(t0 + 1.10, 1, 2, 0, 0, bpm),  # L U again after 1.0 s -> soft reset (0 deg < 90 deg)
+                _note(t0 + 1.60, 2, 0, 1, 1, bpm),  # R D
+            ])
+        else:
+            notes_reset.extend([
+                _note(t0 + 0.10, 1, 2, 0, 0, bpm),
+                _note(t0 + 0.50, 2, 2, 1, 0, bpm),
+                _note(t0 + 1.10, 1, 0, 0, 1, bpm),
+                _note(t0 + 1.60, 2, 0, 1, 1, bpm),
+            ])
+    rep_reset = _make_repeats(n_bars, bar_s, {10: 0})
+    out_reset, replayed_reset = replay_patterns(notes_reset, repeats=rep_reset, bpm=bpm, mask_cfg=cfg, seed=0)
+    assert replayed_reset == 0
+    assert out_reset == notes_reset
 
