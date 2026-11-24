@@ -206,8 +206,12 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:saveSettings", async (_ev, partial) => {
     const prev = await settingsStore.load();
     const next = await settingsStore.save(partial);
-    if (next.device !== prev.device) {
-      cachedInfo = null;
+    if (next.device !== prev.device && cachedInfo) {
+      cachedInfo = {
+        ...cachedInfo,
+        active_device:
+          next.device === "cpu" ? "cpu" : cachedInfo.cuda_available ? "cuda" : "cpu",
+      };
     }
     if (next.customLevels && !(await enginePack.needsInstall())) {
       queueManager.kick();
@@ -394,6 +398,17 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:listLibrary", async (): Promise<LibraryEntry[]> => libraryStore.list());
 
   ipcMain.handle("bsm:deleteLibraryEntry", async (_ev, id: string): Promise<LibraryEntry[]> => {
+    const isActiveRegen = queueManager
+      .getItems()
+      .some(
+        (item) =>
+          (item.status === "downloading" || item.status === "running") &&
+          item.request.regenerateId === id,
+      );
+    if (isActiveRegen) {
+      logger.warn(`Refusing to delete library entry ${id} while its regeneration is active`);
+      return libraryStore.list();
+    }
     const settings = await settingsStore.load();
     return libraryStore.deleteEntry(id, settings.customLevels, (folderPath) =>
       shell.trashItem(folderPath),

@@ -108,6 +108,8 @@ class EngineServer:
         self.stdout = stdout if stdout is not None else sys.stdout
         self.stderr = stderr if stderr is not None else sys.stderr
         self._write_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._active_job_id: str | None = None
         self._cancel_event = threading.Event()
         self._job_queue: queue.Queue[tuple[str, dict] | None] = queue.Queue()
         self._pipeline: LoadedPipeline | None = None
@@ -166,8 +168,15 @@ class EngineServer:
                 req_id = str(req.get("id") or "")
                 cmd = req.get("cmd")
                 if cmd == "cancel":
-                    self._cancel_event.set()
-                    self._emit({"id": req_id, "type": "result", "data": {"cancelled": True}})
+                    target_id = req.get("target_id")
+                    with self._state_lock:
+                        active_id = self._active_job_id
+                        should_cancel = active_id is not None and (
+                            target_id is None or str(target_id) == active_id
+                        )
+                        if should_cancel:
+                            self._cancel_event.set()
+                    self._emit({"id": req_id, "type": "result", "data": {"cancelled": bool(should_cancel)}})
                     continue
                 if cmd in _FAST_COMMANDS and fast_pool is not None:
                     fast_pool.submit(self._run_command, req_id, req)
@@ -228,10 +237,15 @@ class EngineServer:
                 if req.get("cmd") == "shutdown":
                     self._emit({"id": req_id, "type": "result", "data": {"shutdown": True}})
                     break
+                with self._state_lock:
+                    self._active_job_id = req_id
+                    self._cancel_event.clear()
                 try:
                     self._run_command(req_id, req)
                 finally:
-                    self._cancel_event.clear()
+                    with self._state_lock:
+                        self._active_job_id = None
+                        self._cancel_event.clear()
 
             reader.join(timeout=1.0)
 

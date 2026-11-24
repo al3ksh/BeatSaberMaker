@@ -365,7 +365,8 @@ describe("IPC queue handlers", () => {
     expect(mocks.engine.request).not.toHaveBeenCalled();
     expect((startup2 as { info: EngineInfo | null }).info).toEqual(sampleInfo);
 
-    // Changing device invalidates cached info; reload while active still does not block on engine.request("info").
+    // Changing device updates cachedInfo.active_device in place so getStartupState and getInfo
+    // return up-to-date info without blocking on engine.request("info") while queue is active.
     mocks.settingsStore.save.mockResolvedValueOnce({
       customLevels: "C:\\Detected\\CustomLevels",
       device: "cpu",
@@ -375,7 +376,16 @@ describe("IPC queue handlers", () => {
     await handlers.get("bsm:saveSettings")!({}, { device: "cpu" });
     const startup3 = await handlers.get("bsm:getStartupState")!({});
     expect(mocks.engine.request).not.toHaveBeenCalled();
-    expect((startup3 as { info: EngineInfo | null }).info).toBeNull();
+    expect((startup3 as { info: EngineInfo | null }).info).toEqual({
+      ...sampleInfo,
+      active_device: "cpu",
+    });
+    const infoWhileActive = await handlers.get("bsm:getInfo")!({});
+    expect(mocks.engine.request).not.toHaveBeenCalled();
+    expect(infoWhileActive).toEqual({
+      ...sampleInfo,
+      active_device: "cpu",
+    });
 
     // Once queue has no active item, getStartupState fetches fresh info for the new device.
     mocks.queueManager.getItems.mockReturnValue([]);
@@ -387,6 +397,24 @@ describe("IPC queue handlers", () => {
     });
     await handlers.get("bsm:getStartupState")!({});
     expect(mocks.engine.request).toHaveBeenCalledWith("info", { device: "cpu" });
+  });
+
+  it("refuses to delete a library entry while its regeneration is active", async () => {
+    const { registerIpcHandlers } = await import("./ipc");
+    const { deps, mocks } = makeDeps();
+    const existingEntry = { id: "lib-1", title: "Track" };
+    (deps.libraryStore.list as ReturnType<typeof vi.fn>).mockResolvedValue([existingEntry]);
+    mocks.queueManager.getItems.mockReturnValue([
+      makeQueueItem({
+        status: "running",
+        request: { ...makeQueueItem().request, regenerateId: "lib-1" },
+      }),
+    ]);
+
+    registerIpcHandlers(deps);
+    const res = await handlers.get("bsm:deleteLibraryEntry")!({}, "lib-1");
+    expect(res).toEqual([existingEntry]);
+    expect(deps.libraryStore.deleteEntry).not.toHaveBeenCalled();
   });
 
   it("installEnginePack pauses real QueueManager so waiting item does not start until install completes and FirstRun getInfo does not block", async () => {

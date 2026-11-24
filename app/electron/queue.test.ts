@@ -1580,4 +1580,102 @@ rl.on("line", (line) => {
     expect(startedTitles).toEqual(["PauseActive", "WaitWhilePaused", "EnqueuedWhilePaused"]);
     expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("done");
   });
+
+  it("awaits in-flight persistChain on shutdown when drainPromise is null", async () => {
+    const h = await createTestHarness();
+    const engine = {
+      request: vi.fn(async (_cmd: string, params?: Record<string, unknown>) => {
+        const out = makeGenerateOutput(h.customLevels, String(params?.title));
+        await fs.mkdir(out.folder, { recursive: true });
+        return out;
+      }),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore: h.settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+    });
+    await qm.init();
+
+    await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "ClearBeforeQuit",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    await waitFor(() => qm.getItems()[0]?.status === "done");
+
+    let renameStarted!: () => void;
+    const renameStartedP = new Promise<void>((r) => {
+      renameStarted = r;
+    });
+    let releaseRename!: () => void;
+    const origRename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+      if (String(newPath) === h.queueFilePath) {
+        renameStarted();
+        await new Promise<void>((r) => {
+          releaseRename = r;
+        });
+      }
+      return origRename(oldPath, newPath);
+    });
+
+    const clearP = qm.clearFinished();
+    await renameStartedP;
+
+    let shutdownResolved = false;
+    const shutdownP = qm.shutdown().then(() => {
+      shutdownResolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(shutdownResolved).toBe(false);
+
+    releaseRename();
+    await Promise.all([clearP, shutdownP]);
+    renameSpy.mockRestore();
+
+    expect(shutdownResolved).toBe(true);
+    const onDisk = JSON.parse(await fs.readFile(h.queueFilePath, "utf8")) as QueueItem[];
+    expect(onDisk).toEqual([]);
+  });
+
+  it("backs up and recovers from non-array JSON or malformed entries in queue.json", async () => {
+    const h = await createTestHarness();
+    const engine = {
+      request: vi.fn(),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    for (const [idx, badPayload] of ["{}", "[null]", '[{"id":"only-id"}]'].entries()) {
+      const caseDir = path.join(h.tmp, `bad-queue-${idx}`);
+      await fs.mkdir(caseDir, { recursive: true });
+      const qPath = path.join(caseDir, "queue.json");
+      await fs.writeFile(qPath, badPayload, "utf8");
+
+      const qm = new QueueManager({
+        filePath: qPath,
+        tmpDownloadsRoot: h.tmpDownloadsRoot,
+        engine,
+        settingsStore: h.settingsStore,
+        libraryStore: h.libraryStore,
+        trashItem: h.trashItem,
+        logger: h.logger,
+      });
+      await qm.init();
+      expect(qm.getItems()).toEqual([]);
+      const files = await fs.readdir(caseDir);
+      expect(files.some((f) => f.startsWith("queue.json.corrupt-"))).toBe(true);
+    }
+  });
 });

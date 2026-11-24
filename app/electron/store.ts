@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Settings } from "./types";
@@ -5,7 +6,7 @@ import type { Settings } from "./types";
 export async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(data, null, 2), "utf8");
   try {
     await fs.rename(tmpPath, filePath);

@@ -262,3 +262,77 @@ def test_engine_search_runs_concurrently_during_generate(tmp_path: Path, monkeyp
     assert result_ids.index("q1") < result_ids.index("g1")
     assert result_ids.index("r1") < result_ids.index("g1")
     assert result_ids.index("z1") < result_ids.index("g1")
+
+
+def test_engine_stale_cancel_when_idle_does_not_cancel_next_job(tmp_path: Path, monkeypatch) -> None:
+    cfg = _setup_engine_dir(tmp_path)
+    audio = write_audio(tmp_path / "song.wav")
+    out_dir = tmp_path / "CustomLevels"
+    out_dir.mkdir()
+
+    import bsmaker.engine.server as S
+
+    observed_cancel_at_start: list[bool] = []
+    orig_run_generate = S.run_generate
+
+    def check_cancel_generate(*args, is_cancelled=None, **kwargs):
+        observed_cancel_at_start.append(bool(is_cancelled and is_cancelled()))
+        return orig_run_generate(*args, is_cancelled=is_cancelled, **kwargs)
+
+    monkeypatch.setattr(S, "run_generate", check_cancel_generate)
+
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    class QueueReader:
+        def readline(self):
+            item = lines.get()
+            return "" if item is None else item
+
+    class SignalingStdout:
+        def __init__(self) -> None:
+            self.msgs: list[dict] = []
+            self.idle_cancels_acked = threading.Event()
+            self._acked: set[str] = set()
+            self._buf = ""
+
+        def write(self, s: str) -> int:
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                if line.strip():
+                    msg = json.loads(line)
+                    self.msgs.append(msg)
+                    if msg.get("id") in ("c0", "c1"):
+                        self._acked.add(msg["id"])
+                        if self._acked == {"c0", "c1"}:
+                            self.idle_cancels_acked.set()
+            return len(s)
+
+        def flush(self) -> None:
+            pass
+
+    stdout = SignalingStdout()
+    srv = EngineServer(cfg, stdin=QueueReader(), stdout=stdout, stderr=io.StringIO())
+    t = threading.Thread(target=srv.serve, daemon=True)
+    t.start()
+
+    try:
+        # Cancel commands arriving while no job is active must not poison the next job.
+        lines.put(json.dumps({"id": "c0", "cmd": "cancel"}) + "\n")
+        lines.put(json.dumps({"id": "c1", "cmd": "cancel", "target_id": "g0"}) + "\n")
+        assert stdout.idle_cancels_acked.wait(timeout=2.0)
+
+        lines.put(json.dumps({
+            "id": "g1", "cmd": "generate", "audio_path": str(audio), "out_dir": str(out_dir),
+            "nps": 3.0, "styles": ["tech"], "seed": 1, "title": "Song", "artist": "Artist",
+        }) + "\n")
+        lines.put(json.dumps({"id": "s1", "cmd": "shutdown"}) + "\n")
+        lines.put(None)
+    finally:
+        t.join(timeout=5.0)
+
+    assert observed_cancel_at_start == [False]
+    g1_res = next(m for m in stdout.msgs if m["id"] == "g1" and m["type"] == "result")
+    assert Path(g1_res["data"]["folder"]).is_dir()
+    c0_res = next(m for m in stdout.msgs if m["id"] == "c0")
+    assert c0_res["data"]["cancelled"] is False

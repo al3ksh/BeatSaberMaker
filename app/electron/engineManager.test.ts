@@ -66,7 +66,10 @@ describe("EngineManager", () => {
 
     const hanging = mgr.request("generate", { hangOnCancel: true });
     await new Promise((r) => setTimeout(r, 40));
-    await expect(mgr.cancelActive().then(() => hanging)).rejects.toMatchObject({ code: "cancelled" });
+    await mgr.cancelActive();
+    // Process tree must already have exited before cancelActive() resolves.
+    expect(() => process.kill(info1.pid, 0)).toThrow();
+    await expect(hanging).rejects.toMatchObject({ code: "cancelled" });
 
     // Transparently restarted with a fresh process
     const info2 = await mgr.request<{ pid: number }>("info", {});

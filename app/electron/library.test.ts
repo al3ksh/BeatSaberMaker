@@ -141,4 +141,90 @@ describe("isSafeBsmMapFolder and LibraryStore", () => {
     await sStore.save({ customLevels: cl });
     expect((await sStore.load()).customLevels).toBe(cl);
   });
+
+  it("serializes concurrent saveEntry, deleteEntry, and replaceAfterRegenerate without losing or resurrecting entries", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "bsm-lib-serial-"));
+    const cl = path.join(tmp, "CustomLevels");
+    const folderA = path.join(cl, "BSM - MapA");
+    const folderB = path.join(cl, "BSM - MapB");
+    const folderB2 = path.join(cl, "BSM - MapB (2)");
+    const folderC = path.join(cl, "BSM - MapC");
+    await fs.mkdir(folderA, { recursive: true });
+    await fs.mkdir(folderB, { recursive: true });
+    await fs.mkdir(folderB2, { recursive: true });
+    await fs.mkdir(folderC, { recursive: true });
+
+    const store = new LibraryStore(path.join(tmp, "library.json"), path.join(tmp, "media"));
+    const audioSrc = path.join(tmp, "song.wav");
+    await fs.writeFile(audioSrc, "wav");
+    const cachedA = await store.cacheMedia("a", audioSrc, null);
+    const cachedB = await store.cacheMedia("b", audioSrc, null);
+    const cachedC = await store.cacheMedia("c", audioSrc, null);
+
+    const makeEntry = (id: string, title: string, folder: string, audioCachePath: string) => ({
+      id,
+      title,
+      artist: "Art",
+      folder,
+      createdAt: `2026-11-16T10:00:0${id === "a" ? "1" : id === "b" ? "2" : "3"}Z`,
+      bpm: 120,
+      levels: [{ rank: "Hard", nps: 3.5, nNotes: 200, nArcs: 5, nChains: 2 }],
+      nWalls: 10,
+      nBombs: 4,
+      nLights: 50,
+      environment: "DefaultEnvironment",
+      audioCachePath,
+      coverCachePath: null,
+      config: {
+        mode: "pack" as const,
+        levels: ["Hard", "Expert", "ExpertPlus"],
+        nps: null,
+        styles: [],
+        ornaments: null,
+        lights: 2,
+        environment: "DefaultEnvironment",
+        seed: 42,
+        lightsRules: false,
+      },
+    });
+
+    await store.saveEntry(makeEntry("b", "MapB", folderB, cachedB.audioCachePath));
+    await store.saveEntry(makeEntry("c", "MapC", folderC, cachedC.audioCachePath));
+
+    let trashStarted!: () => void;
+    const trashStartedP = new Promise<void>((r) => {
+      trashStarted = r;
+    });
+    let releaseTrash!: () => void;
+    const slowTrash = async (p: string) => {
+      if (p === folderB) {
+        trashStarted();
+        await new Promise<void>((r) => {
+          releaseTrash = r;
+        });
+      }
+      await fs.rm(p, { recursive: true, force: true });
+    };
+
+    // Start deleteEntry(b) which stalls on trashItem, then concurrently saveEntry(a).
+    const deleteP = store.deleteEntry("b", cl, slowTrash);
+    await trashStartedP;
+    const saveP = store.saveEntry(makeEntry("a", "MapA", folderA, cachedA.audioCachePath));
+    releaseTrash();
+
+    await Promise.all([deleteP, saveP]);
+
+    const afterIds = (await store.list()).map((e) => e.id).sort();
+    expect(afterIds).toEqual(["a", "c"]);
+
+    // If target entry was deleted before replaceAfterRegenerate runs, it must not be resurrected.
+    await store.replaceAfterRegenerate(
+      "b",
+      makeEntry("b", "MapB Regen", folderB2, cachedB.audioCachePath),
+      cl,
+      slowTrash,
+    );
+    expect((await store.list()).map((e) => e.id).sort()).toEqual(["a", "c"]);
+    await expect(fs.stat(folderB2)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

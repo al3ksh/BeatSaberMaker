@@ -21,6 +21,32 @@ const DEFAULT_MAX_FINISHED_HISTORY = 50;
 const PACK_SEED_MAX = 2_000_000_000;
 const DEFAULT_PACK_LEVELS = ["Hard", "Expert", "ExpertPlus"];
 const FINISHED_STATUSES = new Set<QueueItemStatus>(["done", "failed", "cancelled"]);
+const VALID_STATUSES = new Set<QueueItemStatus>([
+  "waiting",
+  "downloading",
+  "running",
+  "done",
+  "failed",
+  "cancelled",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isValidQueueItem(raw: unknown): raw is QueueItem {
+  if (!isRecord(raw)) return false;
+  if (typeof raw.id !== "string" || raw.id.length === 0) return false;
+  if (typeof raw.status !== "string" || !VALID_STATUSES.has(raw.status as QueueItemStatus)) {
+    return false;
+  }
+  if (!isRecord(raw.request)) return false;
+  if (typeof raw.request.title !== "string" || typeof raw.request.sourcePathOrUrl !== "string") {
+    return false;
+  }
+  if (!isRecord(raw.request.config)) return false;
+  return true;
+}
 
 export interface QueueManagerOptions {
   filePath: string;
@@ -167,7 +193,10 @@ export class QueueManager {
     try {
       const raw = await fsp.readFile(this.options.filePath, "utf8");
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as QueueItem[]) : [];
+      if (!Array.isArray(parsed) || !parsed.every(isValidQueueItem)) {
+        throw new Error("Invalid queue.json format");
+      }
+      return parsed;
     } catch (err) {
       if (!isEnoent(err)) {
         const backup = `${this.options.filePath}.corrupt-${Date.now()}`;
@@ -402,6 +431,7 @@ export class QueueManager {
     if (this.drainPromise) {
       await this.drainPromise;
     }
+    await this.persistChain;
   }
 
   private pruneFinished(): void {
