@@ -67,7 +67,7 @@ Before you put on the headset, watch the generated map play in sync with the son
 
 ## Download and install
 
-1. Download **`BeatSaberMaker-Setup-0.1.2.exe`** from the [latest release](https://github.com/al3ksh/BeatSaberMaker/releases/latest) and run it.
+1. Download **`BeatSaberMaker-Setup-<version>.exe`** from the [latest release](https://github.com/al3ksh/BeatSaberMaker/releases/latest) and run it.
    The installer is not code-signed yet, so Windows SmartScreen may show a warning. Click **More info → Run anyway**.
 2. On first launch, click **Download Engine**. The app downloads the AI engine pack from the same release. The pack is about **5 GB** and contains PyTorch with CUDA, the trained models, ffmpeg and yt-dlp. Every part is checked with SHA-256, and an interrupted download resumes where it stopped.
 3. Select your Beat Saber `CustomLevels` folder. The app fills it in when it can find the game.
@@ -152,7 +152,7 @@ npx electron-builder --win --publish never
 - `build_engine_pack.py` freezes the engine with PyInstaller, splits it into parts small enough for a release, and writes a manifest.
 - When the engine changes, bump `engineVersion` and set `releaseTag` in `app/engine-version.json` to the release that will carry the new pack. App-only releases upload just the installer, blockmap and latest.yml.
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) runs the whole release pipeline. Versions 0.1.0 to 0.1.2 were built locally with the same steps.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs the whole release pipeline. Versions 0.1.0 to 0.1.4 were built locally with the same steps.
 
 ## Project layout
 
@@ -164,7 +164,7 @@ tests/         Python tests (pytest)
 docs/          Quickstart, data pipeline, Colab training, design specs and plans
 ```
 
-## Known issues in 0.1.2
+## Known issues in 0.1.4
 
 - The installer and the engine are not code-signed, so SmartScreen shows a warning.
 - Tested only on Windows 11 with an NVIDIA RTX GPU. CPU-only generation works but has not been benchmarked.
