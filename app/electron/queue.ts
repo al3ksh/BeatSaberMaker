@@ -110,6 +110,7 @@ export class QueueManager {
   private activeCancelRequested = false;
   private draining = false;
   private drainPromise: Promise<void> | null = null;
+  private pauseCount = 0;
   private shuttingDown = false;
   private shutdownRequested = false;
   private persistChain: Promise<void> = Promise.resolve();
@@ -366,7 +367,7 @@ export class QueueManager {
   }
 
   kick(): void {
-    if (this.draining || this.shuttingDown) {
+    if (this.draining || this.shuttingDown || this.pauseCount > 0) {
       return;
     }
     if (!this.items.some((item) => item.status === "waiting")) {
@@ -374,6 +375,22 @@ export class QueueManager {
     }
     this.draining = true;
     this.drainPromise = this.drain();
+  }
+
+  async pause(): Promise<void> {
+    this.pauseCount += 1;
+    if (this.activeItemId !== null) {
+      await this.cancel(this.activeItemId);
+    }
+    if (this.drainPromise) {
+      await this.drainPromise;
+    }
+  }
+
+  resume(): void {
+    if (this.pauseCount > 0) {
+      this.pauseCount -= 1;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -418,7 +435,7 @@ export class QueueManager {
 
   private async drain(): Promise<void> {
     try {
-      while (!this.shuttingDown) {
+      while (!this.shuttingDown && this.pauseCount === 0) {
         const next = this.items.find((item) => item.status === "waiting");
         if (!next) {
           break;

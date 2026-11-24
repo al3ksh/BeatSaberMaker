@@ -1493,4 +1493,91 @@ rl.on("line", (line) => {
     expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("done");
     expect(h.logger.error).toHaveBeenCalledTimes(2);
   });
+
+  it("pause cancels active item, awaits drain completion, blocks kick until resume, then drains waiting items", async () => {
+    const h = await createTestHarness();
+    let item1Started!: () => void;
+    const item1StartedP = new Promise<void>((r) => {
+      item1Started = r;
+    });
+    let rejectItem1!: (err: unknown) => void;
+    const startedTitles: string[] = [];
+
+    const engine = {
+      request: vi.fn(async (_cmd: string, params?: Record<string, unknown>) => {
+        const title = String(params?.title);
+        startedTitles.push(title);
+        if (title === "PauseActive") {
+          item1Started();
+          return await new Promise<GenerateOutput>((_resolve, reject) => {
+            rejectItem1 = reject;
+          });
+        }
+        const out = makeGenerateOutput(h.customLevels, title);
+        await fs.mkdir(out.folder, { recursive: true });
+        return out;
+      }),
+      cancelActive: vi.fn(async () => {
+        rejectItem1(new EngineError("cancelled", "cancelled"));
+      }),
+      stop: vi.fn(async () => {}),
+    };
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore: h.settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+    });
+    await qm.init();
+
+    const i1 = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "PauseActive",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    await item1StartedP;
+
+    const i2 = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "WaitWhilePaused",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+
+    await qm.pause();
+
+    expect(qm.getItems().find((i) => i.id === i1.id)?.status).toBe("cancelled");
+    expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("waiting");
+    expect(startedTitles).toEqual(["PauseActive"]);
+
+    qm.kick();
+    const i3 = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "EnqueuedWhilePaused",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(startedTitles).toEqual(["PauseActive"]);
+    expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("waiting");
+    expect(qm.getItems().find((i) => i.id === i3.id)?.status).toBe("waiting");
+
+    qm.resume();
+    qm.kick();
+
+    await waitFor(() => qm.getItems().find((i) => i.id === i3.id)?.status === "done");
+    expect(startedTitles).toEqual(["PauseActive", "WaitWhilePaused", "EnqueuedWhilePaused"]);
+    expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("done");
+  });
 });

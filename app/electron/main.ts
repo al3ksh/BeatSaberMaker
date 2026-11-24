@@ -163,13 +163,7 @@ if (gotLock) {
 
     try {
       await queueManager.init({
-        canAutoStart: async () => {
-          if (await enginePack.needsInstall()) {
-            return false;
-          }
-          const settings = await settingsStore.load();
-          return Boolean(settings.customLevels);
-        },
+        canAutoStart: async () => false,
       });
     } catch (err) {
       logger.error(`Queue initialization failed: ${err instanceof Error ? err.stack || err.message : String(err)}`);

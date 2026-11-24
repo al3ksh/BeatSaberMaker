@@ -14,6 +14,7 @@ import type {
   LibraryEntry,
   QueueEnqueueRequest,
   QueueItem,
+  Settings,
   StartupState,
   YouTubeItem,
 } from "./types";
@@ -113,19 +114,39 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     getWindow,
   } = deps;
 
+  let cachedInfo: EngineInfo | null = null;
+
+  const isQueueActive = (): boolean =>
+    queueManager
+      .getItems()
+      .some((item) => item.status === "downloading" || item.status === "running");
+
+  const fetchAndCacheInfo = async (device: Settings["device"]): Promise<EngineInfo> => {
+    const fetched = await engine.request<EngineInfo>("info", { device });
+    cachedInfo = fetched;
+    return fetched;
+  };
+
   ipcMain.handle("bsm:getStartupState", async (): Promise<StartupState> => {
     const settings = await settingsStore.load();
     const needsEnginePack = await enginePack.needsInstall();
     let info: EngineInfo | null = null;
     if (!needsEnginePack) {
-      try {
-        info = await engine.request<EngineInfo>("info", { device: settings.device });
-        if (!settings.customLevels && info.detected_custom_levels) {
-          await settingsStore.save({ customLevels: info.detected_custom_levels });
-          settings.customLevels = info.detected_custom_levels;
+      if (isQueueActive()) {
+        info = cachedInfo;
+      } else {
+        try {
+          info = await fetchAndCacheInfo(settings.device);
+          if (!settings.customLevels && info.detected_custom_levels) {
+            await settingsStore.save({ customLevels: info.detected_custom_levels });
+            settings.customLevels = info.detected_custom_levels;
+          }
+        } catch (err) {
+          logger.warn(`Startup info failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-      } catch (err) {
-        logger.warn(`Startup info failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (settings.customLevels) {
+        queueManager.kick();
       }
     }
     return {
@@ -138,28 +159,43 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   });
 
   ipcMain.handle("bsm:installEnginePack", async (): Promise<void> => {
-    const active = queueManager
-      .getItems()
-      .find((item) => item.status === "downloading" || item.status === "running");
-    if (active) {
-      await queueManager.cancel(active.id);
-    }
-    await engine.stop();
-    await enginePack.install((progress) => {
-      getWindow()?.webContents.send("bsm:enginePackProgress", progress);
-    });
-    const nextSettings = await settingsStore.save({
-      engineVersionInstalled: expectedEngineVersion,
-    });
-    if (nextSettings.customLevels) {
-      queueManager.kick();
+    cachedInfo = null;
+    await queueManager.pause();
+    let installed = false;
+    let nextSettings: Settings | null = null;
+    try {
+      await engine.stop();
+      await enginePack.install((progress) => {
+        getWindow()?.webContents.send("bsm:enginePackProgress", progress);
+      });
+      nextSettings = await settingsStore.save({
+        engineVersionInstalled: expectedEngineVersion,
+      });
+      installed = true;
+      if (nextSettings.customLevels) {
+        try {
+          await fetchAndCacheInfo(nextSettings.device);
+        } catch (err) {
+          logger.warn(
+            `Post-install info failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    } finally {
+      queueManager.resume();
+      if (installed && nextSettings?.customLevels) {
+        queueManager.kick();
+      }
     }
   });
 
   ipcMain.handle("bsm:getInfo", async (): Promise<EngineInfo> => {
     try {
+      if (cachedInfo && isQueueActive()) {
+        return cachedInfo;
+      }
       const settings = await settingsStore.load();
-      return await engine.request<EngineInfo>("info", { device: settings.device });
+      return await fetchAndCacheInfo(settings.device);
     } catch (err) {
       wrapIpcError(err, logger);
     }
@@ -168,7 +204,11 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("bsm:getSettings", async () => settingsStore.load());
 
   ipcMain.handle("bsm:saveSettings", async (_ev, partial) => {
+    const prev = await settingsStore.load();
     const next = await settingsStore.save(partial);
+    if (next.device !== prev.device) {
+      cachedInfo = null;
+    }
     if (next.customLevels && !(await enginePack.needsInstall())) {
       queueManager.kick();
     }
