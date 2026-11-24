@@ -115,6 +115,7 @@ export interface SegmentedOption<T extends string> {
   value: T;
   label: string;
   icon?: React.ReactNode;
+  badge?: React.ReactNode;
   accent?: "blue" | "red" | "gradient";
 }
 
@@ -159,12 +160,18 @@ export function SegmentedControl<T extends string>({
     function measure() {
       const btn = btnRefs.current[activeIdx];
       if (!btn) return;
-      setIndicator({ left: btn.offsetLeft, width: btn.offsetWidth });
+      const nextLeft = btn.offsetLeft;
+      const nextWidth = btn.offsetWidth;
+      setIndicator((prev) =>
+        prev.left === nextLeft && prev.width === nextWidth
+          ? prev
+          : { left: nextLeft, width: nextWidth },
+      );
     }
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [activeIdx, equalWidth, options.length]);
+  }, [activeIdx, equalWidth, options]);
 
   const padClass = size === "sm" ? "px-3 py-1 text-xs" : "px-4 py-1.5 text-xs sm:text-sm";
   const radiusContainer = size === "sm" ? "rounded-xl" : "rounded-2xl";
@@ -238,6 +245,7 @@ export function SegmentedControl<T extends string>({
           >
             {opt.icon}
             <span>{opt.label}</span>
+            {opt.badge}
           </button>
         );
       })}

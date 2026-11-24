@@ -1,16 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, Check } from "lucide-react";
-import { EN } from "../../i18n/en";
-import type {
-  GenerateOutput,
-  LibraryEntry,
-  MapGenerationConfig,
-  ProgressEvent,
-} from "../../types";
+import { AlertTriangle, ArrowRight, Check } from "lucide-react";
+import { EN, extractErrorCode, formatErrorEn } from "../../i18n/en";
+import type { LibraryEntry, MapGenerationConfig } from "../../types";
+import { QueueAddedNotice } from "../QueueAddedNotice";
 import { cn } from "../ui/primitives";
 import { PACK_DEFAULT_CONFIG, StepMap } from "./StepMap";
-import { StepProgressDone } from "./StepProgressDone";
 import { SongDraft, StepSong } from "./StepSong";
 
 const EMPTY_SONG: SongDraft = {
@@ -22,148 +17,120 @@ const EMPTY_SONG: SongDraft = {
   thumbnailUrl: null,
 };
 
-function extractErrorCode(err: unknown): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  const m = /BSM_CODE:([a-z0-9_]+)/i.exec(msg);
-  return m ? m[1] : "internal";
-}
+const NOTICE_TIMEOUT_MS = 4000;
+const PACK_SEED_MAX = 2_000_000_000;
 
 export interface WizardProps {
   regenerateTarget: LibraryEntry | null;
-  regenerateImmediate?: boolean;
   onClearRegenerate: () => void;
-  onGoToLibrary: () => void;
-  onPreview?: (folder: string) => void;
+  onGoToQueue?: () => void;
 }
 
 export function Wizard({
   regenerateTarget,
-  regenerateImmediate = false,
   onClearRegenerate,
-  onGoToLibrary,
-  onPreview,
+  onGoToQueue,
 }: WizardProps) {
-  const [step, setStep] = useState<1 | 2 | 3>(
-    regenerateTarget ? (regenerateImmediate ? 3 : 2) : 1,
-  );
+  const [step, setStep] = useState<1 | 2>(regenerateTarget ? 2 : 1);
   const [song, setSong] = useState<SongDraft>(EMPTY_SONG);
   const [config, setConfig] = useState<MapGenerationConfig>(PACK_DEFAULT_CONFIG);
-  const [status, setStatus] = useState<"running" | "done" | "error">("running");
-  const [progress, setProgress] = useState<ProgressEvent | null>(null);
-  const [result, setResult] = useState<GenerateOutput | null>(null);
-  const [errorCode, setErrorCode] = useState<string | null>(null);
-  const immediateStartedIdRef = useRef<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [enqueueError, setEnqueueError] = useState<string | null>(null);
+  const [addedNoticeTitle, setAddedNoticeTitle] = useState<string | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function runGeneration(
-    targetSong: SongDraft,
-    targetConfig: MapGenerationConfig,
-    regenId?: string,
-  ) {
-    const effectiveConfig: MapGenerationConfig =
-      targetConfig.mode === "pack"
-        ? {
-            ...targetConfig,
-            seed:
-              targetConfig.seed > 0
-                ? targetConfig.seed
-                : Math.floor(Math.random() * 2_000_000_000) + 1,
-          }
-        : targetConfig;
-
-    setConfig(effectiveConfig);
-    setStep(3);
-    setStatus("running");
-    setProgress({
-      stage: targetSong.sourceType === "youtube" ? "downloading" : "analyzing",
-      pct: 0,
-    });
-    setResult(null);
-    setErrorCode(null);
-
-    const unsub = window.bsm.onProgress?.((ev) => {
-      setProgress(ev);
-    });
-
-    try {
-      const { result: genRes } = await window.bsm.startGeneration({
-        sourceType: targetSong.sourceType,
-        sourcePathOrUrl: targetSong.sourcePathOrUrl,
-        title: targetSong.title,
-        artist: targetSong.artist || "Unknown",
-        coverPath: targetSong.coverPath,
-        config: effectiveConfig,
-        regenerateId: regenId,
-      });
-      setResult(genRes);
-      setStatus("done");
-      onClearRegenerate();
-    } catch (err) {
-      const code = extractErrorCode(err);
-      if (code === "cancelled") {
-        setStep(2);
-        return;
-      }
-      setErrorCode(code);
-      setStatus("error");
-    } finally {
-      unsub?.();
-    }
-  }
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!regenerateTarget) {
-      immediateStartedIdRef.current = null;
       return;
     }
-    const nextSong: SongDraft = {
+    setSong({
       sourceType: "cached",
       sourcePathOrUrl: regenerateTarget.audioCachePath,
       title: regenerateTarget.title,
       artist: regenerateTarget.artist,
       coverPath: regenerateTarget.coverCachePath,
       thumbnailUrl: null,
-    };
-    const nextConfig: MapGenerationConfig = {
+    });
+    setConfig({
       ...regenerateTarget.config,
       mode: "custom",
-    };
-    setSong(nextSong);
-    setConfig(nextConfig);
-    setResult(null);
-    setErrorCode(null);
-    if (regenerateImmediate) {
-      if (immediateStartedIdRef.current === regenerateTarget.id) return;
-      immediateStartedIdRef.current = regenerateTarget.id;
-      void runGeneration(nextSong, nextConfig, regenerateTarget.id);
-    } else {
-      setStep(2);
+    });
+    setEnqueueError(null);
+    setStep(2);
+  }, [regenerateTarget]);
+
+  function showAddedNotice(title: string) {
+    setAddedNoticeTitle(title);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => {
+      setAddedNoticeTitle(null);
+      noticeTimerRef.current = null;
+    }, NOTICE_TIMEOUT_MS);
+  }
+
+  function dismissAddedNotice() {
+    if (noticeTimerRef.current) {
+      clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
     }
-  }, [regenerateTarget, regenerateImmediate]);
-
-  function handleReset() {
-    onClearRegenerate();
-    setSong(EMPTY_SONG);
-    setConfig(PACK_DEFAULT_CONFIG);
-    setProgress(null);
-    setResult(null);
-    setErrorCode(null);
-    setStep(1);
+    setAddedNoticeTitle(null);
   }
 
-  async function handleGenerate() {
-    await runGeneration(song, config, regenerateTarget?.id);
+  async function handleEnqueue() {
+    if (submitting) return;
+    const effectiveConfig: MapGenerationConfig =
+      config.mode === "pack"
+        ? {
+            ...config,
+            seed:
+              config.seed > 0
+                ? config.seed
+                : Math.floor(Math.random() * PACK_SEED_MAX) + 1,
+          }
+        : config;
+
+    setSubmitting(true);
+    setEnqueueError(null);
+
+    try {
+      await window.bsm.enqueueGeneration({
+        sourceType: song.sourceType,
+        sourcePathOrUrl: song.sourcePathOrUrl,
+        title: song.title,
+        artist: song.artist || "Unknown",
+        coverPath: song.coverPath,
+        thumbnailUrl: song.thumbnailUrl,
+        config: effectiveConfig,
+        regenerateId: regenerateTarget?.id,
+      });
+      const queuedTitle = song.title;
+      onClearRegenerate();
+      setSong(EMPTY_SONG);
+      setConfig(PACK_DEFAULT_CONFIG);
+      setStep(1);
+      showAddedNotice(queuedTitle);
+    } catch (err) {
+      setEnqueueError(formatErrorEn(extractErrorCode(err)));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
-  const steps: Array<{ num: 1 | 2 | 3; label: string }> = [
+  const steps: Array<{ num: 1 | 2; label: string }> = [
     { num: 1, label: EN.wizard.steps.song },
     { num: 2, label: EN.wizard.steps.map },
-    { num: 3, label: EN.wizard.steps.done },
   ];
 
   return (
     <div className="flex-1 min-h-0 flex flex-col gap-4">
-      {/* Step Pills with Connecting Arrows */}
-      <div className="shrink-0 flex items-center justify-center max-w-lg mx-auto w-full">
+      {/* Step Pills with Connecting Arrow */}
+      <div className="shrink-0 flex items-center justify-center max-w-sm mx-auto w-full">
         {steps.map((s, idx) => {
           const active = step === s.num;
           const done = step > s.num;
@@ -221,6 +188,21 @@ export function Wizard({
         })}
       </div>
 
+      {addedNoticeTitle && step === 1 && (
+        <QueueAddedNotice
+          title={addedNoticeTitle}
+          onViewQueue={
+            onGoToQueue
+              ? () => {
+                  dismissAddedNotice();
+                  onGoToQueue();
+                }
+              : undefined
+          }
+          onDismiss={dismissAddedNotice}
+        />
+      )}
+
       <AnimatePresence mode="wait">
         {step === 1 && (
           <motion.div
@@ -233,8 +215,14 @@ export function Wizard({
           >
             <StepSong
               song={song}
-              onChange={setSong}
-              onNext={() => setStep(2)}
+              onChange={(next) => {
+                setSong(next);
+                if (addedNoticeTitle) dismissAddedNotice();
+              }}
+              onNext={() => {
+                setEnqueueError(null);
+                setStep(2);
+              }}
             />
           </motion.div>
         )}
@@ -242,48 +230,36 @@ export function Wizard({
         {step === 2 && (
           <motion.div
             key="step-2"
-            className="flex-1 min-h-0 flex flex-col"
+            className="flex-1 min-h-0 flex flex-col gap-3"
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.14 }}
           >
+            {enqueueError && (
+              <div
+                role="alert"
+                className="shrink-0 flex items-center gap-2 rounded-xl bg-red-500/10 border border-red-500/30 px-3.5 py-2 text-xs text-red-200"
+              >
+                <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+                <span>{enqueueError}</span>
+              </div>
+            )}
             <StepMap
               config={config}
               isRegenerate={Boolean(regenerateTarget)}
+              isSubmitting={submitting}
               onChange={setConfig}
               onBack={() => {
                 if (regenerateTarget) {
                   onClearRegenerate();
                 }
+                setEnqueueError(null);
                 setStep(1);
               }}
-              onGenerate={handleGenerate}
-            />
-          </motion.div>
-        )}
-
-        {step === 3 && (
-          <motion.div
-            key="step-3"
-            className="flex-1 min-h-0 flex flex-col"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.14 }}
-          >
-            <StepProgressDone
-              hasDownloadStage={song.sourceType === "youtube"}
-              songTitle={song.title}
-              songArtist={song.artist}
-              thumbnailUrl={song.thumbnailUrl}
-              status={status}
-              progress={progress}
-              result={result}
-              errorCode={errorCode}
-              onReset={handleReset}
-              onGoToLibrary={onGoToLibrary}
-              onPreview={onPreview}
+              onGenerate={() => {
+                void handleEnqueue();
+              }}
             />
           </motion.div>
         )}

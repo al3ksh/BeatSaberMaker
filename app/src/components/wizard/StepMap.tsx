@@ -95,6 +95,7 @@ export function rankToBadgeVariant(rank: string): BadgeVariant {
 export interface StepMapProps {
   config: MapGenerationConfig;
   isRegenerate: boolean;
+  isSubmitting?: boolean;
   onChange: (next: MapGenerationConfig) => void;
   onBack: () => void;
   onGenerate: () => void;
@@ -122,6 +123,7 @@ const ENVIRONMENT_OPTIONS = Object.entries(ENVIRONMENT_LABELS_EN).map(
 export function StepMap({
   config,
   isRegenerate,
+  isSubmitting = false,
   onChange,
   onBack,
   onGenerate,
@@ -459,9 +461,9 @@ export function StepMap({
           <ArrowLeft className="h-4 w-4" />
           {EN.common.back}
         </Button>
-        <Button size="lg" onClick={onGenerate}>
+        <Button size="lg" onClick={onGenerate} disabled={isSubmitting}>
           <Sparkles className="h-4 w-4" />
-          {EN.wizard.map.generate}
+          {isRegenerate ? EN.wizard.map.queueRegenerate : EN.wizard.map.addToQueue}
         </Button>
       </div>
     </div>

@@ -109,4 +109,88 @@ describe("LibraryView", () => {
     expect(screen.getByText("Track 8")).toBeInTheDocument();
     expect(screen.queryByText("Track 7")).not.toBeInTheDocument();
   });
+
+  it("updates displayed entries when initialEntries prop updates from live library changes", async () => {
+    const e1 = makeEntry("e1", "First Map");
+    const e2 = makeEntry("e2", "Queued Map");
+    (window as unknown as { bsm: unknown }).bsm = {
+      listLibrary: vi.fn(async () => [e1]),
+      deleteLibraryEntry: vi.fn(async () => []),
+      exportMapZip: vi.fn(),
+      readCoverDataUrl: vi.fn(async () => null),
+    };
+
+    const { rerender } = render(
+      <LibraryView
+        initialEntries={[e1]}
+        initialLoaded
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("First Map")).toBeInTheDocument();
+    expect(screen.queryByText("Queued Map")).not.toBeInTheDocument();
+
+    rerender(
+      <LibraryView
+        initialEntries={[e1, e2]}
+        initialLoaded
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Queued Map")).toBeInTheDocument();
+  });
+
+  it("retains loaded covers when parent echoes back onEntriesChanged", async () => {
+    const e1: LibraryEntry = {
+      ...makeEntry("e1", "First Map"),
+      coverCachePath: "C:\\media\\e1\\cover.png",
+    };
+    let resolveCover!: (url: string | null) => void;
+    const coverPromise = new Promise<string | null>((resolve) => {
+      resolveCover = resolve;
+    });
+    const onCoversChanged = vi.fn();
+    const readCoverDataUrl = vi.fn(() => coverPromise);
+
+    (window as unknown as { bsm: unknown }).bsm = {
+      listLibrary: vi.fn(async () => [e1]),
+      deleteLibraryEntry: vi.fn(async () => []),
+      exportMapZip: vi.fn(),
+      readCoverDataUrl,
+    };
+
+    const { rerender } = render(
+      <LibraryView
+        initialEntries={[]}
+        initialCovers={{}}
+        initialLoaded={false}
+        onEntriesChanged={(next) => {
+          rerender(
+            <LibraryView
+              initialEntries={next}
+              initialCovers={{}}
+              initialLoaded={true}
+              onEntriesChanged={vi.fn()}
+              onCoversChanged={onCoversChanged}
+              onRegenerate={vi.fn()}
+            />,
+          );
+        }}
+        onCoversChanged={onCoversChanged}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(readCoverDataUrl).toHaveBeenCalledWith(e1.coverCachePath));
+
+    resolveCover("data:image/png;base64,cover1");
+
+    await waitFor(() =>
+      expect(onCoversChanged).toHaveBeenCalledWith({
+        e1: "data:image/png;base64,cover1",
+      }),
+    );
+  });
 });

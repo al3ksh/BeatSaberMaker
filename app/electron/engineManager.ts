@@ -4,6 +4,8 @@ import path from "node:path";
 import readline from "node:readline";
 import type { ProgressEvent } from "./types";
 
+const FAST_COMMANDS = new Set(["search", "resolve", "export_zip"]);
+
 export class EngineError extends Error {
   constructor(
     public readonly code: string,
@@ -29,9 +31,11 @@ export interface EngineManagerOptions {
 
 interface ActiveJob {
   id: string;
+  proc: ChildProcessWithoutNullStreams;
   resolve: (value: unknown) => void;
   reject: (err: unknown) => void;
   settled: boolean;
+  cancelTimedOut?: boolean;
   promise: Promise<unknown>;
 }
 
@@ -90,16 +94,63 @@ function killProcessTree(proc: ChildProcessWithoutNullStreams): void {
   }
 }
 
+function waitForProcessExit(proc: ChildProcessWithoutNullStreams, timeoutMs = 2000): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(fallback);
+      proc.removeListener("exit", finish);
+      resolve();
+    };
+    const fallback = setTimeout(finish, timeoutMs);
+    proc.once("exit", finish);
+  });
+}
+
 export class EngineManager {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private rl: readline.Interface | null = null;
   private nextId = 1;
-  private activeJob: ActiveJob | null = null;
+  private pending = new Map<string, ActiveJob>();
+  private activeHeavyJob: ActiveJob | null = null;
   private queueTail: Promise<void> = Promise.resolve();
   private readonly cancelTimeoutMs: number;
 
   constructor(private readonly options: EngineManagerOptions) {
     this.cancelTimeoutMs = options.cancelTimeoutMs ?? 5000;
+  }
+
+  private settleJob(
+    job: ActiveJob,
+    outcome: { ok: true; value: unknown } | { ok: false; err: unknown },
+  ): void {
+    if (job.settled) return;
+    job.settled = true;
+    this.pending.delete(job.id);
+    if (this.activeHeavyJob === job) {
+      this.activeHeavyJob = null;
+    }
+    if (outcome.ok) {
+      job.resolve(outcome.value);
+    } else {
+      job.reject(outcome.err);
+    }
+  }
+
+  private rejectPendingForProc(
+    proc: ChildProcessWithoutNullStreams,
+    errFactory: (job: ActiveJob) => EngineError,
+  ): void {
+    for (const job of Array.from(this.pending.values())) {
+      if (job.proc === proc) {
+        this.settleJob(job, { ok: false, err: errFactory(job) });
+      }
+    }
   }
 
   private ensureRunning(): ChildProcessWithoutNullStreams {
@@ -139,16 +190,20 @@ export class EngineManager {
         });
         return;
       }
-      if (this.activeJob && this.activeJob.id === id && !this.activeJob.settled) {
-        const job = this.activeJob;
-        job.settled = true;
-        this.activeJob = null;
+      const job = this.pending.get(id);
+      if (job && !job.settled) {
         if (type === "result") {
-          job.resolve(msg.data);
+          this.settleJob(job, { ok: true, value: msg.data });
         } else if (type === "error") {
-          job.reject(new EngineError(String(msg.code ?? "internal"), String(msg.detail ?? "")));
+          this.settleJob(job, {
+            ok: false,
+            err: new EngineError(String(msg.code ?? "internal"), String(msg.detail ?? "")),
+          });
         } else {
-          job.reject(new EngineError("internal", `unexpected message type: ${type}`));
+          this.settleJob(job, {
+            ok: false,
+            err: new EngineError("internal", `unexpected message type: ${type}`),
+          });
         }
       }
     });
@@ -167,57 +222,64 @@ export class EngineManager {
         this.proc = null;
         this.rl = null;
       }
-      if (this.activeJob && !this.activeJob.settled) {
-        const job = this.activeJob;
-        job.settled = true;
-        this.activeJob = null;
-        job.reject(new EngineError("internal", `engine exited unexpectedly (code ${code ?? "null"})`));
-      }
+      this.rejectPendingForProc(
+        proc,
+        (job) =>
+          job.cancelTimedOut
+            ? new EngineError("cancelled", "cancelled after timeout")
+            : new EngineError("internal", `engine exited unexpectedly (code ${code ?? "null"})`),
+      );
     });
 
     proc.on("error", (err) => {
       this.options.onStderr?.(`Engine process error: ${err.message}`);
-      if (this.activeJob && !this.activeJob.settled) {
-        const job = this.activeJob;
-        job.settled = true;
-        this.activeJob = null;
-        job.reject(new EngineError("internal", err.message));
-      }
+      this.rejectPendingForProc(proc, () => new EngineError("internal", err.message));
     });
 
     return proc;
   }
 
-  request<T = unknown>(cmd: string, params: Record<string, unknown> = {}): Promise<T> {
-    const run = async (): Promise<T> => {
-      const proc = this.ensureRunning();
-      const id = String(this.nextId++);
-      let resolveFn!: (v: unknown) => void;
-      let rejectFn!: (e: unknown) => void;
-      const promise = new Promise<unknown>((resolve, reject) => {
-        resolveFn = resolve;
-        rejectFn = reject;
-      });
-      const job: ActiveJob = {
-        id,
-        resolve: resolveFn,
-        reject: rejectFn,
-        settled: false,
-        promise,
-      };
-      this.activeJob = job;
-      try {
-        proc.stdin.write(`${JSON.stringify({ id, cmd, ...params })}\n`, "utf8");
-      } catch (err) {
-        if (!job.settled) {
-          job.settled = true;
-          this.activeJob = null;
-          job.reject(new EngineError("internal", (err as Error).message));
-        }
-      }
-      return (await promise) as T;
+  private async dispatchRequest<T>(
+    cmd: string,
+    params: Record<string, unknown>,
+    isHeavy: boolean,
+  ): Promise<T> {
+    const proc = this.ensureRunning();
+    const id = String(this.nextId++);
+    let resolveFn!: (v: unknown) => void;
+    let rejectFn!: (e: unknown) => void;
+    const promise = new Promise<unknown>((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+    const job: ActiveJob = {
+      id,
+      proc,
+      resolve: resolveFn,
+      reject: rejectFn,
+      settled: false,
+      promise,
     };
+    this.pending.set(id, job);
+    if (isHeavy) {
+      this.activeHeavyJob = job;
+    }
+    try {
+      proc.stdin.write(`${JSON.stringify({ id, cmd, ...params })}\n`, "utf8");
+    } catch (err) {
+      this.settleJob(job, {
+        ok: false,
+        err: new EngineError("internal", (err as Error).message),
+      });
+    }
+    return (await promise) as T;
+  }
 
+  request<T = unknown>(cmd: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (FAST_COMMANDS.has(cmd)) {
+      return this.dispatchRequest<T>(cmd, params, false);
+    }
+    const run = () => this.dispatchRequest<T>(cmd, params, true);
     const result = this.queueTail.then(run, run);
     this.queueTail = result.then(
       () => undefined,
@@ -228,33 +290,43 @@ export class EngineManager {
 
   async cancelActive(): Promise<void> {
     const proc = this.proc;
-    const job = this.activeJob;
+    const job = this.activeHeavyJob;
     if (!proc || !job || job.settled) {
       return;
     }
 
     const cancelId = String(this.nextId++);
     try {
-      proc.stdin.write(`${JSON.stringify({ id: cancelId, cmd: "cancel" })}\n`, "utf8");
+      proc.stdin.write(
+        `${JSON.stringify({ id: cancelId, cmd: "cancel", target_id: job.id })}\n`,
+        "utf8",
+      );
     } catch {
       // Ignore broken pipe; timeout/kill handles cleanup.
     }
 
+    let timedOut = false;
     let timer: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
+      timer = setTimeout(async () => {
         if (!job.settled) {
-          job.settled = true;
-          if (this.activeJob === job) {
-            this.activeJob = null;
-          }
+          timedOut = true;
+          job.cancelTimedOut = true;
           if (this.proc === proc) {
             this.proc = null;
             this.rl?.close();
             this.rl = null;
           }
           killProcessTree(proc);
-          job.reject(new EngineError("cancelled", "cancelled after timeout"));
+          await waitForProcessExit(proc, 2000);
+          this.settleJob(job, {
+            ok: false,
+            err: new EngineError("cancelled", "cancelled after timeout"),
+          });
+          this.rejectPendingForProc(
+            proc,
+            () => new EngineError("internal", "engine terminated during cancel"),
+          );
         }
         resolve();
       }, this.cancelTimeoutMs);
@@ -270,6 +342,9 @@ export class EngineManager {
     if (timer) {
       clearTimeout(timer);
     }
+    if (timedOut) {
+      await timeoutPromise;
+    }
   }
 
   async stop(): Promise<void> {
@@ -281,12 +356,7 @@ export class EngineManager {
     this.rl?.close();
     this.rl = null;
 
-    if (this.activeJob && !this.activeJob.settled) {
-      const job = this.activeJob;
-      job.settled = true;
-      this.activeJob = null;
-      job.reject(new EngineError("cancelled", "engine stopped"));
-    }
+    this.rejectPendingForProc(proc, () => new EngineError("cancelled", "engine stopped"));
 
     const stopId = String(this.nextId++);
     const exited = new Promise<void>((resolve) => {

@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   EnginePackProgress,
-  ProgressEvent,
+  LibraryEntry,
+  QueueEnqueueRequest,
+  QueueItem,
+  QueueProgressEvent,
   Settings,
-  StartGenerationRequest,
   UpdateStatus,
 } from "./types";
 
@@ -31,8 +33,13 @@ contextBridge.exposeInMainWorld("bsm", {
   readCoverDataUrl: (filePath: string) => ipcRenderer.invoke("bsm:readCoverDataUrl", filePath),
   searchYouTube: (query: string) => ipcRenderer.invoke("bsm:searchYouTube", query),
   resolveYouTube: (url: string) => ipcRenderer.invoke("bsm:resolveYouTube", url),
-  startGeneration: (req: StartGenerationRequest) => ipcRenderer.invoke("bsm:startGeneration", req),
-  cancelActive: () => ipcRenderer.invoke("bsm:cancelActive"),
+  getQueue: () => ipcRenderer.invoke("bsm:getQueue"),
+  enqueueGeneration: (req: QueueEnqueueRequest) => ipcRenderer.invoke("bsm:enqueueGeneration", req),
+  cancelQueueItem: (id: string) => ipcRenderer.invoke("bsm:cancelQueueItem", id),
+  retryQueueItem: (id: string) => ipcRenderer.invoke("bsm:retryQueueItem", id),
+  moveQueueItem: (id: string, direction: "up" | "down") =>
+    ipcRenderer.invoke("bsm:moveQueueItem", id, direction),
+  clearFinishedQueue: () => ipcRenderer.invoke("bsm:clearFinishedQueue"),
   listLibrary: () => ipcRenderer.invoke("bsm:listLibrary"),
   deleteLibraryEntry: (id: string) => ipcRenderer.invoke("bsm:deleteLibraryEntry", id),
   exportMapZip: (folder: string, suggestedName?: string) =>
@@ -40,7 +47,12 @@ contextBridge.exposeInMainWorld("bsm", {
   checkForUpdates: () => ipcRenderer.invoke("bsm:checkForUpdates"),
   installUpdate: () => ipcRenderer.invoke("bsm:installUpdate"),
   readMapForViewer: (folder: string) => ipcRenderer.invoke("bsm:readMapForViewer", folder),
-  onProgress: (cb: (ev: ProgressEvent) => void) => subscribe<ProgressEvent>("bsm:progress", cb),
+  onQueueChanged: (cb: (items: QueueItem[]) => void) =>
+    subscribe<QueueItem[]>("bsm:queueChanged", cb),
+  onQueueProgress: (cb: (ev: QueueProgressEvent) => void) =>
+    subscribe<QueueProgressEvent>("bsm:queueProgress", cb),
+  onLibraryChanged: (cb: (entries: LibraryEntry[]) => void) =>
+    subscribe<LibraryEntry[]>("bsm:libraryChanged", cb),
   onEnginePackProgress: (cb: (ev: EnginePackProgress) => void) =>
     subscribe<EnginePackProgress>("bsm:enginePackProgress", cb),
   onUpdateStatus: (cb: (ev: UpdateStatus) => void) =>

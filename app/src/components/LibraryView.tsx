@@ -104,27 +104,54 @@ export function LibraryView({
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const gridScrollRef = useRef<HTMLDivElement>(null);
+  const initialEntriesPropRef = useRef(initialEntries);
+  const propUpdatedRef = useRef(false);
 
   useEffect(() => {
+    if (initialEntries !== undefined) {
+      if (initialEntriesPropRef.current !== initialEntries) {
+        propUpdatedRef.current = true;
+        initialEntriesPropRef.current = initialEntries;
+      }
+      setEntries(initialEntries);
+    }
+  }, [initialEntries]);
+
+  useEffect(() => {
+    if (initialCovers !== undefined) {
+      setCovers(initialCovers);
+    }
+  }, [initialCovers]);
+
+  useEffect(() => {
+    if (initialLoaded) {
+      setLoading(false);
+    }
+  }, [initialLoaded]);
+
+  useEffect(() => {
+    if (initialLoaded) return;
     let active = true;
     window.bsm
-      .listLibrary()
+      ?.listLibrary?.()
       .then(async (list) => {
-        if (!active) return;
+        if (!active || propUpdatedRef.current) return;
         setEntries(list);
+        initialEntriesPropRef.current = list;
         onEntriesChanged?.(list);
         const loadedCovers: Record<string, string> = {};
         for (const item of list) {
           if (item.coverCachePath) {
-            const url = await window.bsm.readCoverDataUrl(item.coverCachePath);
+            const url = await window.bsm.readCoverDataUrl?.(item.coverCachePath);
             if (url) loadedCovers[item.id] = url;
           }
         }
-        if (active) {
+        if (active && !propUpdatedRef.current) {
           setCovers(loadedCovers);
           onCoversChanged?.(loadedCovers);
         }
       })
+      .catch(() => {})
       .finally(() => {
         if (active) setLoading(false);
       });

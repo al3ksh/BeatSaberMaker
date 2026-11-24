@@ -11,8 +11,15 @@ export const ERRORS_EN: Record<string, string> = {
   not_found: "The specified file or folder was not found.",
   invalid_args: "Invalid generation parameters were provided.",
   busy: "The engine is already running another task. Please wait for it to finish.",
+  interrupted: "Generation was interrupted when the app closed. Click Retry to run it again.",
   internal: "An unexpected engine error occurred. Details have been saved to the logs.",
 };
+
+export function extractErrorCode(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /BSM_CODE:([a-z0-9_]+)/i.exec(msg);
+  return m ? m[1] : "internal";
+}
 
 export function formatErrorEn(code: string): string {
   return ERRORS_EN[code] ?? ERRORS_EN.internal;
@@ -53,6 +60,7 @@ export const EN = {
   appName: "BeatSaberMaker",
   nav: {
     create: "New Map",
+    queue: "Queue",
     library: "My Maps",
     settings: "Settings",
     settingsUpdateDownloading: "Settings — update downloading",
@@ -183,6 +191,8 @@ export const EN = {
       regenerateNotice: "A new map will be created and the previous folder will be moved to the Recycle Bin on success.",
       generate: "Generate Map",
       confirmRegenerate: "Confirm Regeneration",
+      addToQueue: "Add to Queue",
+      queueRegenerate: "Queue Regeneration",
     },
     progress: {
       title: "Generating Map...",
@@ -239,6 +249,63 @@ export const EN = {
     confirmDelete: "Confirm",
     cancelDelete: "Cancel",
     exportedSuccess: "ZIP archive saved.",
+  },
+  queue: {
+    title: "Generation Queue",
+    sections: {
+      nowRunning: "Now Running",
+      upNext: "Up Next",
+      finished: "Finished",
+    },
+    status: {
+      waiting: "Waiting",
+      downloading: "Downloading",
+      running: "Running",
+      done: "Done",
+      failed: "Failed",
+      cancelled: "Cancelled",
+    },
+    stages: {
+      downloading: "Downloading track...",
+      analyzing: "Analyzing audio...",
+      notes: "Generating notes...",
+      layers: "Adding layers & lights...",
+      writing: "Saving map...",
+    },
+    stageShort: {
+      downloading: "Download",
+      analyzing: "Analyze",
+      notes: "Notes",
+      layers: "Layers",
+      writing: "Write",
+    },
+    source: {
+      youtube: "YouTube",
+      file: "File",
+      regenerate: "Regenerate",
+    },
+    mode: {
+      pack: "Pack",
+      custom: "Custom",
+    },
+    cancelling: "Cancelling...",
+    retry: "Retry",
+    clearFinished: "Clear Finished",
+    moveUp: "Move up",
+    moveDown: "Move down",
+    details: "Details",
+    hideDetails: "Hide Details",
+    openQueue: "Open Queue",
+    newMap: "New Map",
+    emptyTitle: "Your queue is empty",
+    emptyDesc: "Pick a song in New Map to start building a Beat Saber map, or queue multiple tracks at once.",
+    addedNotice: (title: string) => `Added "${title}" to queue`,
+    viewQueue: "View Queue",
+    waitingSummary: (count: number) => `+${count} waiting`,
+    doneSummary: (count: number) => `${count} done`,
+    failedSummary: (count: number) => `${count} failed`,
+    cancelledSummary: (count: number) => `${count} cancelled`,
+    noActiveTitle: "Queue ready",
   },
   updateBanner: {
     ready: "An update is ready — click to install and restart.",

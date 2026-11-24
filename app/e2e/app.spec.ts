@@ -88,8 +88,13 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       await page.getByText("Camellia - GHOST").click();
       await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generate Map" }).click();
-      await expect(page.getByText("Map is in the game!")).toBeVisible();
+      await page.getByRole("button", { name: "Add to Queue" }).click();
+      await expect(page.getByPlaceholder(/search youtube/i)).toBeVisible();
+
+      await page.getByRole("navigation").getByRole("button", { name: /Queue/i }).click();
+      const finishedSection = page.getByTestId("queue-section-finished");
+      await expect(finishedSection.getByRole("button", { name: "Details" })).toBeVisible();
+      await finishedSection.getByRole("button", { name: "Details" }).click();
       await expect(page.getByText(/layer models/i)).toBeVisible();
       // Default pack has three difficulties, each with its own walls/bombs
       const levelsTable = page.getByTestId("done-levels-table");
@@ -116,8 +121,9 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       const savedSeed = Number(await seedInput.inputValue());
       expect(savedSeed).toBeGreaterThan(0);
 
-      await page.getByRole("button", { name: "Generate Map" }).click();
-      await expect(page.getByText("Map is in the game!")).toBeVisible();
+      await page.getByRole("button", { name: "Queue Regeneration" }).click();
+      await page.getByRole("navigation").getByRole("button", { name: /Queue/i }).click();
+      await expect(finishedSection.getByRole("button", { name: "Details" })).toHaveCount(2);
 
       const afterRegenFolders = fs.readdirSync(cl);
       expect(afterRegenFolders).toHaveLength(1);
@@ -136,7 +142,7 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     }
   });
 
-  test("3. cancel mid-generation returns to Step 2 without broken entry", async () => {
+  test("3. cancel mid-generation in queue marks item cancelled without broken library entry", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bsm-e2e-cancel-"));
     const cl = path.join(tmp, "CustomLevels");
     fs.mkdirSync(cl, { recursive: true });
@@ -153,12 +159,19 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       await page.getByText("Camellia - GHOST").click();
       await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generate Map" }).click();
-      await page.getByRole("button", { name: "Cancel" }).click();
+      await page.getByRole("button", { name: "Add to Queue" }).click();
+      await expect(page.getByPlaceholder(/search youtube/i)).toBeVisible();
 
-      // Returned cleanly to Step 2
-      await expect(page.getByRole("button", { name: "Generate Map" })).toBeVisible();
-      await page.getByRole("button", { name: "My Maps" }).click();
+      await page.getByRole("navigation").getByRole("button", { name: /Queue/i }).click();
+      const nowSection = page.getByTestId("queue-section-now");
+      await expect(nowSection).toBeVisible();
+      await nowSection.getByRole("button", { name: "Cancel" }).click();
+
+      const finishedSection = page.getByTestId("queue-section-finished");
+      await expect(finishedSection.getByText("Cancelled")).toBeVisible();
+      await expect(finishedSection.getByRole("button", { name: "Retry" })).toBeVisible();
+
+      await page.getByRole("navigation").getByRole("button", { name: "My Maps" }).click();
       await expect(page.getByText(/haven't generated any maps yet/i)).toBeVisible();
     } finally {
       await electronApp.close();
@@ -166,7 +179,7 @@ test.describe("BeatSaberMaker Electron E2E", () => {
     }
   });
 
-  test("4. internal engine error displays friendly message without Traceback", async () => {
+  test("4. internal engine error displays friendly message in queue without Traceback", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bsm-e2e-err-"));
     const cl = path.join(tmp, "CustomLevels");
     fs.mkdirSync(cl, { recursive: true });
@@ -183,8 +196,12 @@ test.describe("BeatSaberMaker Electron E2E", () => {
       await page.getByText("Camellia - GHOST").click();
       await page.getByRole("button", { name: "Next" }).click();
 
-      await page.getByRole("button", { name: "Generate Map" }).click();
-      await expect(page.getByText(/unexpected engine error/i)).toBeVisible();
+      await page.getByRole("button", { name: "Add to Queue" }).click();
+      await page.getByRole("navigation").getByRole("button", { name: /Queue/i }).click();
+
+      const finishedSection = page.getByTestId("queue-section-finished");
+      await expect(finishedSection.getByText(/unexpected engine error/i)).toBeVisible();
+      await expect(finishedSection.getByRole("button", { name: "Open Logs" })).toBeVisible();
       const bodyText = await page.locator("body").innerText();
       expect(bodyText).not.toMatch(/traceback|secret internal error/i);
     } finally {

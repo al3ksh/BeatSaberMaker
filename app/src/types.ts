@@ -114,6 +114,39 @@ export interface ProgressEvent {
   pct: number;
 }
 
+export type QueueItemStatus =
+  | "waiting"
+  | "downloading"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface QueueEnqueueRequest extends StartGenerationRequest {
+  thumbnailUrl?: string | null;
+}
+
+export interface QueueItem {
+  id: string;
+  status: QueueItemStatus;
+  request: StartGenerationRequest;
+  thumbnailUrl: string | null;
+  enqueuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progress: ProgressEvent | null;
+  cancelling?: boolean;
+  errorCode: string | null;
+  result: GenerateOutput | null;
+  entry: LibraryEntry | null;
+}
+
+export interface QueueProgressEvent {
+  id: string;
+  stage: StageName;
+  pct: number;
+}
+
 export interface EnginePackProgress {
   stage: "downloading" | "verifying" | "extracting";
   pct: number;
@@ -183,15 +216,21 @@ export interface BsmApi {
   readCoverDataUrl(filePath: string): Promise<string | null>;
   searchYouTube(query: string): Promise<YouTubeItem[]>;
   resolveYouTube(url: string): Promise<YouTubeItem>;
-  startGeneration(req: StartGenerationRequest): Promise<{ result: GenerateOutput; entry: LibraryEntry }>;
-  cancelActive(): Promise<void>;
+  getQueue(): Promise<QueueItem[]>;
+  enqueueGeneration(req: QueueEnqueueRequest): Promise<QueueItem>;
+  cancelQueueItem(id: string): Promise<QueueItem[]>;
+  retryQueueItem(id: string): Promise<QueueItem[]>;
+  moveQueueItem(id: string, direction: "up" | "down"): Promise<QueueItem[]>;
+  clearFinishedQueue(): Promise<QueueItem[]>;
   listLibrary(): Promise<LibraryEntry[]>;
   deleteLibraryEntry(id: string): Promise<LibraryEntry[]>;
   exportMapZip(folder: string, suggestedName?: string): Promise<string>;
   checkForUpdates(): Promise<void>;
   installUpdate(): Promise<void>;
   readMapForViewer(folder: string): Promise<ViewerMapPackage>;
-  onProgress(cb: (ev: ProgressEvent) => void): () => void;
+  onQueueChanged(cb: (items: QueueItem[]) => void): () => void;
+  onQueueProgress(cb: (ev: QueueProgressEvent) => void): () => void;
+  onLibraryChanged(cb: (entries: LibraryEntry[]) => void): () => void;
   onEnginePackProgress(cb: (ev: EnginePackProgress) => void): () => void;
   onUpdateStatus(cb: (ev: UpdateStatus) => void): () => void;
 }

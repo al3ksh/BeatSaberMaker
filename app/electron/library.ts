@@ -43,10 +43,21 @@ async function trashIfSafe(
 }
 
 export class LibraryStore {
+  private writeChain: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly filePath: string,
     private readonly mediaDir: string,
   ) {}
+
+  private enqueueWrite<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.writeChain.then(fn, fn);
+    this.writeChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
 
   private async readAll(): Promise<LibraryEntry[]> {
     try {
@@ -74,12 +85,14 @@ export class LibraryStore {
     return items.find((item) => item.id === id) ?? null;
   }
 
-  async saveEntry(entry: LibraryEntry): Promise<LibraryEntry[]> {
-    const items = await this.readAll();
-    const filtered = items.filter((item) => item.id !== entry.id);
-    const next = [entry, ...filtered];
-    await atomicWriteJson(this.filePath, next);
-    return next;
+  saveEntry(entry: LibraryEntry): Promise<LibraryEntry[]> {
+    return this.enqueueWrite(async () => {
+      const items = await this.readAll();
+      const filtered = items.filter((item) => item.id !== entry.id);
+      const next = [entry, ...filtered];
+      await atomicWriteJson(this.filePath, next);
+      return next;
+    });
   }
 
   async cacheMedia(
@@ -115,38 +128,44 @@ export class LibraryStore {
     return { audioCachePath: audioDst, coverCachePath: coverDst };
   }
 
-  async deleteEntry(
+  deleteEntry(
     id: string,
     customLevelsDir: string,
     trashFn: (p: string) => Promise<void>,
   ): Promise<LibraryEntry[]> {
-    const items = await this.readAll();
-    const target = items.find((item) => item.id === id);
-    if (target) {
-      await trashIfSafe(target.folder, customLevelsDir, trashFn);
-      await fs.rm(path.join(this.mediaDir, id), { recursive: true, force: true }).catch(() => {});
-    }
-    const next = items.filter((item) => item.id !== id);
-    await atomicWriteJson(this.filePath, next);
-    return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.enqueueWrite(async () => {
+      const items = await this.readAll();
+      const target = items.find((item) => item.id === id);
+      if (target) {
+        await trashIfSafe(target.folder, customLevelsDir, trashFn);
+        await fs.rm(path.join(this.mediaDir, id), { recursive: true, force: true }).catch(() => {});
+      }
+      const next = items.filter((item) => item.id !== id);
+      await atomicWriteJson(this.filePath, next);
+      return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    });
   }
 
-  async replaceAfterRegenerate(
+  replaceAfterRegenerate(
     id: string,
     newEntry: LibraryEntry,
     customLevelsDir: string,
     trashFn: (p: string) => Promise<void>,
   ): Promise<LibraryEntry[]> {
-    const items = await this.readAll();
-    const oldEntry = items.find((item) => item.id === id);
-    if (
-      oldEntry &&
-      normalizeForCompare(oldEntry.folder) !== normalizeForCompare(newEntry.folder)
-    ) {
-      await trashIfSafe(oldEntry.folder, customLevelsDir, trashFn);
-    }
-    const next = [newEntry, ...items.filter((item) => item.id !== id)];
-    await atomicWriteJson(this.filePath, next);
-    return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return this.enqueueWrite(async () => {
+      const items = await this.readAll();
+      const oldEntry = items.find((item) => item.id === id);
+      if (!oldEntry) {
+        // Target entry was deleted while regeneration was in flight; do not resurrect it.
+        await trashIfSafe(newEntry.folder, customLevelsDir, trashFn);
+        return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      }
+      if (normalizeForCompare(oldEntry.folder) !== normalizeForCompare(newEntry.folder)) {
+        await trashIfSafe(oldEntry.folder, customLevelsDir, trashFn);
+      }
+      const next = [newEntry, ...items.filter((item) => item.id !== id)];
+      await atomicWriteJson(this.filePath, next);
+      return next.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    });
   }
 }
