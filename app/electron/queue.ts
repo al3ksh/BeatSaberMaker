@@ -123,7 +123,12 @@ export class QueueManager {
   }
 
   private emitChange(): void {
-    this.options.onChange?.(this.getItems());
+    try {
+      this.options.onChange?.(this.getItems());
+    } catch (err) {
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      this.options.logger.error(`Queue onChange callback failed: ${msg}`);
+    }
   }
 
   private persist(): Promise<void> {
@@ -241,13 +246,28 @@ export class QueueManager {
     this.items.push(item);
     await this.persist();
     this.emitChange();
+    const snapshot = cloneItem(item);
     this.kick();
-    return cloneItem(item);
+    return snapshot;
   }
 
   async cancel(id: string): Promise<QueueItem[]> {
     const item = this.items.find((entry) => entry.id === id);
     if (!item) {
+      return this.getItems();
+    }
+
+    if (item.id === this.activeItemId) {
+      if (
+        item.status === "downloading" ||
+        item.status === "running" ||
+        item.status === "waiting"
+      ) {
+        this.activeCancelRequested = true;
+        item.cancelling = true;
+        this.emitChange();
+        await this.options.engine.cancelActive();
+      }
       return this.getItems();
     }
 
@@ -259,16 +279,6 @@ export class QueueManager {
       await this.persist();
       this.emitChange();
       return this.getItems();
-    }
-
-    if (
-      item.id === this.activeItemId &&
-      (item.status === "downloading" || item.status === "running")
-    ) {
-      this.activeCancelRequested = true;
-      item.cancelling = true;
-      this.emitChange();
-      await this.options.engine.cancelActive();
     }
 
     return this.getItems();
@@ -347,7 +357,12 @@ export class QueueManager {
       return;
     }
     item.progress = { stage: ev.stage, pct: ev.pct };
-    this.options.onProgress?.({ id: item.id, stage: ev.stage, pct: ev.pct });
+    try {
+      this.options.onProgress?.({ id: item.id, stage: ev.stage, pct: ev.pct });
+    } catch (err) {
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      this.options.logger.warn(`Queue onProgress callback failed: ${msg}`);
+    }
   }
 
   kick(): void {
@@ -410,6 +425,9 @@ export class QueueManager {
         }
         await this.executeItem(next);
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      this.options.logger.error(`Queue drain loop error: ${msg}`);
     } finally {
       this.draining = false;
       this.drainPromise = null;
@@ -420,12 +438,23 @@ export class QueueManager {
     this.activeItemId = item.id;
     this.activeCancelRequested = false;
     item.startedAt = new Date().toISOString();
+    if (item.request.sourceType === "youtube") {
+      item.status = "downloading";
+      item.progress = { stage: "downloading", pct: 0 };
+    } else {
+      item.status = "running";
+      item.progress = { stage: "analyzing", pct: 0 };
+    }
 
     const entryId = item.request.regenerateId || crypto.randomUUID();
     const tmpDownloadDir = path.join(this.options.tmpDownloadsRoot, `${item.id}-${Date.now()}`);
     let newMediaDirPath: string | null = null;
 
     try {
+      await this.persist();
+      this.emitChange();
+      this.checkAborted();
+
       const settings = await this.options.settingsStore.load();
       this.checkAborted();
       if (!settings.customLevels) {
@@ -436,12 +465,6 @@ export class QueueManager {
       let coverSrc = item.request.coverPath;
 
       if (item.request.sourceType === "youtube") {
-        item.status = "downloading";
-        item.progress = { stage: "downloading", pct: 0 };
-        await this.persist();
-        this.emitChange();
-        this.checkAborted();
-
         const dl = await this.options.engine.request<{
           audio_path: string;
           cover_path: string | null;
@@ -449,13 +472,13 @@ export class QueueManager {
         audioSrc = dl.audio_path;
         coverSrc = item.request.coverPath || dl.cover_path;
         this.checkAborted();
-      }
 
-      item.status = "running";
-      item.progress = { stage: "analyzing", pct: 0 };
-      await this.persist();
-      this.emitChange();
-      this.checkAborted();
+        item.status = "running";
+        item.progress = { stage: "analyzing", pct: 0 };
+        await this.persist();
+        this.emitChange();
+        this.checkAborted();
+      }
 
       const cached = await this.options.libraryStore.cacheMedia(entryId, audioSrc, coverSrc);
       if (!item.request.regenerateId) {
@@ -499,11 +522,7 @@ export class QueueManager {
             this.options.trashItem,
           )
         : await this.options.libraryStore.saveEntry(entry);
-
-      this.options.onLibraryChanged?.(updatedList);
-
-      this.activeItemId = null;
-      await fsp.rm(tmpDownloadDir, { recursive: true, force: true }).catch(() => {});
+      newMediaDirPath = null;
 
       item.status = "done";
       item.progress = { stage: "writing", pct: 100 };
@@ -511,12 +530,17 @@ export class QueueManager {
       item.entry = entry;
       item.finishedAt = new Date().toISOString();
       item.cancelling = false;
+
+      try {
+        this.options.onLibraryChanged?.(updatedList);
+      } catch (cbErr) {
+        const msg = cbErr instanceof Error ? cbErr.stack || cbErr.message : String(cbErr);
+        this.options.logger.warn(`onLibraryChanged callback failed: ${msg}`);
+      }
     } catch (err) {
-      this.activeItemId = null;
       if (newMediaDirPath) {
         await fsp.rm(newMediaDirPath, { recursive: true, force: true }).catch(() => {});
       }
-      await fsp.rm(tmpDownloadDir, { recursive: true, force: true }).catch(() => {});
 
       if (this.shutdownRequested) {
         item.status = "failed";
@@ -542,7 +566,15 @@ export class QueueManager {
       this.activeItemId = null;
       this.activeCancelRequested = false;
       this.pruneFinished();
-      await this.persist();
+      try {
+        await this.persist();
+      } catch (persistErr) {
+        const msg =
+          persistErr instanceof Error
+            ? persistErr.stack || persistErr.message
+            : String(persistErr);
+        this.options.logger.error(`Queue persist failed: ${msg}`);
+      }
       this.emitChange();
     }
   }

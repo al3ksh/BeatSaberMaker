@@ -529,7 +529,7 @@ describe("QueueManager", () => {
 
   it("marks failed item and continues queue after engine crash mid-item", async () => {
     const h = await createTestHarness();
-    const pids: number[] = [];
+    const crashPidFile = path.join(h.tmp, "crash-pid.txt");
     const crashScript = path.join(h.tmp, "crash-engine.cjs");
     await fs.writeFile(
       crashScript,
@@ -541,6 +541,7 @@ rl.on("line", (line) => {
   const msg = JSON.parse(line);
   if (msg.cmd === "generate") {
     if (msg.title === "CrashOne") {
+      fs.writeFileSync(${JSON.stringify(crashPidFile)}, String(process.pid), "utf8");
       process.exit(1);
     }
     const folder = path.join(msg.out_dir, "BSM - " + msg.title);
@@ -616,8 +617,11 @@ rl.on("line", (line) => {
     expect(first.status).toBe("failed");
     expect(first.errorCode).toBe("internal");
     expect(second.status).toBe("done");
-    pids.push(Number(second.result?.warnings[0]));
-    expect(pids[0]).toBeGreaterThan(0);
+    const pid1 = Number(await fs.readFile(crashPidFile, "utf8"));
+    const pid2 = Number(second.result?.warnings[0]);
+    expect(pid1).toBeGreaterThan(0);
+    expect(pid2).toBeGreaterThan(0);
+    expect(pid2).not.toBe(pid1);
 
     await engineMgr.stop();
   });
@@ -682,6 +686,17 @@ rl.on("line", (line) => {
     });
     await waitFor(() => qm.getItems().find((i) => i.id === blocker.id)?.status === "running");
 
+    const cancelled = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "Cancelled",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    await qm.cancel(cancelled.id);
+    expect(qm.getItems().find((i) => i.id === cancelled.id)?.status).toBe("cancelled");
+
     const second = await qm.enqueue({
       sourceType: "file",
       sourcePathOrUrl: h.audioFile,
@@ -692,16 +707,21 @@ rl.on("line", (line) => {
     });
 
     await qm.retry(flaky.id);
+    await qm.retry(cancelled.id);
     const afterRetry = qm.getItems();
-    expect(afterRetry.map((i) => i.id)).toEqual([blocker.id, second.id, flaky.id]);
-    const retried = afterRetry.find((i) => i.id === flaky.id)!;
-    expect(retried.status).toBe("waiting");
-    expect(retried.errorCode).toBeNull();
-    expect(retried.finishedAt).toBeNull();
+    expect(afterRetry.map((i) => i.id)).toEqual([blocker.id, second.id, flaky.id, cancelled.id]);
+    const retriedFailed = afterRetry.find((i) => i.id === flaky.id)!;
+    const retriedCancelled = afterRetry.find((i) => i.id === cancelled.id)!;
+    expect(retriedFailed.status).toBe("waiting");
+    expect(retriedFailed.errorCode).toBeNull();
+    expect(retriedFailed.finishedAt).toBeNull();
+    expect(retriedCancelled.status).toBe("waiting");
+    expect(retriedCancelled.errorCode).toBeNull();
+    expect(retriedCancelled.finishedAt).toBeNull();
 
     releasePause();
     await waitFor(() => qm.getItems().every((i) => i.status === "done"));
-    expect(runOrder).toEqual(["Flaky", "Blocker", "Second", "Flaky"]);
+    expect(runOrder).toEqual(["Flaky", "Blocker", "Second", "Flaky", "Cancelled"]);
   });
 
   it("moves waiting items up and down without crossing active or finished items", async () => {
@@ -781,15 +801,21 @@ rl.on("line", (line) => {
     await qm.move(w3.id, "up");
     expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w1.id, w3.id, w2.id]);
 
+    // Non-noop downward swap
+    await qm.move(w1.id, "down");
+    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w3.id, w1.id, w2.id]);
+
     // No-op boundary checks
-    await qm.move(w1.id, "up");
-    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w1.id, w3.id, w2.id]);
+    await qm.move(w3.id, "up");
+    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w3.id, w1.id, w2.id]);
     await qm.move(w2.id, "down");
-    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w1.id, w3.id, w2.id]);
+    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w3.id, w1.id, w2.id]);
+    await qm.move(active.id, "down");
+    expect(qm.getItems().map((i) => i.id)).toEqual([active.id, w3.id, w1.id, w2.id]);
 
     releaseActive();
     await waitFor(() => qm.getItems().every((i) => i.status === "done"));
-    expect(runOrder).toEqual(["Active", "W1", "W3", "W2"]);
+    expect(runOrder).toEqual(["Active", "W3", "W1", "W2"]);
   });
 
   it("clears only finished items while preserving active and waiting", async () => {
@@ -1252,5 +1278,219 @@ rl.on("line", (line) => {
     await new Promise((r) => setTimeout(r, 40));
     expect(engineHold.request).not.toHaveBeenCalled();
     expect(qmHold.getItems()[0].status).toBe("waiting");
+  });
+
+  it("cancels an item cleanly while settingsStore.load() is pending", async () => {
+    const h = await createTestHarness();
+    let loadCalls = 0;
+    let releaseSettingsLoad!: () => void;
+    let settingsLoadStarted!: () => void;
+    const settingsLoadStartedP = new Promise<void>((r) => {
+      settingsLoadStarted = r;
+    });
+    const origLoad = h.settingsStore.load.bind(h.settingsStore);
+    const settingsStore = {
+      load: vi.fn(async () => {
+        loadCalls++;
+        // Call 1 is enqueue(); Call 2 is inside executeItem() for the first item.
+        if (loadCalls === 2) {
+          settingsLoadStarted();
+          await new Promise<void>((r) => {
+            releaseSettingsLoad = r;
+          });
+        }
+        return origLoad();
+      }),
+    };
+
+    const engine = {
+      request: vi.fn(async (_cmd: string, params?: Record<string, unknown>) => {
+        const out = makeGenerateOutput(h.customLevels, String(params?.title));
+        await fs.mkdir(out.folder, { recursive: true });
+        return out;
+      }),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+    });
+    await qm.init();
+
+    const enqueued = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "CancelWhileLoading",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    expect(enqueued.status).toBe("waiting");
+    expect(enqueued.startedAt).toBeNull();
+
+    await settingsLoadStartedP;
+    expect(qm.getItems()[0].status).toBe("running");
+
+    const second = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "NextAfterCancel",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    // second cannot swap above enqueued because enqueued is already running
+    await qm.move(second.id, "up");
+    expect(qm.getItems().map((i) => i.id)).toEqual([enqueued.id, second.id]);
+
+    await qm.cancel(enqueued.id);
+    expect(engine.cancelActive).toHaveBeenCalledTimes(1);
+
+    releaseSettingsLoad();
+    await waitFor(() => qm.getItems().find((i) => i.id === second.id)?.status === "done");
+
+    const items = qm.getItems();
+    expect(items.find((i) => i.id === enqueued.id)?.status).toBe("cancelled");
+    expect(items.find((i) => i.id === second.id)?.status).toBe("done");
+    expect(engine.request).toHaveBeenCalledTimes(1);
+    expect(engine.request).toHaveBeenCalledWith(
+      "generate",
+      expect.objectContaining({ title: "NextAfterCancel" }),
+    );
+  });
+
+  it("preserves saved entry and cached media if onLibraryChanged throws", async () => {
+    const h = await createTestHarness();
+    const engine = {
+      request: vi.fn(async (_cmd: string, params?: Record<string, unknown>) => {
+        const out = makeGenerateOutput(h.customLevels, String(params?.title));
+        await fs.mkdir(out.folder, { recursive: true });
+        return out;
+      }),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore: h.settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+      onLibraryChanged: () => {
+        throw new Error("window destroyed");
+      },
+    });
+    await qm.init();
+
+    const item = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "SavedDespiteCallbackError",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+
+    await waitFor(() => qm.getItems()[0]?.status === "done");
+    const doneItem = qm.getItems().find((i) => i.id === item.id)!;
+    expect(doneItem.status).toBe("done");
+    expect(doneItem.entry).not.toBeNull();
+    expect(await fs.stat(doneItem.entry!.audioCachePath)).toBeTruthy();
+    expect((await h.libraryStore.list()).map((e) => e.id)).toContain(doneItem.entry!.id);
+    expect(h.logger.warn).toHaveBeenCalled();
+  });
+
+  it("continues draining queue when persist or onChange throws in finally", async () => {
+    const h = await createTestHarness();
+    let releaseFirstGen!: () => void;
+    let firstGenStarted!: () => void;
+    const firstGenStartedP = new Promise<void>((r) => {
+      firstGenStarted = r;
+    });
+    const engine = {
+      request: vi.fn(async (_cmd: string, params?: Record<string, unknown>) => {
+        const title = String(params?.title);
+        if (title === "FirstWithFinallyErrors") {
+          firstGenStarted();
+          await new Promise<void>((r) => {
+            releaseFirstGen = r;
+          });
+        }
+        const out = makeGenerateOutput(h.customLevels, title);
+        await fs.mkdir(out.folder, { recursive: true });
+        return out;
+      }),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    let throwOnNextDone = true;
+    const origRename = fs.rename.bind(fs);
+    let failNextQueueRename = false;
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (oldPath, newPath) => {
+      if (failNextQueueRename && String(newPath) === h.queueFilePath) {
+        failNextQueueRename = false;
+        const err = new Error("EBUSY") as NodeJS.ErrnoException;
+        err.code = "EBUSY";
+        throw err;
+      }
+      return origRename(oldPath, newPath);
+    });
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore: h.settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+      onChange: (items) => {
+        if (throwOnNextDone && items[0]?.status === "done") {
+          throwOnNextDone = false;
+          throw new Error("renderer gone");
+        }
+      },
+    });
+    await qm.init();
+
+    const i1 = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "FirstWithFinallyErrors",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+    await firstGenStartedP;
+
+    const i2 = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "SecondStillDrains",
+      artist: "A",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+
+    failNextQueueRename = true;
+    releaseFirstGen();
+
+    await waitFor(() => qm.getItems().find((i) => i.id === i2.id)?.status === "done");
+    renameSpy.mockRestore();
+
+    expect(qm.getItems().find((i) => i.id === i1.id)?.status).toBe("done");
+    expect(qm.getItems().find((i) => i.id === i2.id)?.status).toBe("done");
+    expect(h.logger.error).toHaveBeenCalledTimes(2);
   });
 });
