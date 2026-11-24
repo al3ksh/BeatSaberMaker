@@ -110,6 +110,8 @@ class EngineServer:
         self._write_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._active_job_id: str | None = None
+        self._queued_job_ids: set[str] = set()
+        self._pending_cancel_ids: set[str] = set()
         self._cancel_event = threading.Event()
         self._job_queue: queue.Queue[tuple[str, dict] | None] = queue.Queue()
         self._pipeline: LoadedPipeline | None = None
@@ -169,18 +171,29 @@ class EngineServer:
                 cmd = req.get("cmd")
                 if cmd == "cancel":
                     target_id = req.get("target_id")
+                    target_str = str(target_id) if target_id is not None else None
                     with self._state_lock:
                         active_id = self._active_job_id
-                        should_cancel = active_id is not None and (
-                            target_id is None or str(target_id) == active_id
-                        )
-                        if should_cancel:
+                        if target_str is None:
+                            should_cancel = active_id is not None
+                            if should_cancel:
+                                self._cancel_event.set()
+                        elif active_id is not None and target_str == active_id:
+                            should_cancel = True
                             self._cancel_event.set()
+                        elif target_str in self._queued_job_ids:
+                            should_cancel = True
+                            self._pending_cancel_ids.add(target_str)
+                        else:
+                            should_cancel = False
                     self._emit({"id": req_id, "type": "result", "data": {"cancelled": bool(should_cancel)}})
                     continue
                 if cmd in _FAST_COMMANDS and fast_pool is not None:
                     fast_pool.submit(self._run_command, req_id, req)
                     continue
+                if cmd != "shutdown" and req_id:
+                    with self._state_lock:
+                        self._queued_job_ids.add(req_id)
                 self._job_queue.put((req_id, req))
                 if cmd == "shutdown":
                     break
@@ -238,13 +251,18 @@ class EngineServer:
                     self._emit({"id": req_id, "type": "result", "data": {"shutdown": True}})
                     break
                 with self._state_lock:
+                    self._queued_job_ids.discard(req_id)
                     self._active_job_id = req_id
                     self._cancel_event.clear()
+                    if req_id in self._pending_cancel_ids:
+                        self._pending_cancel_ids.discard(req_id)
+                        self._cancel_event.set()
                 try:
                     self._run_command(req_id, req)
                 finally:
                     with self._state_lock:
                         self._active_job_id = None
+                        self._pending_cancel_ids.discard(req_id)
                         self._cancel_event.clear()
 
             reader.join(timeout=1.0)

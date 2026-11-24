@@ -1678,4 +1678,70 @@ rl.on("line", (line) => {
       expect(files.some((f) => f.startsWith("queue.json.corrupt-"))).toBe(true);
     }
   });
+
+  it("marks item cancelled without saving library entry if cancel arrives while generate resolves", async () => {
+    const h = await createTestHarness();
+    let genStarted!: () => void;
+    const genStartedP = new Promise<void>((r) => {
+      genStarted = r;
+    });
+    let resolveGen!: () => void;
+    const onLibraryChanged = vi.fn();
+
+    const engine = {
+      request: vi.fn(async (cmd: string, params?: Record<string, unknown>) => {
+        if (cmd === "generate") {
+          genStarted();
+          await new Promise<void>((r) => {
+            resolveGen = r;
+          });
+          const out = makeGenerateOutput(h.customLevels, String(params?.title ?? "Song"));
+          await fs.mkdir(out.folder, { recursive: true });
+          return out;
+        }
+        throw new Error(`Unexpected cmd: ${cmd}`);
+      }),
+      cancelActive: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    const qm = new QueueManager({
+      filePath: h.queueFilePath,
+      tmpDownloadsRoot: h.tmpDownloadsRoot,
+      engine,
+      settingsStore: h.settingsStore,
+      libraryStore: h.libraryStore,
+      trashItem: h.trashItem,
+      logger: h.logger,
+      onLibraryChanged,
+    });
+    await qm.init();
+
+    const item = await qm.enqueue({
+      sourceType: "file",
+      sourcePathOrUrl: h.audioFile,
+      title: "RaceCancelResolve",
+      artist: "Artist",
+      coverPath: null,
+      config: BASE_CONFIG,
+    });
+
+    await genStartedP;
+
+    const cancelP = qm.cancel(item.id);
+    resolveGen();
+    await cancelP;
+
+    await waitFor(() => {
+      const st = qm.getItems().find((i) => i.id === item.id)?.status;
+      return st === "cancelled" || st === "done" || st === "failed";
+    });
+
+    const finalItem = qm.getItems().find((i) => i.id === item.id)!;
+    expect(finalItem.status).toBe("cancelled");
+    expect(finalItem.entry).toBeNull();
+    expect(finalItem.result).toBeNull();
+    expect(await h.libraryStore.list()).toEqual([]);
+    expect(onLibraryChanged).not.toHaveBeenCalled();
+  });
 });

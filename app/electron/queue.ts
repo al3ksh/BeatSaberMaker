@@ -559,6 +559,7 @@ export class QueueManager {
         unique_folder: true,
         device: settings.device,
       });
+      this.checkAborted();
 
       const entry = buildLibraryEntry(entryId, result, cached, cfg);
       const updatedList = item.request.regenerateId

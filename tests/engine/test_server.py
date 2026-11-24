@@ -336,3 +336,76 @@ def test_engine_stale_cancel_when_idle_does_not_cancel_next_job(tmp_path: Path, 
     assert Path(g1_res["data"]["folder"]).is_dir()
     c0_res = next(m for m in stdout.msgs if m["id"] == "c0")
     assert c0_res["data"]["cancelled"] is False
+
+
+def test_engine_cancel_right_after_enqueue_cancels_that_job(tmp_path: Path, monkeypatch) -> None:
+    cfg = _setup_engine_dir(tmp_path)
+    audio = write_audio(tmp_path / "song.wav")
+    out_dir = tmp_path / "CustomLevels"
+    out_dir.mkdir()
+
+    import bsmaker.engine.server as S
+    from bsmaker.errors import GenerateCancelled
+
+    observed_cancel_at_start: list[bool] = []
+
+    def immediate_cancel_check(*args, is_cancelled=None, **kwargs):
+        cancelled = bool(is_cancelled and is_cancelled())
+        observed_cancel_at_start.append(cancelled)
+        if cancelled:
+            raise GenerateCancelled("cancelled")
+        raise AssertionError("cancel flag was not set before run_generate")
+
+    monkeypatch.setattr(S, "run_generate", immediate_cancel_check)
+
+    batch = "\n".join([
+        json.dumps({
+            "id": "g1", "cmd": "generate", "audio_path": str(audio), "out_dir": str(out_dir),
+            "nps": 3.0, "styles": ["tech"], "seed": 1, "title": "Song", "artist": "Artist",
+        }),
+        json.dumps({"id": "c1", "cmd": "cancel", "target_id": "g1"}),
+        json.dumps({"id": "s1", "cmd": "shutdown"}),
+    ]) + "\n"
+
+    cancel_acked = threading.Event()
+
+    class SignalingStdout:
+        def __init__(self) -> None:
+            self.msgs: list[dict] = []
+            self._buf = ""
+
+        def write(self, s: str) -> int:
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                if line.strip():
+                    msg = json.loads(line)
+                    self.msgs.append(msg)
+                    if msg.get("id") == "c1":
+                        cancel_acked.set()
+            return len(s)
+
+        def flush(self) -> None:
+            pass
+
+    stdout = SignalingStdout()
+    srv = EngineServer(cfg, stdin=io.StringIO(batch), stdout=stdout, stderr=io.StringIO())
+
+    # Hold serve() from popping g1 until _reader_loop has processed c1 from the same stdin batch.
+    orig_get = srv._job_queue.get
+
+    def delayed_first_get(*args, **kwargs):
+        assert cancel_acked.wait(timeout=2.0), "cancel was not processed by reader loop"
+        srv._job_queue.get = orig_get
+        return orig_get(*args, **kwargs)
+
+    srv._job_queue.get = delayed_first_get
+
+    assert srv.serve() == 0
+
+    c1_res = next(m for m in stdout.msgs if m["id"] == "c1")
+    assert c1_res["data"]["cancelled"] is True
+    g1_err = next(m for m in stdout.msgs if m["id"] == "g1" and m["type"] == "error")
+    assert g1_err["code"] == "cancelled"
+    assert observed_cancel_at_start == [True]
+    assert list(out_dir.iterdir()) == []
