@@ -15,6 +15,12 @@ export const ERRORS_EN: Record<string, string> = {
   internal: "An unexpected engine error occurred. Details have been saved to the logs.",
 };
 
+export function extractErrorCode(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /BSM_CODE:([a-z0-9_]+)/i.exec(msg);
+  return m ? m[1] : "internal";
+}
+
 export function formatErrorEn(code: string): string {
   return ERRORS_EN[code] ?? ERRORS_EN.internal;
 }

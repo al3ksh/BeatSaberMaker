@@ -222,10 +222,6 @@ export interface BsmApi {
   retryQueueItem(id: string): Promise<QueueItem[]>;
   moveQueueItem(id: string, direction: "up" | "down"): Promise<QueueItem[]>;
   clearFinishedQueue(): Promise<QueueItem[]>;
-  /** @deprecated Removed in Task 5 once Wizard.tsx and StepProgressDone.tsx migrate to the queue API. */
-  startGeneration(req: StartGenerationRequest): Promise<{ result: GenerateOutput; entry: LibraryEntry }>;
-  /** @deprecated Removed in Task 5 once StepProgressDone.tsx is retired. */
-  cancelActive(): Promise<void>;
   listLibrary(): Promise<LibraryEntry[]>;
   deleteLibraryEntry(id: string): Promise<LibraryEntry[]>;
   exportMapZip(folder: string, suggestedName?: string): Promise<string>;
@@ -235,8 +231,6 @@ export interface BsmApi {
   onQueueChanged(cb: (items: QueueItem[]) => void): () => void;
   onQueueProgress(cb: (ev: QueueProgressEvent) => void): () => void;
   onLibraryChanged(cb: (entries: LibraryEntry[]) => void): () => void;
-  /** @deprecated Removed in Task 5 once Wizard.tsx migrates to onQueueProgress. */
-  onProgress(cb: (ev: ProgressEvent) => void): () => void;
   onEnginePackProgress(cb: (ev: EnginePackProgress) => void): () => void;
   onUpdateStatus(cb: (ev: UpdateStatus) => void): () => void;
 }

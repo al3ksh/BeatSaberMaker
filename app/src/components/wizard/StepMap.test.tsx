@@ -22,7 +22,20 @@ describe("StepMap", () => {
     fireEvent.click(screen.getByLabelText(/rule-based lights/i));
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ lightsRules: true }));
 
-    fireEvent.click(screen.getByRole("button", { name: /generate/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add to queue|queue regeneration/i }));
     expect(onGenerate).toHaveBeenCalled();
+  });
+
+  it("shows Add to Queue when not regenerating", () => {
+    render(
+      <StepMap
+        config={PACK_DEFAULT_CONFIG}
+        isRegenerate={false}
+        onChange={vi.fn()}
+        onBack={vi.fn()}
+        onGenerate={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /add to queue/i })).toBeInTheDocument();
   });
 });
