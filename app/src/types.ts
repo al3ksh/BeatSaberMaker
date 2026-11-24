@@ -114,6 +114,39 @@ export interface ProgressEvent {
   pct: number;
 }
 
+export type QueueItemStatus =
+  | "waiting"
+  | "downloading"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface QueueEnqueueRequest extends StartGenerationRequest {
+  thumbnailUrl?: string | null;
+}
+
+export interface QueueItem {
+  id: string;
+  status: QueueItemStatus;
+  request: StartGenerationRequest;
+  thumbnailUrl: string | null;
+  enqueuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progress: ProgressEvent | null;
+  cancelling?: boolean;
+  errorCode: string | null;
+  result: GenerateOutput | null;
+  entry: LibraryEntry | null;
+}
+
+export interface QueueProgressEvent {
+  id: string;
+  stage: StageName;
+  pct: number;
+}
+
 export interface EnginePackProgress {
   stage: "downloading" | "verifying" | "extracting";
   pct: number;
