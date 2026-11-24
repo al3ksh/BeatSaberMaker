@@ -137,6 +137,7 @@ export function LibraryView({
       .then(async (list) => {
         if (!active || propUpdatedRef.current) return;
         setEntries(list);
+        initialEntriesPropRef.current = list;
         onEntriesChanged?.(list);
         const loadedCovers: Record<string, string> = {};
         for (const item of list) {

@@ -204,4 +204,154 @@ describe("App queue integration", () => {
     });
     expect(screen.queryByTestId("queue-status-bar")).not.toBeInTheDocument();
   });
+
+  it("preserves live onLibraryChanged entries when initial listLibrary resolves late", async () => {
+    const e1 = makeEntry("e1", "GHOST");
+    const e2 = makeEntry("e2", "Spin Eternally");
+
+    let resolveList!: (entries: LibraryEntry[]) => void;
+    const listPromise = new Promise<LibraryEntry[]>((resolve) => {
+      resolveList = resolve;
+    });
+    let libraryChangedCb: ((entries: LibraryEntry[]) => void) | null = null;
+    const readCoverDataUrl = vi.fn(async (p: string) => `data:image/png;base64,${p}`);
+
+    (window as unknown as { bsm: unknown }).bsm = {
+      getStartupState: vi.fn(async () => ({
+        needsEnginePack: false,
+        engineVersion: "4",
+        appVersion: "0.1.4",
+        settings: {
+          customLevels: "C:\\CL",
+          device: "auto",
+          exportDir: "C:\\Exp",
+          engineVersionInstalled: "4",
+        },
+        info: {
+          version: "4",
+          cuda_available: true,
+          gpu_name: "RTX",
+          active_device: "cuda",
+          detected_custom_levels: "C:\\CL",
+          has_layer_models: true,
+          missing_layer_models: [],
+          environments: ["DefaultEnvironment"],
+          styles: ["tech"],
+        },
+      })),
+      listLibrary: vi.fn(() => listPromise),
+      readCoverDataUrl,
+      getQueue: vi.fn(async () => []),
+      enqueueGeneration: vi.fn(),
+      cancelQueueItem: vi.fn(),
+      retryQueueItem: vi.fn(),
+      moveQueueItem: vi.fn(),
+      clearFinishedQueue: vi.fn(),
+      onQueueChanged: vi.fn(() => () => {}),
+      onQueueProgress: vi.fn(() => () => {}),
+      onLibraryChanged: vi.fn((cb: (entries: LibraryEntry[]) => void) => {
+        libraryChangedCb = cb;
+        return () => {
+          libraryChangedCb = null;
+        };
+      }),
+      onUpdateStatus: vi.fn(() => () => {}),
+    };
+
+    render(<App />);
+    const libTabBtn = await screen.findByRole("button", { name: new RegExp(EN.nav.library, "i") });
+
+    act(() => {
+      libraryChangedCb?.([e1, e2]);
+    });
+
+    fireEvent.click(libTabBtn);
+    expect(await screen.findByText("Spin Eternally")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveList([e1]);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Spin Eternally")).toBeInTheDocument();
+  });
+
+  it("does not let stale initial cover sync overwrite covers from a newer onLibraryChanged update", async () => {
+    const e1 = makeEntry("e1", "GHOST");
+    const e2 = makeEntry("e2", "Spin Eternally");
+
+    let resolveInitialCover!: (url: string | null) => void;
+    const initialCoverPromise = new Promise<string | null>((resolve) => {
+      resolveInitialCover = resolve;
+    });
+    let libraryChangedCb: ((entries: LibraryEntry[]) => void) | null = null;
+    const readCoverDataUrl = vi.fn((p: string) => {
+      if (readCoverDataUrl.mock.calls.length === 1) {
+        return initialCoverPromise;
+      }
+      return Promise.resolve(`data:image/png;base64,${p}`);
+    });
+
+    (window as unknown as { bsm: unknown }).bsm = {
+      getStartupState: vi.fn(async () => ({
+        needsEnginePack: false,
+        engineVersion: "4",
+        appVersion: "0.1.4",
+        settings: {
+          customLevels: "C:\\CL",
+          device: "auto",
+          exportDir: "C:\\Exp",
+          engineVersionInstalled: "4",
+        },
+        info: {
+          version: "4",
+          cuda_available: true,
+          gpu_name: "RTX",
+          active_device: "cuda",
+          detected_custom_levels: "C:\\CL",
+          has_layer_models: true,
+          missing_layer_models: [],
+          environments: ["DefaultEnvironment"],
+          styles: ["tech"],
+        },
+      })),
+      listLibrary: vi.fn(async () => [e1]),
+      readCoverDataUrl,
+      getQueue: vi.fn(async () => []),
+      enqueueGeneration: vi.fn(),
+      cancelQueueItem: vi.fn(),
+      retryQueueItem: vi.fn(),
+      moveQueueItem: vi.fn(),
+      clearFinishedQueue: vi.fn(),
+      onQueueChanged: vi.fn(() => () => {}),
+      onQueueProgress: vi.fn(() => () => {}),
+      onLibraryChanged: vi.fn((cb: (entries: LibraryEntry[]) => void) => {
+        libraryChangedCb = cb;
+        return () => {
+          libraryChangedCb = null;
+        };
+      }),
+      onUpdateStatus: vi.fn(() => () => {}),
+    };
+
+    render(<App />);
+    const libTabBtn = await screen.findByRole("button", { name: new RegExp(EN.nav.library, "i") });
+
+    await waitFor(() => expect(readCoverDataUrl).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      libraryChangedCb?.([e1, e2]);
+    });
+
+    await waitFor(() => expect(readCoverDataUrl).toHaveBeenCalledWith(e2.coverCachePath));
+
+    await act(async () => {
+      resolveInitialCover("data:image/png;base64,stale-e1");
+      await Promise.resolve();
+    });
+
+    fireEvent.click(libTabBtn);
+    expect(await screen.findByAltText("Spin Eternally")).toBeInTheDocument();
+    expect(screen.getByAltText("GHOST")).toBeInTheDocument();
+  });
 });

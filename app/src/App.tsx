@@ -63,28 +63,37 @@ export function App() {
 
   useEffect(() => {
     let active = true;
+    let receivedLibraryUpdate = false;
+    let coverSyncSeq = 0;
 
     async function syncMissingCovers(list: LibraryEntry[], replaceAll = false) {
+      const seq = ++coverSyncSeq;
       const validIds = new Set(list.map((e) => e.id));
-      for (const id of loadedCoverPathsRef.current.keys()) {
-        if (!validIds.has(id)) {
-          loadedCoverPathsRef.current.delete(id);
+      const entryCoverById = new Map(list.map((e) => [e.id, e.coverCachePath]));
+      const nextLoadedPaths = new Map<string, string>();
+      if (!replaceAll) {
+        for (const [id, coverPath] of loadedCoverPathsRef.current.entries()) {
+          if (validIds.has(id)) {
+            nextLoadedPaths.set(id, coverPath);
+          }
         }
       }
 
       const updates: Record<string, string> = {};
       for (const item of list) {
+        if (!active || seq !== coverSyncSeq) return;
         if (!item.coverCachePath) {
-          loadedCoverPathsRef.current.delete(item.id);
+          nextLoadedPaths.delete(item.id);
           continue;
         }
-        if (!replaceAll && loadedCoverPathsRef.current.get(item.id) === item.coverCachePath) {
+        if (!replaceAll && nextLoadedPaths.get(item.id) === item.coverCachePath) {
           continue;
         }
         try {
           const url = await window.bsm?.readCoverDataUrl?.(item.coverCachePath);
-          if (url && active) {
-            loadedCoverPathsRef.current.set(item.id, item.coverCachePath);
+          if (!active || seq !== coverSyncSeq) return;
+          if (url) {
+            nextLoadedPaths.set(item.id, item.coverCachePath);
             updates[item.id] = url;
           }
         } catch {
@@ -92,12 +101,14 @@ export function App() {
         }
       }
 
-      if (!active) return;
+      if (!active || seq !== coverSyncSeq) return;
+      loadedCoverPathsRef.current = nextLoadedPaths;
       setLibraryCovers((prev) => {
-        if (replaceAll) return updates;
         const next: Record<string, string> = {};
         for (const [id, url] of Object.entries(prev)) {
-          if (validIds.has(id)) next[id] = url;
+          if (validIds.has(id) && entryCoverById.get(id)) {
+            next[id] = url;
+          }
         }
         return { ...next, ...updates };
       });
@@ -114,10 +125,10 @@ export function App() {
     window.bsm
       ?.listLibrary?.()
       .then(async (list) => {
-        if (!active) return;
+        if (!active || receivedLibraryUpdate) return;
         setLibraryEntries(list);
         await syncMissingCovers(list, true);
-        if (active) {
+        if (active && !receivedLibraryUpdate) {
           setLibraryLoaded(true);
         }
       })
@@ -125,6 +136,7 @@ export function App() {
 
     const unsubLibrary = window.bsm?.onLibraryChanged?.((list) => {
       if (!active) return;
+      receivedLibraryUpdate = true;
       setLibraryEntries(list);
       setLibraryLoaded(true);
       void syncMissingCovers(list);
