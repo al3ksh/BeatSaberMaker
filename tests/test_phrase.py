@@ -6,7 +6,9 @@ from bsmaker.audio.bar_similarity import (
     MAX_REPEAT_LOUD_DIFF_DB,
     MAX_RHYTHM_REPEAT_SHARE,
     MIN_BAR_SIM,
+    bar_features,
     bar_repeats,
+    features_from_frames,
     find_repeats,
 )
 from bsmaker.audio.decode import SAMPLE_RATE
@@ -26,7 +28,7 @@ def _synth_bar(bar_s: float, freqs: tuple[float, ...], seed: int, amp: float = 0
 
 
 def _distinct_bars(n_bars: int, bar_s: float, seed_offset: int = 0) -> list[np.ndarray]:
-    # Distinct pitch sets and rhythmic envelopes across bars so chroma+MFCC vary strongly.
+    # Distinct pitch sets, section transposition, and rhythmic envelopes across bars/sections.
     base_freqs = [
         (110.0, 165.0),
         (146.8, 220.0, 293.7),
@@ -37,9 +39,14 @@ def _distinct_bars(n_bars: int, bar_s: float, seed_offset: int = 0) -> list[np.n
         (415.3, 622.3, 830.6),
         (493.9, 740.0, 987.8, 1480.0),
     ]
+    section = seed_offset // 100
+    semitone_shift = (section * 5) % 12
+    pitch_scale = 2.0 ** (semitone_shift / 12.0)
+    rot = (section * 3) % len(base_freqs)
     out = []
     for k in range(n_bars):
-        freqs = tuple(f * (1.0 + 0.07 * (k // 8)) for f in base_freqs[k % len(base_freqs)])
+        chord = base_freqs[(k + rot) % len(base_freqs)]
+        freqs = tuple(f * pitch_scale * (1.0 + 0.07 * (k // 8)) for f in chord)
         bar = _synth_bar(bar_s, freqs, seed=seed_offset + k)
         if k % 2 == 1:
             bar = bar * np.linspace(0.4, 1.0, len(bar), dtype=np.float32)
@@ -64,6 +71,7 @@ def test_bar_similarity_prefers_8_and_4_bar_phrases_over_2_bar():
     assert rep.source.shape == (24,)
     assert list(rep.source[8:15]) == list(range(7))
     assert rep.source[15] == -1
+    assert np.all(rep.source[16:] == -1)
     assert rep.phrase_len[8] == 8
     assert np.all(rep.phrase_start[8:15] == 8)
 
@@ -76,6 +84,7 @@ def test_bar_similarity_prefers_8_and_4_bar_phrases_over_2_bar():
     bars_4_tail = _distinct_bars(4, bar_s, seed_offset=400)
     rep4 = bar_repeats(np.concatenate(bars_4_src + bars_4_rep + bars_4_tail), bpm=bpm)
     assert list(rep4.source[8:12]) == [4, 5, 6, 7]
+    assert np.all(rep4.source[12:] == -1)
     assert rep4.phrase_len[8] == 4
 
 
@@ -157,11 +166,43 @@ def test_bar_similarity_respects_offset_s():
     audio = np.concatenate(bars_a + bars_repeat + bars_b)
 
     offset_s = 0.25 * bar_s
-    pad = np.zeros(int(round(offset_s * SAMPLE_RATE)), dtype=np.float32)
-    shifted = np.concatenate([pad, audio])
+    # Spectrally distinct broadband prefix (similar RMS to bars_a) so ignoring offset_s
+    # misaligns bars and breaks bar 0 matching without causing a +20 dB STFT boundary bleed.
+    n_prefix = int(round(offset_s * SAMPLE_RATE))
+    prefix = (0.08 * rng.standard_normal(n_prefix)).astype(np.float32)
+    shifted = np.concatenate([prefix, audio])
 
     rep_base = bar_repeats(audio, bpm=bpm, offset_s=0.0)
     rep_shifted = bar_repeats(shifted, bpm=bpm, offset_s=offset_s)
+    rep_wrong = bar_repeats(shifted, bpm=bpm, offset_s=0.0)
 
+    assert (rep_base.source >= 0).any()
     assert np.array_equal(rep_shifted.source, rep_base.source)
     assert np.array_equal(rep_shifted.phrase_len, rep_base.phrase_len)
+    assert not np.array_equal(rep_wrong.source, rep_base.source)
+
+    feats_base, loud_base = bar_features(audio, bpm=bpm, offset_s=0.0)
+    feats_shifted, loud_shifted = bar_features(shifted, bpm=bpm, offset_s=offset_s)
+    feats_wrong, _ = bar_features(shifted, bpm=bpm, offset_s=0.0)
+    cos_aligned = (feats_base * feats_shifted).sum(axis=1) / 2.0
+    cos_wrong = (feats_base * feats_wrong[: len(feats_base)]).sum(axis=1) / 2.0
+    assert float(cos_aligned.min()) > 0.99
+    assert np.allclose(loud_shifted, loud_base, atol=0.25)
+    assert float(cos_wrong.min()) < 0.96
+    assert float(cos_wrong.mean()) < float(cos_aligned.mean()) - 0.02
+
+
+def test_features_from_frames_handles_non_finite_params():
+    chroma = np.ones((12, 64), dtype=np.float32)
+    mfcc = np.ones((13, 64), dtype=np.float32)
+    rms = np.ones(64, dtype=np.float32)
+    for hop_s, bar_s, offset_s in [
+        (float("nan"), 2.0, 0.0),
+        (float("inf"), 2.0, 0.0),
+        (0.02, 2.0, float("nan")),
+        (0.02, 2.0, float("inf")),
+        (0.02, float("nan"), 0.0),
+    ]:
+        feats, loud = features_from_frames(chroma, mfcc, rms, hop_s, bar_s, offset_s=offset_s)
+        assert feats.shape == (0, 24)
+        assert loud.shape == (0,)

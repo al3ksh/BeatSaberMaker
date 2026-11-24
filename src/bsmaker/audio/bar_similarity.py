@@ -59,7 +59,14 @@ def features_from_frames(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Aggregate frame-level chroma, MFCC, and RMS into per-bar `(features, loud_db)`."""
     nfr = min(chroma.shape[1], mfcc.shape[1], len(rms))
-    if nfr <= 0 or hop_s <= 0 or bar_s <= 0 or not np.isfinite(bar_s):
+    if (
+        nfr <= 0
+        or not np.isfinite(hop_s)
+        or hop_s <= 0
+        or not np.isfinite(bar_s)
+        or bar_s <= 0
+        or not np.isfinite(offset_s)
+    ):
         return np.zeros((0, 24), dtype=np.float32), np.zeros(0, dtype=np.float32)
     off = max(0.0, float(offset_s))
     dur_s = nfr * hop_s
