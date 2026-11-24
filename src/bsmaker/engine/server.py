@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version as pkg_version
@@ -46,6 +47,8 @@ from bsmaker.pipeline import (
 )
 
 _LAYER_SLOTS = ("ornaments", "decor-when", "decor-what", "lights-when", "lights-what")
+_FAST_COMMANDS = frozenset({"search", "resolve", "export_zip"})
+_FAST_WORKERS = 4
 
 _MESSAGES_PL: dict[str, str] = {
     "ffmpeg_missing": "Brak programu ffmpeg wymaganego do dekodowania dźwięku.",
@@ -142,7 +145,7 @@ class EngineServer:
         except OSError:
             pass
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self, fast_pool: ThreadPoolExecutor | None = None) -> None:
         try:
             while True:
                 line = self.stdin.readline()
@@ -166,6 +169,9 @@ class EngineServer:
                     self._cancel_event.set()
                     self._emit({"id": req_id, "type": "result", "data": {"cancelled": True}})
                     continue
+                if cmd in _FAST_COMMANDS and fast_pool is not None:
+                    fast_pool.submit(self._run_command, req_id, req)
+                    continue
                 self._job_queue.put((req_id, req))
                 if cmd == "shutdown":
                     break
@@ -173,54 +179,61 @@ class EngineServer:
             self._log_traceback("stdin_reader", e)
             self._job_queue.put(None)
 
-    def serve(self) -> int:
-        reader = threading.Thread(target=self._reader_loop, daemon=True)
-        reader.start()
+    def _run_command(self, req_id: str, req: dict) -> None:
+        cmd = req.get("cmd")
+        try:
+            data = self._dispatch(req_id, req)
+            self._emit({"id": req_id, "type": "result", "data": data})
+        except GenerateCancelled as e:
+            self._emit_error(req_id, "cancelled", str(e))
+        except FfmpegMissingError as e:
+            self._emit_error(req_id, "ffmpeg_missing", str(e))
+        except YtdlpMissingError as e:
+            self._emit_error(req_id, "ytdlp_missing", str(e))
+        except DownloadError as e:
+            self._emit_error(req_id, "download_failed", str(e))
+        except MissingModelsError as e:
+            self._emit_error(req_id, "no_models", str(e))
+        except AudioDecodeError as e:
+            self._emit_error(req_id, "invalid_audio", str(e))
+        except GenerateError as e:
+            msg_low = str(e).lower()
+            if "shorter" in msg_low:
+                code = "audio_too_short"
+            elif "silent" in msg_low:
+                code = "audio_silent"
+            else:
+                code = "invalid_audio"
+            self._emit_error(req_id, code, str(e))
+        except FileExistsError as e:
+            self._emit_error(req_id, "file_exists", str(e))
+        except FileNotFoundError as e:
+            self._emit_error(req_id, "not_found", str(e))
+        except ValueError as e:
+            self._emit_error(req_id, "invalid_args", str(e))
+        except Exception as e:  # noqa: BLE001
+            self._log_traceback(f"cmd={cmd}", e)
+            self._emit_error(req_id, "internal", "")
 
-        while True:
-            item = self._job_queue.get()
-            if item is None:
-                break
-            req_id, req = item
-            cmd = req.get("cmd")
-            if cmd == "shutdown":
-                self._emit({"id": req_id, "type": "result", "data": {"shutdown": True}})
-                break
-            try:
-                data = self._dispatch(req_id, req)
-                self._emit({"id": req_id, "type": "result", "data": data})
-            except GenerateCancelled as e:
-                self._emit_error(req_id, "cancelled", str(e))
-            except FfmpegMissingError as e:
-                self._emit_error(req_id, "ffmpeg_missing", str(e))
-            except YtdlpMissingError as e:
-                self._emit_error(req_id, "ytdlp_missing", str(e))
-            except DownloadError as e:
-                self._emit_error(req_id, "download_failed", str(e))
-            except MissingModelsError as e:
-                self._emit_error(req_id, "no_models", str(e))
-            except AudioDecodeError as e:
-                self._emit_error(req_id, "invalid_audio", str(e))
-            except GenerateError as e:
-                msg_low = str(e).lower()
-                if "shorter" in msg_low:
-                    code = "audio_too_short"
-                elif "silent" in msg_low:
-                    code = "audio_silent"
-                else:
-                    code = "invalid_audio"
-                self._emit_error(req_id, code, str(e))
-            except FileExistsError as e:
-                self._emit_error(req_id, "file_exists", str(e))
-            except FileNotFoundError as e:
-                self._emit_error(req_id, "not_found", str(e))
-            except ValueError as e:
-                self._emit_error(req_id, "invalid_args", str(e))
-            except Exception as e:  # noqa: BLE001
-                self._log_traceback(f"cmd={cmd}", e)
-                self._emit_error(req_id, "internal", "")
-            finally:
-                self._cancel_event.clear()
+    def serve(self) -> int:
+        with ThreadPoolExecutor(max_workers=_FAST_WORKERS) as fast_pool:
+            reader = threading.Thread(target=self._reader_loop, args=(fast_pool,), daemon=True)
+            reader.start()
+
+            while True:
+                item = self._job_queue.get()
+                if item is None:
+                    break
+                req_id, req = item
+                if req.get("cmd") == "shutdown":
+                    self._emit({"id": req_id, "type": "result", "data": {"shutdown": True}})
+                    break
+                try:
+                    self._run_command(req_id, req)
+                finally:
+                    self._cancel_event.clear()
+
+            reader.join(timeout=1.0)
 
         return 0
 

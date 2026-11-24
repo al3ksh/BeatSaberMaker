@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from test_generate import LAYER_STATS, STATS, make_models, write_audio  # noqa: E402
 from bsmaker.data.layer_stats import write_layer_stats
 from bsmaker.engine.server import EngineConfig, EngineServer
+from bsmaker.engine.youtube import YouTubeItem
 from bsmaker.models.common import save_checkpoint
 
 
@@ -168,3 +169,96 @@ def test_engine_pipelined_jobs_and_unicode_non_cp1250_stdio(tmp_path: Path, monk
     assert srv.serve() == 0
     raw_out.flush()
     assert json.loads(raw_out.buffer.getvalue().decode("utf-8").splitlines()[0])["id"] == "1"
+
+
+def test_engine_search_runs_concurrently_during_generate(tmp_path: Path, monkeypatch) -> None:
+    cfg = _setup_engine_dir(tmp_path)
+    audio = write_audio(tmp_path / "song.wav")
+    out_dir = tmp_path / "CustomLevels"
+    out_dir.mkdir()
+
+    import bsmaker.engine.server as S
+
+    orig_run_generate = S.run_generate
+    gen_started = threading.Event()
+    release_gen = threading.Event()
+
+    def blocked_generate(*args, **kwargs):
+        gen_started.set()
+        assert release_gen.wait(timeout=5.0), "timed out waiting to release generate"
+        return orig_run_generate(*args, **kwargs)
+
+    fake_item = YouTubeItem(
+        id="yt123",
+        url="https://www.youtube.com/watch?v=yt123",
+        title="Artist - Track",
+        artist="Artist",
+        track_title="Track",
+        channel="Channel",
+        duration_s=180.0,
+        thumbnail_url=None,
+    )
+    monkeypatch.setattr(S, "run_generate", blocked_generate)
+    monkeypatch.setattr(S, "search_youtube", lambda *a, **k: [fake_item])
+    monkeypatch.setattr(S, "resolve_youtube", lambda *a, **k: fake_item)
+    monkeypatch.setattr(S, "export_map_zip", lambda folder, out_zip: Path(out_zip))
+
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    class QueueReader:
+        def readline(self):
+            item = lines.get()
+            return "" if item is None else item
+
+    class SignalingStdout:
+        def __init__(self) -> None:
+            self.msgs: list[dict] = []
+            self.fast_done = threading.Event()
+            self._seen_fast: set[str] = set()
+            self._buf = ""
+
+        def write(self, s: str) -> int:
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                if line.strip():
+                    msg = json.loads(line)
+                    self.msgs.append(msg)
+                    if msg.get("id") in ("q1", "r1", "z1") and msg.get("type") == "result":
+                        self._seen_fast.add(msg["id"])
+                        if self._seen_fast == {"q1", "r1", "z1"}:
+                            self.fast_done.set()
+            return len(s)
+
+        def flush(self) -> None:
+            pass
+
+    stdout = SignalingStdout()
+    srv = EngineServer(cfg, stdin=QueueReader(), stdout=stdout, stderr=io.StringIO())
+    t = threading.Thread(target=srv.serve, daemon=True)
+    t.start()
+
+    try:
+        lines.put(json.dumps({
+            "id": "g1", "cmd": "generate", "audio_path": str(audio), "out_dir": str(out_dir),
+            "nps": 3.0, "styles": ["tech"], "seed": 1, "title": "Song", "artist": "Artist",
+        }) + "\n")
+        assert gen_started.wait(timeout=5.0)
+
+        lines.put(json.dumps({"id": "q1", "cmd": "search", "query": "artist track"}) + "\n")
+        lines.put(json.dumps({"id": "r1", "cmd": "resolve", "url": "https://www.youtube.com/watch?v=yt123"}) + "\n")
+        lines.put(json.dumps({"id": "z1", "cmd": "export_zip", "folder": str(out_dir), "out_zip": str(tmp_path / "map.zip")}) + "\n")
+
+        assert stdout.fast_done.wait(timeout=2.0), "fast commands did not finish while generate was blocked"
+        assert not any(m.get("id") == "g1" and m.get("type") == "result" for m in stdout.msgs)
+    finally:
+        release_gen.set()
+        lines.put(json.dumps({"id": "s1", "cmd": "shutdown"}) + "\n")
+        lines.put(None)
+        t.join(timeout=5.0)
+
+    result_ids = [m["id"] for m in stdout.msgs if m.get("type") == "result"]
+    assert "q1" in result_ids and "r1" in result_ids and "z1" in result_ids and "g1" in result_ids
+    assert result_ids.index("q1") < result_ids.index("g1")
+    assert result_ids.index("r1") < result_ids.index("g1")
+    assert result_ids.index("z1") < result_ids.index("g1")
