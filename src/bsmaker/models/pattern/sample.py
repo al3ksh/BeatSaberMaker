@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Sequence
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -21,6 +22,9 @@ from bsmaker.playability.checker import advance, allowed
 from bsmaker.playability.config import PlayabilityConfig
 from bsmaker.playability.geometry import angle_diff, direction_angle
 from bsmaker.playability.state import initial_state
+
+if TYPE_CHECKING:
+    from bsmaker.phrase import HandRhythmLinks
 
 
 @dataclass
@@ -276,6 +280,7 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                  double_bias: DoubleBias | None = DEFAULT_DOUBLE_BIAS,
                  dot_brake: DotBrake | None = DEFAULT_DOT_BRAKE,
                  double_geometry: DoubleGeometry | None = DEFAULT_DOUBLE_GEOMETRY,
+                 hand_rhythm: HandRhythmLinks | None = None,
                  is_cancelled: Callable[[], bool] | None = None,
                  on_progress: Callable[[int, int], None] | None = None) -> tuple[list[Note], SampleReport]:
     """Notes for the planned events; no sampled note breaks a hard rule of `cfg` (the mask profile).
@@ -344,6 +349,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
             if pen_l:
                 left_lg = left_lg.clone()
                 left_lg[_DOT_IDX] -= pen_l
+            if hand_rhythm is not None:
+                left_lg = hand_rhythm.bias_left(left_lg, te, mask_l)
             left = _pick(left_lg, mask_l, temperature, top_p, gen, masses)
             right_lg = model.right_logits(h, torch.tensor([left], device=dev))[0].float().cpu()
             pen_r = dot_brake.penalty(dot_run[1]) if dot_brake is not None else 0.0
@@ -360,6 +367,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                 if bias:
                     right_lg = right_lg.clone()
                     right_lg[NONE_TOKEN] += bias
+            if hand_rhythm is not None:
+                right_lg = hand_rhythm.bias_right(right_lg, te, mask_r, left, run)
             right = _pick(right_lg, mask_r, temperature, top_p, gen, masses)
             if left == NONE_TOKEN and right == NONE_TOKEN:
                 mask_r = mask_r.copy()
@@ -371,6 +380,8 @@ def sample_notes(loaded: LoadedPattern, event_times_s: np.ndarray, mel: np.ndarr
                     continue
                 right = _pick(right_lg, mask_r, temperature, top_p, gen, masses)
                 n_fallback += 1
+            if hand_rhythm is not None:
+                hand_rhythm.record(te, left != NONE_TOKEN, right != NONE_TOKEN)
             for color, token in ((0, left), (1, right)):
                 if token != NONE_TOKEN:
                     x, y, d = decode_token(token)

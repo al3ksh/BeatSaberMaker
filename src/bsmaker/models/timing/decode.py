@@ -242,8 +242,17 @@ def trim_stray_lead_in(frames: np.ndarray) -> np.ndarray:
     return f
 
 
+@dataclass(frozen=True)
+class TimingCurve:
+    """Weighted local-normalised timing curve and pick threshold for phrase rhythm checks."""
+
+    curve: np.ndarray
+    threshold: float
+
+
 def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
-                mel: np.ndarray | None = None, bar_s: float | None = None) -> np.ndarray:
+                mel: np.ndarray | None = None, bar_s: float | None = None,
+                curve_out: list[TimingCurve] | None = None) -> np.ndarray:
     """Frame indices (sorted) of about `n_events` peaks spread over active sections.
 
     The lead-in (MIN_FIRST_EVENT_S) is silenced, the curve is locally normalised, then the usual
@@ -253,10 +262,14 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
     p = np.array(probs, dtype=np.float32)
     p[:int(round(MIN_FIRST_EVENT_S * FRAMES_PER_SECOND))] = 0.0
     if len(p) == 0:
+        if curve_out is not None:
+            curve_out.append(TimingCurve(np.zeros(0, dtype=np.float32), 0.0))
         return np.zeros(0, dtype=np.int64)
     curve = local_normalise(p, min_gap_frames)
     if mel is None or len(mel) != len(p) or n_events < 8:
         thr = threshold_for_count(curve, n_events, min_gap_frames)
+        if curve_out is not None:
+            curve_out.append(TimingCurve(curve, thr))
         return trim_stray_lead_in(pick_peaks(curve, thr, min_gap_frames))
     edges = bar_edges(len(p) / FRAMES_PER_SECOND, bar_s)
     weights, empty = density_weights(mel, edges)
@@ -268,10 +281,16 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
         bars = np.clip(np.searchsorted(edges, fr / FRAMES_PER_SECOND, side="right") - 1, 0, len(edges) - 2)
         weights, empty = density_weights(mel, edges, (int(bars.min()), int(bars.max())))
     cand = np.sort(_greedy(len(curve), _candidates(curve), min_gap_frames))
+    last_weighted = curve
+    last_thr = 0.0
 
-    def pick(n: int) -> np.ndarray:
+    def pick(n: int) -> tuple[np.ndarray, int]:
+        nonlocal last_weighted, last_thr
         weighted = curve * weights
-        frames = pick_peaks(weighted, threshold_for_count(weighted, n, min_gap_frames), min_gap_frames)
+        thr = threshold_for_count(weighted, n, min_gap_frames)
+        last_weighted = weighted
+        last_thr = thr
+        frames = pick_peaks(weighted, thr, min_gap_frames)
         # every non-empty bar keeps its best (unweighted) peak, so rests come only from `empty`
         sec = frames / FRAMES_PER_SECOND
         counts = np.histogram(sec, edges)[0]
@@ -286,6 +305,8 @@ def pick_events(probs: np.ndarray, n_events: int, min_gap_frames: int = 3,
     frames, added = pick(n_events)
     if added:
         frames, _ = pick(max(n_events - added, 1))
+    if curve_out is not None:
+        curve_out.append(TimingCurve(last_weighted, last_thr))
     return trim_stray_lead_in(frames)
 
 
@@ -306,14 +327,16 @@ def load_timing(path: Path, device: str) -> LoadedTiming:
 
 
 def predict_events(loaded: LoadedTiming, mel: np.ndarray, nps: float, styles: Iterable[str],
-                   device: str, count_scale: float = 1.0, bar_s: float | None = None) -> np.ndarray:
+                   device: str, count_scale: float = 1.0, bar_s: float | None = None,
+                   curve_out: list[TimingCurve] | None = None) -> np.ndarray:
     """Event times in seconds (float64, sorted) at the density `nps`."""
     stats = loaded.stats
     probs = frame_probs(loaded.model, mel, nps, tuple(styles), stats, device)
     duration = len(mel) / FRAMES_PER_SECOND
     target = (nps * duration * float(stats["coverage_median"])
               / (1.0 + lookup(stats, "double_share_by_bin", nps)) * count_scale)
-    times = pick_events(probs, int(round(target)), mel=mel, bar_s=bar_s).astype(np.float64) * HOP / SAMPLE_RATE
+    times = pick_events(probs, int(round(target)), mel=mel, bar_s=bar_s,
+                        curve_out=curve_out).astype(np.float64) * HOP / SAMPLE_RATE
     return times[times >= MIN_FIRST_EVENT_S]
 
 

@@ -133,7 +133,7 @@ def test_info_keeps_original_title(models, tmp_path):
 def test_later_round_below_min_events_keeps_best_attempt(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         n = 240 if len(calls) == 1 else G.MIN_EVENTS - 2  # round 1 overshoots 2x
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -167,7 +167,7 @@ def _stub_sampler(monkeypatch):
 def test_density_loop_rescales(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         n = int(120 * count_scale)  # 30 s span: 4 nps at scale 1
         return 2.0 + np.arange(n) * (30.0 / n)
@@ -183,7 +183,7 @@ def test_density_loop_rescales(models, tmp_path, monkeypatch):
 def test_density_warning_when_not_reached(models, tmp_path, monkeypatch):
     calls = []
 
-    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None):
+    def fake_predict(loaded, mel, nps, styles, device, count_scale=1.0, bar_s=None, **kw):
         calls.append(count_scale)
         return 2.0 + np.arange(120) * 0.25  # ignores count_scale: always 4 nps
 
@@ -331,6 +331,8 @@ def test_all_layers_off_is_byte_identical_to_pre_change_output(models, tmp_path,
         return real_sample(*a, **kw)
 
     monkeypatch.setattr(G, "sample_notes", sample_pre_f6)
+    monkeypatch.setattr(G, "plan_rhythm", lambda planned, *a, **kw: (planned, None))
+    monkeypatch.setattr(G, "gate_audible", lambda t, *a, **kw: t)  # golden predates the audible gate
     audio = write_audio(tmp_path / "My Song.wav")
     res_default = _gen(models, audio, tmp_path / "out_default")
     for name in ("Info.dat", "HardStandard.dat"):
@@ -564,7 +566,7 @@ def test_generate_map_monotonic_progress_across_density_rounds_and_layer_cancel(
     orig_sample = G.sample_notes
     calls = 0
 
-    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None):
+    def two_round_sample(pattern, planned, mel, target_nps, styles, seed, mask_cfg, device, *, is_cancelled=None, on_progress=None, **kw):
         nonlocal calls
         calls += 1
         if on_progress is not None:
@@ -628,7 +630,7 @@ def test_generate_map_flow_defaults_to_zero(models, tmp_path):
 def test_generate_map_flow_final_check_raises(models, tmp_path, monkeypatch):
     from bsmaker.flow_rules import FlowReport
 
-    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def flow_stub(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, **kw):
         return list(notes), FlowReport(level=level)
 
     seen = []
@@ -648,7 +650,7 @@ def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
     audio = write_audio(tmp_path / "a.wav", seconds=45.0)
     res0 = _gen(models, audio, tmp_path / "out0", flow=0)
 
-    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg):
+    def no_flow(notes, *, bpm, onset_env, onset_hop_s, level, seed, mask_cfg, **kw):
         from bsmaker.flow_rules import FlowReport
         return list(notes), FlowReport(level=0)
 
@@ -661,3 +663,36 @@ def test_generate_map_flow_zero_same_as_before(models, tmp_path, monkeypatch):
     notes_p = read_map(res_patched.folder).difficulties[0].notes
     assert sum(n.direction == 8 for n in notes0) == sum(n.direction == 8 for n in notes_p)
 
+
+
+def test_default_path_with_repeats_and_flow_is_deterministic(models, tmp_path):
+    # plan_rhythm / repeats / replay are NOT patched: the full default path with a fixed seed.
+    audio = write_audio(tmp_path / "a.wav", seconds=45.0)
+    runs = [
+        _gen(models, audio, tmp_path / f"o{i}", seed=7, flow=3, styles=("tech",))
+        for i in (1, 2)
+    ]
+    a, b = runs
+    assert a.folder.name == b.folder.name
+    assert {p.name for p in a.folder.iterdir()} == {p.name for p in b.folder.iterdir()}
+    for p in a.folder.glob("*.dat"):
+        assert p.read_bytes() == (b.folder / p.name).read_bytes()
+    assert [lv.flow_report for lv in a.levels] == [lv.flow_report for lv in b.levels]
+
+
+def test_generate_places_no_notes_in_silent_lead_in_or_tail(models, tmp_path):
+    import json
+    sr = 22050
+    rng = np.random.default_rng(0)
+    y = np.zeros(50 * sr, np.float32)
+    for t in np.arange(8.0, 42.0, 0.5):
+        i = int(t * sr)
+        y[i:i + 1000] = rng.normal(size=1000) * 0.5
+    sf.write(tmp_path / "gap.wav", y, sr)
+    res = _gen(models, tmp_path / "gap.wav", tmp_path / "out")
+    dat = json.loads((res.folder / "HardStandard.dat").read_text())
+    info = json.loads((res.folder / "Info.dat").read_text())
+    bpm = info.get("_beatsPerMinute") or info["audio"]["bpm"]
+    notes = dat.get("_notes") or dat["colorNotes"]
+    times = [(n.get("_time") if "_time" in n else n["b"]) * 60.0 / bpm for n in notes]
+    assert times and min(times) >= 7.8 and max(times) <= 42.3

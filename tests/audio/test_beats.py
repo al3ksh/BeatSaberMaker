@@ -253,3 +253,34 @@ def test_align_grid_leaves_unsteady_grid_and_empty_input_alone():
     assert align_grid(g, np.array([1.0, 1.2, 1.4] * 10)) == g
     s = Grid(120.0, 0.1, True)
     assert align_grid(s, np.array([])) == s
+
+
+def _tone_in_silence(lead_s=5.0, tone_s=20.0, tail_s=5.0):
+    t = np.arange(int(tone_s * SAMPLE_RATE)) / SAMPLE_RATE
+    tone = 0.5 * np.sin(2 * np.pi * 220 * t)
+    return np.concatenate([
+        np.zeros(int(lead_s * SAMPLE_RATE)), tone, np.zeros(int(tail_s * SAMPLE_RATE)),
+    ]).astype(np.float32)
+
+
+def test_audible_span_finds_tone_inside_silence():
+    from bsmaker.audio.beats import audible_span
+
+    start, end = audible_span(_tone_in_silence())
+    assert 4.8 <= start <= 5.3
+    assert 24.7 <= end <= 25.2
+
+
+def test_gate_audible_drops_notes_in_silence_and_on_last_frame():
+    from bsmaker.audio.beats import audible_span, gate_audible
+
+    audio = _tone_in_silence()
+    span = audible_span(audio)
+    times = np.array([1.0, 2.2, 5.5, 12.0, 24.0, 26.0, 29.5, 30.0])
+    kept = gate_audible(times, span, len(audio) / SAMPLE_RATE)
+    assert kept.tolist() == [5.5, 12.0, 24.0]
+    # a uniformly loud file keeps everything except the very last frame
+    loud = np.full(30 * SAMPLE_RATE, 0.3, dtype=np.float32)
+    span = audible_span(loud)
+    kept = gate_audible(np.array([0.5, 10.0, 29.9, 30.0]), span, 30.0)
+    assert kept.tolist() == [0.5, 10.0]

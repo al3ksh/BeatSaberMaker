@@ -203,3 +203,33 @@ def snap_times(times_s: np.ndarray, grid: Grid, max_shift_s: float = SNAP_MAX_SH
 
 def to_beats(times_s: np.ndarray, bpm: float) -> np.ndarray:
     return np.asarray(times_s, dtype=np.float64) * bpm / 60.0
+
+
+AUDIBLE_FRAME_S = 0.05
+AUDIBLE_REL_DB = -30.0  # frames this far below the track's typical (95th percentile) level count as silence
+SPAN_PAD_S = 0.1  # onset times lead/lag the energy frames a little
+END_MARGIN_S = 0.25  # onset/peak artifacts pile up on the last frame of a file
+
+
+def audible_span(audio: np.ndarray) -> tuple[float, float]:
+    """Return (start_s, end_s) of the audible part: first/last 50 ms RMS frame within 30 dB of the typical level."""
+    y = np.asarray(audio, dtype=np.float32)
+    n = max(1, int(AUDIBLE_FRAME_S * SAMPLE_RATE))
+    frames = len(y) // n
+    if frames == 0:
+        return 0.0, len(y) / SAMPLE_RATE
+    rms = np.sqrt(np.mean(y[: frames * n].reshape(frames, n) ** 2, axis=1))
+    ref = float(np.percentile(rms, 95))
+    if ref <= 0:
+        return 0.0, len(y) / SAMPLE_RATE
+    idx = np.flatnonzero(rms >= ref * 10 ** (AUDIBLE_REL_DB / 20))
+    if len(idx) == 0:
+        return 0.0, len(y) / SAMPLE_RATE
+    return float(idx[0] * AUDIBLE_FRAME_S), float((idx[-1] + 1) * AUDIBLE_FRAME_S)
+
+
+def gate_audible(times_s: np.ndarray, span: tuple[float, float], duration_s: float) -> np.ndarray:
+    """Keep only times inside the audible span and clear of the file's last frame."""
+    t = np.asarray(times_s, dtype=np.float64)
+    hi = min(span[1] + SPAN_PAD_S, duration_s - END_MARGIN_S)
+    return t[(t >= span[0] - SPAN_PAD_S) & (t <= hi)]
